@@ -152,6 +152,9 @@ public sealed class RecordingControllerTests : IDisposable
         Assert.True(controller.IsCapturing);
         Assert.False(_engines.Latest.Stopped);
 
+        // Fault events go through the persistence queue, so wait on the exact barrier.
+        Assert.True(controller.FlushPendingWrites(TimeSpan.FromSeconds(5)));
+
         JournalReadResult journal = _store.ReadJournal(controller.SessionId!);
         Assert.Contains(journal.Events, e => e.Type == JournalEventTypes.TrackFailed);
     }

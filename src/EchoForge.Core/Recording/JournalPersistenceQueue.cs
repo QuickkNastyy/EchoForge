@@ -16,7 +16,7 @@ namespace EchoForge.Core.Recording;
 /// </summary>
 public sealed class JournalPersistenceQueue : IDisposable
 {
-    private readonly BlockingCollection<(string SessionId, JournalEvent Event)> _pending = new();
+    private readonly BlockingCollection<(string SessionId, JournalEvent Event, long Sequence)> _pending = new();
     private readonly ISessionStore _store;
     private readonly Thread _worker;
     private readonly Action<string>? _onError;
@@ -37,11 +37,17 @@ public sealed class JournalPersistenceQueue : IDisposable
         _worker.Start();
     }
 
-    /// <summary>Events written so far. Used by tests to wait for the queue to catch up.</summary>
+    private long _enqueued;
+    private long _settled;
+
+    /// <summary>Events durably written so far.</summary>
     public long Written { get; private set; }
 
     /// <summary>Events that could not be written, with the reason surfaced through onError.</summary>
     public long Failed { get; private set; }
+
+    /// <summary>Sequence number of the most recently accepted write.</summary>
+    public long HighWaterMark => Interlocked.Read(ref _enqueued);
 
     public void Enqueue(string sessionId, JournalEvent journalEvent)
     {
@@ -53,34 +59,52 @@ public sealed class JournalPersistenceQueue : IDisposable
             return;
         }
 
+        long sequence = Interlocked.Increment(ref _enqueued);
+
         try
         {
-            _pending.Add((sessionId, journalEvent));
+            _pending.Add((sessionId, journalEvent, sequence));
         }
         catch (InvalidOperationException)
         {
-            // Completed concurrently. The chunk record on disk still makes this recoverable.
+            // Completed concurrently. Settle it so a barrier cannot wait forever.
+            Interlocked.Increment(ref _settled);
         }
     }
 
     /// <summary>
-    /// Blocks until everything queued so far has been written. Called at epoch and session
-    /// boundaries, never from the UI thread and never from a capture thread.
+    /// Waits for an exact barrier: every write accepted before this call has either been fsynced
+    /// or failed.
+    ///
+    /// <para>
+    /// Queue depth is not a barrier — an item can be dequeued and still be mid-fsync, so a count
+    /// of zero would return before the data is durable. Sequence numbers are compared instead.
+    /// </para>
     /// </summary>
-    public void Drain(TimeSpan timeout)
+    /// <returns>False on timeout, meaning the journal may be behind the audio on disk.</returns>
+    public bool Drain(TimeSpan timeout)
     {
+        long target = Interlocked.Read(ref _enqueued);
         DateTimeOffset deadline = DateTimeOffset.UtcNow + timeout;
-        while (_pending.Count > 0 && DateTimeOffset.UtcNow < deadline)
+
+        while (Interlocked.Read(ref _settled) < target)
         {
-            Thread.Sleep(5);
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                return false;
+            }
+
+            Thread.Sleep(2);
         }
+
+        return true;
     }
 
     private void Run()
     {
         try
         {
-            foreach ((string sessionId, JournalEvent journalEvent) in _pending.GetConsumingEnumerable())
+            foreach ((string sessionId, JournalEvent journalEvent, long _) in _pending.GetConsumingEnumerable())
             {
                 try
                 {
@@ -90,7 +114,15 @@ public sealed class JournalPersistenceQueue : IDisposable
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
                     Failed++;
+
+                    // Surfaced, never swallowed. The audio and its record are already durable;
+                    // the ledger is what has fallen behind, so the session needs reconciling.
                     _onError?.Invoke($"journal write failed: {ex.GetType().Name}");
+                }
+                finally
+                {
+                    // Settled either way, so a barrier cannot hang on a failed write.
+                    Interlocked.Increment(ref _settled);
                 }
             }
         }

@@ -164,6 +164,8 @@ public sealed class DeviceAndPowerLifecycleTests : IDisposable
 
         _devices.Lose(CaptureId, EndpointChange.NotPresent);
 
+        controller.FlushPendingWrites(TimeSpan.FromSeconds(5));
+
         JournalReadResult journal = _store.ReadJournal(controller.SessionId!);
         JournalEvent failure = Assert.Single(journal.Events, e => e.Type == JournalEventTypes.TrackFailed);
         Assert.Contains("notpresent", failure.Field("fault"), StringComparison.OrdinalIgnoreCase);

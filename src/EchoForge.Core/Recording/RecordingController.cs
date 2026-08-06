@@ -63,9 +63,15 @@ public sealed class RecordingController : IDisposable
     private readonly List<SessionEpoch> _epochs = [];
     private readonly Dictionary<SourceTrack, TrackAccumulator> _tracks = [];
     private readonly HashSet<(SourceTrack Track, int Index)> _journalledChunks = [];
+    private readonly HashSet<(long Generation, int Epoch, SourceTrack Track)> _journalledFaults = [];
+    private readonly System.Collections.Concurrent.ConcurrentQueue<ChunkNotification> _chunkNotifications = new();
     private readonly Lock _gate = new();
 
+    /// <summary>Bumped on every Start, so callbacks from a previous session can be discarded.</summary>
+    private long _generation;
+
     private ICaptureEngine? _engine;
+    private Action? _detachEngineHandlers;
     private RecordingRequest? _request;
     private SessionPaths? _paths;
     private DateTimeOffset _createdUtc;
@@ -102,7 +108,7 @@ public sealed class RecordingController : IDisposable
         _clock = clock;
         _disk = disk;
         _policy = policy ?? new DiskPolicy();
-        _persistence = new JournalPersistenceQueue(store);
+        _persistence = new JournalPersistenceQueue(store, OnPersistenceFailure);
 
         _endpoints = endpoints;
         if (_endpoints is not null)
@@ -154,11 +160,8 @@ public sealed class RecordingController : IDisposable
             _lostEndpoints.Add(e.EndpointId);
             SourceTrack track = isRender ? SourceTrack.System : SourceTrack.Microphone;
 
-            _store.Append(SessionId!, JournalEvent.Create(
-                JournalEventTypes.TrackFailed, _clock.UtcNow(),
-                ("track", track.ToString()),
-                ("device_id", e.EndpointId),
-                ("fault", $"endpoint {e.Change.ToString().ToLowerInvariant()}")));
+            EnqueueTrackFault(SessionId!, _generation, _epochIndex, track,
+                $"endpoint {e.Change.ToString().ToLowerInvariant()}");
 
             bool bothLost =
                 _lostEndpoints.Contains(_request.RenderEndpointId) &&
@@ -223,6 +226,18 @@ public sealed class RecordingController : IDisposable
     /// <summary>An advisory message for the user that does not change the recording state.</summary>
     public event EventHandler<string>? Notice;
 
+    /// <summary>
+    /// A journal write failed or fell behind. The audio and its metadata records are already
+    /// durable, so nothing is lost; the ledger simply needs reconciling on the next start.
+    /// </summary>
+    private void OnPersistenceFailure(string detail)
+    {
+        NeedsReconciliation = true;
+        Notice?.Invoke(this, "Your audio is safe, but EchoForge could not keep its record file " +
+            "up to date. This recording will be checked and repaired the next time EchoForge starts.");
+        _ = detail;
+    }
+
     public SessionState State { get; private set; } = SessionState.New;
 
     public string? SessionId { get; private set; }
@@ -253,6 +268,9 @@ public sealed class RecordingController : IDisposable
 
             ResetSessionState();
             _lostEndpoints.Clear();
+            _journalledFaults.Clear();
+            _chunkNotifications.Clear();
+            _generation++;
             AwaitingResumeAfterSuspend = false;
             _request = request;
 
@@ -346,6 +364,7 @@ public sealed class RecordingController : IDisposable
     {
         lock (_gate)
         {
+            DrainChunkNotifications();
             RecorderStatus status = Status();
 
             if (State is not (SessionState.Recording or SessionState.Degraded))
@@ -357,7 +376,8 @@ public sealed class RecordingController : IDisposable
             {
                 foreach (TrackLiveStatus track in status.Tracks.Where(t => !t.IsHealthy))
                 {
-                    JournalTrackFailure(track);
+                    EnqueueTrackFault(SessionId!, _generation, _epochIndex, track.Track,
+                        track.Fault ?? "stopped capturing");
                 }
 
                 CloseEpoch(EpochEndReason.Failed);
@@ -366,20 +386,39 @@ public sealed class RecordingController : IDisposable
                 return status;
             }
 
-            if (status.IsDegraded && State is not SessionState.Degraded)
+            if (status.IsDegraded)
             {
+                // Deduplicated, so a fault that persists across many ticks is journalled once.
                 foreach (TrackLiveStatus track in status.Tracks.Where(t => !t.IsHealthy))
                 {
-                    JournalTrackFailure(track);
+                    EnqueueTrackFault(SessionId!, _generation, _epochIndex, track.Track,
+                        track.Fault ?? "stopped capturing");
                 }
 
-                SetState(SessionState.Degraded, DescribeDegraded(status));
+                if (State is not SessionState.Degraded)
+                {
+                    SetState(SessionState.Degraded, DescribeDegraded(status));
+                }
             }
 
             ApplyDiskPolicy();
             return status;
         }
     }
+
+    /// <summary>
+    /// Waits until every journal write accepted so far is durable.
+    ///
+    /// <para>
+    /// Returns false on timeout, which means the ledger is behind the audio. The audio and its
+    /// metadata records are still safe, so the session is marked as needing reconciliation rather
+    /// than treated as lost.
+    /// </para>
+    /// </summary>
+    public bool FlushPendingWrites(TimeSpan timeout) => _persistence.Drain(timeout);
+
+    /// <summary>True when a journal write failed and the session should be reconciled on restart.</summary>
+    public bool NeedsReconciliation { get; private set; }
 
     /// <summary>Live counters from the capture engine, or an empty status when idle.</summary>
     public RecorderStatus Status() =>
@@ -393,6 +432,7 @@ public sealed class RecordingController : IDisposable
     {
         lock (_gate)
         {
+            DrainChunkNotifications();
             TimeSpan active = _completedEpochDuration;
             if (_currentEpochStartedUtc is { } epochStart && IsCapturing)
             {
@@ -442,6 +482,7 @@ public sealed class RecordingController : IDisposable
     {
         lock (_gate)
         {
+            DrainChunkNotifications();
             return new SessionSnapshot(
                 SessionId ?? string.Empty,
                 State,
@@ -487,8 +528,25 @@ public sealed class RecordingController : IDisposable
             _epochIndex);
 
         ICaptureEngine engine = _engineFactory.Create(captureRequest);
-        engine.ChunkFinalized += OnChunkFinalized;
-        engine.TrackFaulted += OnTrackFaulted;
+
+        // Capture the identity this epoch's callbacks belong to, so a late one can be discarded.
+        string sessionId = SessionId!;
+        long generation = _generation;
+        int epochIndex = _epochIndex;
+
+        void OnChunk(object? sender, ChunkFinalizedEventArgs e) =>
+            EnqueueFinalizedChunk(sessionId, generation, epochIndex, e.Chunk);
+
+        void OnFault(object? sender, TrackFaultedEventArgs e) =>
+            EnqueueTrackFault(sessionId, generation, epochIndex, e.Track, e.Fault);
+
+        engine.ChunkFinalized += OnChunk;
+        engine.TrackFaulted += OnFault;
+        _detachEngineHandlers = () =>
+        {
+            engine.ChunkFinalized -= OnChunk;
+            engine.TrackFaulted -= OnFault;
+        };
 
         try
         {
@@ -496,8 +554,8 @@ public sealed class RecordingController : IDisposable
         }
         catch
         {
-            engine.ChunkFinalized -= OnChunkFinalized;
-            engine.TrackFaulted -= OnTrackFaulted;
+            _detachEngineHandlers();
+            _detachEngineHandlers = null;
             engine.Dispose();
             _epochIndex--;
             throw;
@@ -530,18 +588,52 @@ public sealed class RecordingController : IDisposable
     }
 
     /// <summary>
-    /// Records a chunk the moment it becomes durable. Raised on a writer thread, so the journal
-    /// append is handed to the persistence queue rather than performed here.
+    /// One chunk, stamped with the session and generation that produced it.
+    ///
+    /// <para>
+    /// Immutable and self-identifying so a callback that arrives late — after the epoch closed, or
+    /// even after a different session started — can be recognised and discarded instead of
+    /// contaminating whatever is running now.
+    /// </para>
     /// </summary>
-    private void OnChunkFinalized(object? sender, ChunkFinalizedEventArgs e)
-    {
-        AudioChunkMetadata chunk = e.Chunk;
+    private readonly record struct ChunkNotification(
+        string SessionId, long Generation, int EpochIndex, AudioChunkMetadata Chunk);
 
-        lock (_gate)
+    /// <summary>
+    /// Receives a finalized chunk on the writer thread.
+    ///
+    /// <para>
+    /// <b>This must never take <c>_gate</c>.</b> The writer thread raises it synchronously from
+    /// inside chunk finalization, while Pause and Stop hold <c>_gate</c> and join that very
+    /// thread — taking the lock here deadlocks the app with a recording in progress. It only
+    /// enqueues; the lifecycle path drains at a safe point.
+    /// </para>
+    /// </summary>
+    private void EnqueueFinalizedChunk(string sessionId, long generation, int epochIndex, AudioChunkMetadata chunk)
+    {
+        _chunkNotifications.Enqueue(new ChunkNotification(sessionId, generation, epochIndex, chunk));
+        _persistence.Enqueue(sessionId, ChunkEvent(chunk, _clock.UtcNow()));
+    }
+
+    /// <summary>
+    /// Folds queued chunk notifications into session state. Always called with <c>_gate</c> held,
+    /// and only from a lifecycle or poll path, never from a capture or writer thread.
+    /// </summary>
+    private void DrainChunkNotifications()
+    {
+        while (_chunkNotifications.TryDequeue(out ChunkNotification notification))
         {
+            // Discard anything belonging to an older session or generation.
+            if (notification.Generation != _generation ||
+                !string.Equals(notification.SessionId, SessionId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            AudioChunkMetadata chunk = notification.Chunk;
             if (!_journalledChunks.Add((chunk.Track, chunk.Index)))
             {
-                return;
+                continue;
             }
 
             if (_tracks.TryGetValue(chunk.Track, out TrackAccumulator? accumulator))
@@ -551,18 +643,28 @@ public sealed class RecordingController : IDisposable
 
             _nextChunkIndex = Math.Max(_nextChunkIndex, chunk.Index + 1);
         }
-
-        _persistence.Enqueue(SessionId!, ChunkEvent(chunk, _clock.UtcNow()));
     }
 
-    private void OnTrackFaulted(object? sender, TrackFaultedEventArgs e)
+    /// <summary>
+    /// Receives a track fault on a background thread. Like the chunk callback, it only enqueues.
+    ///
+    /// <para>
+    /// Deduplicated per session, generation, epoch, and track, so a fault that persists across
+    /// many poll ticks is journalled once rather than appended on every tick.
+    /// </para>
+    /// </summary>
+    private void EnqueueTrackFault(string sessionId, long generation, int epochIndex, SourceTrack track, string fault)
     {
-        // Raised from a background thread. Only record it; the poll loop promotes the session
-        // state so the transition happens on one thread.
-        _persistence.Enqueue(SessionId!, JournalEvent.Create(
+        if (!_journalledFaults.Add((generation, epochIndex, track)))
+        {
+            return;
+        }
+
+        _persistence.Enqueue(sessionId, JournalEvent.Create(
             JournalEventTypes.TrackFailed, _clock.UtcNow(),
-            ("track", e.Track.ToString()),
-            ("fault", e.Fault)));
+            ("track", track.ToString()),
+            ("epoch", Text(epochIndex)),
+            ("fault", fault)));
     }
 
     private static JournalEvent ChunkEvent(AudioChunkMetadata chunk, DateTimeOffset at) =>
@@ -589,12 +691,18 @@ public sealed class RecordingController : IDisposable
 
         _engine.Stop(endQpc);
 
-        // Anything finalized during Stop arrives through ChunkFinalized; wait for those writes.
-        _persistence.Drain(TimeSpan.FromSeconds(5));
+        // Stop has joined the writer threads, so every chunk this epoch will ever produce has
+        // now been enqueued. Fold them in before the epoch is closed and the snapshot is built.
+        DrainChunkNotifications();
+
+        if (!_persistence.Drain(TimeSpan.FromSeconds(5)))
+        {
+            OnPersistenceFailure("the journal did not catch up before the segment closed");
+        }
 
         _completedBytes += _engine.Status().BytesWritten;
-        _engine.ChunkFinalized -= OnChunkFinalized;
-        _engine.TrackFaulted -= OnTrackFaulted;
+        _detachEngineHandlers?.Invoke();
+        _detachEngineHandlers = null;
         _engine.Dispose();
         _engine = null;
 
@@ -645,8 +753,8 @@ public sealed class RecordingController : IDisposable
     {
         if (_engine is not null)
         {
-            _engine.ChunkFinalized -= OnChunkFinalized;
-            _engine.TrackFaulted -= OnTrackFaulted;
+            _detachEngineHandlers?.Invoke();
+            _detachEngineHandlers = null;
             _engine.Dispose();
             _engine = null;
         }
@@ -705,13 +813,6 @@ public sealed class RecordingController : IDisposable
 
         return $"{string.Join(" and ", failed)} stopped capturing; the other track is still recording";
     }
-
-    private void JournalTrackFailure(TrackLiveStatus track) =>
-        _store.Append(SessionId!, JournalEvent.Create(
-            JournalEventTypes.TrackFailed, _clock.UtcNow(),
-            ("track", track.Track.ToString()),
-            ("device_id", track.DeviceId),
-            ("fault", track.Fault ?? "stopped capturing")));
 
     private void Remember(TrackLiveStatus track)
     {

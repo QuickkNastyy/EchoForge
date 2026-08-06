@@ -233,6 +233,8 @@ public sealed class SessionLifecycleTests : IDisposable
         Assert.Equal(SessionState.Degraded, controller.State);
         Assert.True(controller.IsCapturing);
 
+        controller.FlushPendingWrites(TimeSpan.FromSeconds(5));
+
         JournalReadResult journal = _store.ReadJournal(controller.SessionId!);
         Assert.Contains(journal.Events, e =>
             e.Type == JournalEventTypes.TrackFailed &&
