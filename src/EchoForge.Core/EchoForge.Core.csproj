@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>EchoForge.Core</RootNamespace>
+  </PropertyGroup>
+
+  <!-- Core references Contracts only. No WPF, NAudio, SQLite, Python, or inference runtimes. -->
+  <ItemGroup>
+    <ProjectReference Include="..\EchoForge.Contracts\EchoForge.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="EchoForge.UnitTests" />
+  </ItemGroup>
+
+</Project>

@@ -1,6 +1,7 @@
 using System.Globalization;
 using EchoForge.Audio.Windows;
 using EchoForge.Contracts.Audio;
+using EchoForge.Contracts.Recording;
 
 namespace EchoForge.AudioCapture.Poc;
 
@@ -99,9 +100,12 @@ internal static class Program
             : TimeSpan.FromMinutes(double.Parse(minutesText, CultureInfo.InvariantCulture));
 
         string sessionDirectory = Path.Combine(output, DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture));
+        string tracksRoot = Path.Combine(sessionDirectory, "tracks");
 
         using AudioDeviceCatalog catalog = new();
-        using DualTrackRecorder recorder = new(catalog, sessionDirectory, system, mic);
+        long epochQpc = CaptureClock.Now();
+        using DualTrackCaptureEngine engine = new(
+            catalog, new CaptureRequest(system, mic, tracksRoot, epochQpc, FirstChunkIndex: 1));
 
         using CancellationTokenSource stop = new();
         Console.CancelKeyPress += (_, e) =>
@@ -110,17 +114,16 @@ internal static class Program
             stop.Cancel();
         };
 
-        Console.WriteLine($"session   {recorder.SessionId}");
         Console.WriteLine($"directory {sessionDirectory}");
         Console.WriteLine(limit is null ? "duration  until Ctrl+C" : $"duration  {limit.Value.TotalMinutes:0.##} min or Ctrl+C");
         Console.WriteLine();
 
-        recorder.Start();
+        engine.Start();
 
-        foreach (TrackStatus track in recorder.Snapshot())
+        foreach (TrackLiveStatus track in engine.Status().Tracks)
         {
             Console.WriteLine($"{track.Track,-11} {track.DeviceName}");
-            Console.WriteLine($"{"",-11} recording as {track.Format}, endpoint mix {track.SourceEncoding}");
+            Console.WriteLine($"{"",-11} recording as {track.Format}");
         }
 
         Console.WriteLine();
@@ -128,43 +131,42 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("elapsed   you    remote  chunks   queue    drop   est ms/hr   est off ms");
 
+        System.Diagnostics.Stopwatch wall = System.Diagnostics.Stopwatch.StartNew();
         while (!stop.IsCancellationRequested)
         {
-            if (limit is not null && recorder.ElapsedSeconds >= limit.Value.TotalSeconds)
+            if (limit is not null && wall.Elapsed >= limit.Value)
             {
                 break;
             }
 
             Thread.Sleep(1000);
-            PrintStatus(recorder);
+            PrintStatus(engine, wall.Elapsed);
         }
 
         Console.WriteLine();
         Console.WriteLine("stopping...");
-        recorder.Stop();
+        engine.Stop(CaptureClock.Now());
 
         Console.WriteLine();
         return Report(sessionDirectory);
     }
 
-    private static void PrintStatus(DualTrackRecorder recorder)
+    private static void PrintStatus(DualTrackCaptureEngine engine, TimeSpan elapsed)
     {
-        IReadOnlyList<TrackStatus> tracks = recorder.Snapshot();
-        TrackStatus system = tracks.First(t => t.Track == SourceTrack.System);
-        TrackStatus mic = tracks.First(t => t.Track == SourceTrack.Microphone);
+        RecorderStatus status = engine.Status();
+        TrackLiveStatus system = status.Tracks.First(t => t.Track == SourceTrack.System);
+        TrackLiveStatus mic = status.Tracks.First(t => t.Track == SourceTrack.Microphone);
 
-        double? relativeDrift = recorder.EstimatedRelativeDriftMillisecondsPerHour();
-        double? alignment = recorder.EstimatedOffsetMilliseconds();
+        double? relativeDrift = engine.EstimatedRelativeDriftMillisecondsPerHour();
+        double? offset = engine.EstimatedOffsetMilliseconds();
 
-        string line = string.Create(CultureInfo.InvariantCulture,
-            $"{FormatElapsed(recorder.ElapsedSeconds),-9} {Meter(mic.PeakLevel)} {Meter(system.PeakLevel)}  " +
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"{FormatElapsed(elapsed.TotalSeconds),-9} {Meter(mic.PeakLevel)} {Meter(system.PeakLevel)}  " +
             $"{mic.CompletedChunks,3}+{system.CompletedChunks,-3} " +
             $"{Math.Max(mic.QueuedFrames, system.QueuedFrames),6} " +
             $"{mic.DroppedFrames + system.DroppedFrames,6}   " +
-            $"{(relativeDrift is null ? "     —" : $"{relativeDrift.Value,6:0.0}")}      " +
-            $"{(alignment is null ? "    —" : $"{alignment.Value,5:0.0}")}");
-
-        Console.WriteLine(line);
+            $"{(relativeDrift is null ? "     -" : $"{relativeDrift.Value,6:0.0}")}      " +
+            $"{(offset is null ? "    -" : $"{offset.Value,5:0.0}")}"));
     }
 
     private static string FormatElapsed(double seconds) =>

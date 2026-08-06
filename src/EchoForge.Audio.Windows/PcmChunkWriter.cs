@@ -37,6 +37,7 @@ public sealed class PcmChunkWriter : IDisposable
 
     private readonly long _gapThresholdFrames;
     private readonly long _epochQpc;
+    private readonly int _epochIndex;
 
     private WavPcm16Writer? _writer;
     private int _chunkIndex;
@@ -51,14 +52,24 @@ public sealed class PcmChunkWriter : IDisposable
     /// The shared session epoch. Both tracks must be given the same value: it is what makes
     /// t=0 mean the same instant on each, and therefore what makes them alignable at all.
     /// </param>
+    /// <param name="firstChunkIndex">
+    /// The index this epoch's first chunk takes. Resuming after a pause continues the session's
+    /// numbering rather than restarting it, so chunk indices stay unique and contiguous across
+    /// epochs and no finalized file is ever overwritten.
+    /// </param>
     public PcmChunkWriter(
         string trackDirectory,
         SourceTrack track,
         CaptureFormat format,
         long epochQpc,
         TimeSpan? chunkDuration = null,
-        TimeSpan? flushInterval = null)
+        TimeSpan? flushInterval = null,
+        int firstChunkIndex = 1,
+        int epochIndex = 1)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(firstChunkIndex, 1);
+        _chunkIndex = firstChunkIndex - 1;
+        _epochIndex = epochIndex;
         ArgumentException.ThrowIfNullOrWhiteSpace(trackDirectory);
         ArgumentNullException.ThrowIfNull(format);
 
@@ -86,8 +97,11 @@ public sealed class PcmChunkWriter : IDisposable
     /// <summary>Chunks finalized so far, in order. Finalized chunks are never rewritten.</summary>
     public IReadOnlyList<AudioChunkMetadata> CompletedChunks => _completed;
 
-    /// <summary>Total frames placed on the session timeline, including inserted silence.</summary>
+    /// <summary>Total frames placed on the timeline for this epoch, including inserted silence.</summary>
     public long SessionFrames => _sessionFrames;
+
+    /// <summary>The index the next chunk will take.</summary>
+    public int NextChunkIndex => _chunkIndex + 1;
 
     /// <summary>Frames of silence inserted to cover gaps the device position reported.</summary>
     public long SilenceFramesInserted { get; private set; }
@@ -342,7 +356,8 @@ public sealed class PcmChunkWriter : IDisposable
             _format.Channels,
             frames,
             ComputeSha256(finalPath),
-            [.. _pending]));
+            [.. _pending],
+            _epochIndex));
 
         _pending.Clear();
         _framesSinceFlush = 0;

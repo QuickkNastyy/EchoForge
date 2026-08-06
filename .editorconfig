@@ -19,6 +19,11 @@ indent_size = 2
 # the rule is off repo-wide rather than suppressed one type at a time.
 dotnet_diagnostic.CA1711.severity = none
 
+# CA1716 avoids member names that are keywords in other .NET languages, so that VB or F#
+# consumers can implement them comfortably. EchoForge is a single-language Windows desktop
+# app with no public API surface, and Start/Stop is the right pair of names for a recorder.
+dotnet_diagnostic.CA1716.severity = none
+
 # Style preferences that would otherwise fail the warnings-as-errors build without
 # saying anything about correctness.
 csharp_using_directive_placement = outside_namespace:silent

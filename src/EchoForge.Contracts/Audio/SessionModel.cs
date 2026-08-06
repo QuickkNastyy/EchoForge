@@ -41,6 +41,8 @@ public sealed record CaptureDiscontinuity(
 /// <summary>
 /// A finalized, immutable source chunk. Source audio is never rewritten after finalization.
 /// </summary>
+/// <param name="StartSeconds">Start offset within its epoch, not within the session.</param>
+/// <param name="EpochIndex">Which capture epoch produced it. Pause and resume open a new epoch.</param>
 public sealed record AudioChunkMetadata(
     int Index,
     string RelativePath,
@@ -51,7 +53,8 @@ public sealed record AudioChunkMetadata(
     int Channels,
     long SampleFrames,
     string Sha256,
-    IReadOnlyList<CaptureDiscontinuity> Discontinuities);
+    IReadOnlyList<CaptureDiscontinuity> Discontinuities,
+    int EpochIndex = 1);
 
 /// <summary>
 /// A continuous stretch of capture on one shared clock. Pause, device loss, and

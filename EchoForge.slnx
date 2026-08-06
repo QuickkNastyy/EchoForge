@@ -5,6 +5,8 @@
   <Folder Name="/src/">
     <Project Path="src/EchoForge.Audio.Windows/EchoForge.Audio.Windows.csproj" />
     <Project Path="src/EchoForge.Contracts/EchoForge.Contracts.csproj" />
+    <Project Path="src/EchoForge.Core/EchoForge.Core.csproj" />
+    <Project Path="src/EchoForge.Infrastructure/EchoForge.Infrastructure.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/EchoForge.UnitTests/EchoForge.UnitTests.csproj" />

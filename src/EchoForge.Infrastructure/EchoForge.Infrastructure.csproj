@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>EchoForge.Infrastructure</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    Infrastructure points inward at Core and Contracts. It deliberately does not reference
+    Audio.Windows: recovery repairs chunks through IActiveChunkRepairer so the audio format
+    knowledge stays in the audio layer and recovery stays testable with a fake.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\EchoForge.Contracts\EchoForge.Contracts.csproj" />
+    <ProjectReference Include="..\EchoForge.Core\EchoForge.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="EchoForge.UnitTests" />
+  </ItemGroup>
+
+</Project>
