@@ -27,7 +27,13 @@ public enum DiscontinuityKind
     TimestampError,
 }
 
-/// <summary>A recorded gap or fault on one track, expressed in device frames.</summary>
+/// <summary>
+/// A recorded gap or fault on one track, positioned by timeline frame offset within its epoch.
+/// </summary>
+/// <param name="AtDevicePosition">
+/// Timeline frame offset within the epoch where the discontinuity begins. Named for history;
+/// it is not a device-clock position.
+/// </param>
 public sealed record CaptureDiscontinuity(
     DiscontinuityKind Kind,
     long AtDevicePosition,
@@ -35,7 +41,7 @@ public sealed record CaptureDiscontinuity(
     string Detail)
 {
     public static CaptureDiscontinuity Silence(long at, long frames) =>
-        new(DiscontinuityKind.Silence, at, frames, "no packets; silence inserted from device position");
+        new(DiscontinuityKind.Silence, at, frames, "no packets arrived; silence advanced from the shared QPC session clock");
 }
 
 /// <summary>

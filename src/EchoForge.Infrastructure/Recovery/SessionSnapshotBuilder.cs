@@ -12,6 +12,14 @@ namespace EchoForge.Infrastructure.Recovery;
 /// This is what lets a missing, truncated, or contradictory snapshot be replaced rather than
 /// mourned.
 /// </para>
+///
+/// <para>
+/// A track is opened once per epoch, so a paused-and-resumed session carries several
+/// <c>track_opened</c> events for the same track. Reconstruction therefore <b>accumulates</b>:
+/// a later open updates device metadata and records that epoch's format, and never discards
+/// chunks already rebuilt. Each chunk keeps the format it was recorded with rather than
+/// inheriting whatever the last epoch happened to negotiate.
+/// </para>
 /// </summary>
 public static class SessionSnapshotBuilder
 {
@@ -26,6 +34,7 @@ public static class SessionSnapshotBuilder
         DateTimeOffset created = fallbackCreatedUtc;
         DateTimeOffset? started = null;
         DateTimeOffset? ended = null;
+        bool startFailed = false;
 
         Dictionary<int, EpochBuilder> epochs = [];
         Dictionary<SourceTrack, TrackBuilder> tracks = [];
@@ -74,17 +83,17 @@ public static class SessionSnapshotBuilder
                         break;
                     }
 
-                    tracks[track] = new TrackBuilder
-                    {
-                        Track = track,
-                        DeviceId = journalEvent.Field("device_id") ?? string.Empty,
-                        DeviceName = journalEvent.Field("device_name") ?? string.Empty,
-                        Format = new CaptureFormat(
-                            journalEvent.IntField("sample_rate") ?? 48_000,
-                            journalEvent.IntField("channels") ?? 2,
-                            16),
-                    };
+                    CaptureFormat format = new(
+                        journalEvent.IntField("sample_rate") ?? 48_000,
+                        journalEvent.IntField("channels") ?? 2,
+                        16);
 
+                    // Accumulate. Re-opening a track in a later epoch must never erase history.
+                    TrackBuilder builder = Ensure(tracks, track, format);
+                    builder.DeviceId = journalEvent.Field("device_id") ?? builder.DeviceId;
+                    builder.DeviceName = journalEvent.Field("device_name") ?? builder.DeviceName;
+                    builder.FormatByEpoch[journalEvent.IntField("epoch") ?? 1] = format;
+                    builder.LatestFormat = format;
                     break;
                 }
 
@@ -95,50 +104,58 @@ public static class SessionSnapshotBuilder
                         break;
                     }
 
-                    if (!tracks.TryGetValue(track, out TrackBuilder? builder))
-                    {
-                        // A chunk for a track whose open event was lost. Keep the audio.
-                        builder = new TrackBuilder
-                        {
-                            Track = track,
-                            DeviceId = string.Empty,
-                            DeviceName = string.Empty,
-                            Format = new CaptureFormat(
-                                journalEvent.IntField("sample_rate") ?? 48_000,
-                                journalEvent.IntField("channels") ?? 2,
-                                16),
-                        };
+                    int epoch = journalEvent.IntField("epoch") ?? 1;
+                    TrackBuilder builder = Ensure(tracks, track, null);
 
-                        tracks[track] = builder;
-                    }
+                    // The chunk's own recorded format wins, then that epoch's, then the track's.
+                    CaptureFormat format = new(
+                        journalEvent.IntField("sample_rate")
+                            ?? (builder.FormatByEpoch.TryGetValue(epoch, out CaptureFormat? byEpoch) ? byEpoch.SampleRate : builder.LatestFormat.SampleRate),
+                        journalEvent.IntField("channels")
+                            ?? (builder.FormatByEpoch.TryGetValue(epoch, out CaptureFormat? byEpoch2) ? byEpoch2.Channels : builder.LatestFormat.Channels),
+                        16);
 
                     int index = journalEvent.IntField("index") ?? 0;
-                    if (builder.Chunks.Any(c => c.Index == index))
-                    {
-                        // Recovery may re-journal a chunk it promoted. Never double count.
-                        break;
-                    }
-
                     long frames = journalEvent.LongField("frames") ?? 0;
                     double start = ParseDouble(journalEvent.Field("start_seconds"));
+                    string sha = journalEvent.Field("sha256") ?? string.Empty;
 
-                    builder.Chunks.Add(new AudioChunkMetadata(
+                    AudioChunkMetadata chunk = new(
                         index,
                         $"tracks/{track.ToString().ToLowerInvariant()}/chunks/{index:D6}.wav",
                         track,
                         start,
-                        start + (builder.Format.SampleRate == 0 ? 0 : (double)frames / builder.Format.SampleRate),
-                        builder.Format.SampleRate,
-                        builder.Format.Channels,
+                        start + (format.SampleRate == 0 ? 0 : (double)frames / format.SampleRate),
+                        format.SampleRate,
+                        format.Channels,
                         frames,
-                        journalEvent.Field("sha256") ?? string.Empty,
+                        sha,
                         [],
-                        journalEvent.IntField("epoch") ?? 1));
+                        epoch);
+
+                    // A chunk may be journalled twice — once by the writer, once by recovery
+                    // promoting a repaired part. Keep the richer record, never two.
+                    if (builder.Chunks.TryGetValue(index, out AudioChunkMetadata? existing))
+                    {
+                        if (existing.SampleFrames == 0 && frames > 0)
+                        {
+                            builder.Chunks[index] = chunk;
+                        }
+                    }
+                    else
+                    {
+                        builder.Chunks[index] = chunk;
+                    }
 
                     break;
                 }
 
                 case JournalEventTypes.SessionStopped:
+                    ended = journalEvent.TimestampUtc;
+                    break;
+
+                case JournalEventTypes.SessionStartFailed:
+                    startFailed = true;
                     ended = journalEvent.TimestampUtc;
                     break;
 
@@ -157,17 +174,39 @@ public static class SessionSnapshotBuilder
                 t.Track,
                 t.DeviceId,
                 t.DeviceName,
-                t.Format,
-                [.. t.Chunks.OrderBy(c => c.Index)]))];
+                t.LatestFormat,
+                [.. t.Chunks.Values.OrderBy(c => c.Index)]))];
 
         return new SessionSnapshot(
             sessionId,
-            SessionState.Recovering,
+            startFailed ? SessionState.Failed : SessionState.Recovering,
             created,
             started,
             ended,
             epochList,
             trackList);
+    }
+
+    private static TrackBuilder Ensure(
+        Dictionary<SourceTrack, TrackBuilder> tracks,
+        SourceTrack track,
+        CaptureFormat? format)
+    {
+        if (tracks.TryGetValue(track, out TrackBuilder? existing))
+        {
+            return existing;
+        }
+
+        TrackBuilder builder = new()
+        {
+            Track = track,
+            DeviceId = string.Empty,
+            DeviceName = string.Empty,
+            LatestFormat = format ?? new CaptureFormat(48_000, 2, 16),
+        };
+
+        tracks[track] = builder;
+        return builder;
     }
 
     private static bool TryParseTrack(string? value, out SourceTrack track) =>
@@ -195,12 +234,16 @@ public static class SessionSnapshotBuilder
     {
         public SourceTrack Track { get; init; }
 
-        public required string DeviceId { get; init; }
+        public required string DeviceId { get; set; }
 
-        public required string DeviceName { get; init; }
+        public required string DeviceName { get; set; }
 
-        public required CaptureFormat Format { get; init; }
+        public required CaptureFormat LatestFormat { get; set; }
 
-        public List<AudioChunkMetadata> Chunks { get; } = [];
+        /// <summary>Format negotiated for each epoch, so a change between epochs stays visible.</summary>
+        public Dictionary<int, CaptureFormat> FormatByEpoch { get; } = [];
+
+        /// <summary>Keyed by chunk index so a re-journalled chunk cannot be counted twice.</summary>
+        public Dictionary<int, AudioChunkMetadata> Chunks { get; } = [];
     }
 }

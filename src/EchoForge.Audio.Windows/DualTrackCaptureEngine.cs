@@ -18,15 +18,14 @@ public sealed record RecorderOptions
 /// Captures the selected render endpoint and microphone simultaneously for **one epoch**.
 ///
 /// <para>
-/// The two tracks are never mixed and never merged by arrival order. Each carries its own device
-/// clock and its own chunk series; both share the epoch's QPC origin so t=0 means the same instant
-/// on each. Closing an epoch means disposing the engine — which is what guarantees a finalized
-/// chunk is never appended to when recording resumes.
+/// The two tracks are never mixed and never merged by arrival order. Both share the epoch's QPC
+/// origin so t=0 means the same instant on each. Closing an epoch means disposing the engine,
+/// which is what guarantees a finalized chunk is never appended to when recording resumes.
 /// </para>
 ///
 /// <para>
 /// This type captures. It does not write journals or manifests; session persistence belongs to
-/// the recording state machine above it.
+/// the recording state machine above it, which subscribes to <see cref="ChunkFinalized"/>.
 /// </para>
 /// </summary>
 public sealed class DualTrackCaptureEngine : ICaptureEngine
@@ -70,11 +69,18 @@ public sealed class DualTrackCaptureEngine : ICaptureEngine
 
     public CaptureRequest Request { get; }
 
+    public event EventHandler<ChunkFinalizedEventArgs>? ChunkFinalized;
+
+    public event EventHandler<TrackFaultedEventArgs>? TrackFaulted;
+
     public IReadOnlyList<AudioChunkMetadata> CompletedChunks =>
         [.. _tracks.SelectMany(t => t.Writer.CompletedChunks).OrderBy(c => c.Index)];
 
     /// <summary>The index the next chunk would take, so the next epoch can continue the numbering.</summary>
     public int NextChunkIndex => _tracks.Count == 0 ? Request.FirstChunkIndex : _tracks.Max(t => t.Writer.NextChunkIndex);
+
+    /// <summary>True when at least one track is capturing healthily.</summary>
+    public bool IsHealthy => _tracks.Any(t => t.IsHealthy);
 
     public void Start()
     {
@@ -119,7 +125,7 @@ public sealed class DualTrackCaptureEngine : ICaptureEngine
             ? TimeSpan.Zero
             : TimeSpan.FromSeconds(_tracks.Max(t => (double)t.Writer.SessionFrames / t.Capture.Format.SampleRate));
 
-        return new RecorderStatus(_started && !_stopped, elapsed, bytes, tracks);
+        return new RecorderStatus(_started && !_stopped && IsHealthy, elapsed, bytes, tracks);
     }
 
     /// <summary>
@@ -153,7 +159,16 @@ public sealed class DualTrackCaptureEngine : ICaptureEngine
     {
         MMDevice device = catalog.OpenDevice(endpointId);
         string trackDirectory = Path.Combine(Request.TracksRoot, track.ToString().ToLowerInvariant());
-        return new TrackPipeline(device, endpointId, track, loopback, trackDirectory, Request, _options);
+        string sessionRoot = string.IsNullOrEmpty(Request.SessionRoot)
+            ? Path.GetDirectoryName(Request.TracksRoot)!
+            : Request.SessionRoot;
+
+        TrackPipeline pipeline = new(
+            device, endpointId, track, loopback, trackDirectory, sessionRoot, Request, _options);
+
+        pipeline.ChunkFinalized += chunk => ChunkFinalized?.Invoke(this, new ChunkFinalizedEventArgs(chunk));
+        pipeline.Faulted += fault => TrackFaulted?.Invoke(this, new TrackFaultedEventArgs(track, fault));
+        return pipeline;
     }
 
     public void Dispose()
@@ -179,8 +194,10 @@ public sealed class DualTrackCaptureEngine : ICaptureEngine
         private Thread? _writerThread;
         private CancellationTokenSource? _cts;
         private long _reportedDroppedFrames;
+        private string? _writerFault;
         private bool _started;
         private bool _stopped;
+        private bool _writerStoppedCleanly = true;
         private bool _disposed;
 
         public TrackPipeline(
@@ -189,6 +206,7 @@ public sealed class DualTrackCaptureEngine : ICaptureEngine
             SourceTrack track,
             bool loopback,
             string trackDirectory,
+            string sessionRoot,
             CaptureRequest request,
             RecorderOptions options)
         {
@@ -198,6 +216,8 @@ public sealed class DualTrackCaptureEngine : ICaptureEngine
             Track = track;
 
             Capture = new WasapiPacketCapture(device, loopback, OnPacket);
+            Capture.Faulted += (_, message) => RaiseFault(message);
+
             Queue = new BoundedAudioQueue(Capture.Format, options.QueueCapacity);
             Writer = new PcmChunkWriter(
                 trackDirectory,
@@ -206,9 +226,17 @@ public sealed class DualTrackCaptureEngine : ICaptureEngine
                 request.EpochQpc,
                 options.ChunkDuration,
                 options.FlushInterval,
-                request.FirstChunkIndex);
+                request.FirstChunkIndex,
+                request.EpochIndex,
+                sessionRoot,
+                chunk => ChunkFinalized?.Invoke(chunk));
+
             Drift = new DriftEstimator(Capture.Format.SampleRate);
         }
+
+        public event Action<AudioChunkMetadata>? ChunkFinalized;
+
+        public event Action<string>? Faulted;
 
         public string EndpointId { get; }
 
@@ -226,8 +254,14 @@ public sealed class DualTrackCaptureEngine : ICaptureEngine
 
         public double PeakLevel { get; private set; }
 
-        /// <summary>Set when the endpoint stops producing audio unexpectedly.</summary>
-        public string? Fault { get; private set; }
+        /// <summary>Combined capture-thread and writer-thread fault, or null while healthy.</summary>
+        public string? Fault => Capture.Fault ?? Volatile.Read(ref _writerFault);
+
+        /// <summary>
+        /// Real health, not "Start was called". A faulted capture or writer thread reads as
+        /// unhealthy so the session goes degraded instead of silently recording nothing.
+        /// </summary>
+        public bool IsHealthy => _started && !_stopped && Fault is null && Capture.IsHealthy;
 
         public void Start()
         {
@@ -249,9 +283,7 @@ public sealed class DualTrackCaptureEngine : ICaptureEngine
             }
             catch (Exception ex)
             {
-                // The endpoint refused to open. Record it rather than pretending the track is live;
-                // the other track keeps recording and the session goes degraded.
-                Fault = ex.Message;
+                RaiseFault($"{ex.GetType().Name} (HRESULT 0x{ex.HResult:X8})");
                 throw;
             }
         }
@@ -265,17 +297,38 @@ public sealed class DualTrackCaptureEngine : ICaptureEngine
 
             _stopped = true;
 
-            Capture.Stop();
+            bool captureStopped = Capture.Stop();
             _cts?.Cancel();
-            _writerThread?.Join(TimeSpan.FromSeconds(10));
-            _writerThread = null;
 
-            if (_started)
+            Thread? writer = _writerThread;
+            if (writer is not null)
             {
-                Writer.AdvanceTo(stopQpc, exact: true);
+                _writerStoppedCleanly = writer.Join(TimeSpan.FromSeconds(10));
+                if (_writerStoppedCleanly)
+                {
+                    _writerThread = null;
+                }
+                else
+                {
+                    RaiseFault("writer thread did not stop within 10 s");
+                }
             }
 
-            Writer.Complete();
+            if (!captureStopped)
+            {
+                RaiseFault("capture thread did not stop within 5 s");
+            }
+
+            // Only finalize once no thread can still be writing.
+            if (_writerStoppedCleanly)
+            {
+                if (_started)
+                {
+                    Writer.AdvanceTo(stopQpc, exact: true);
+                }
+
+                Writer.Complete();
+            }
         }
 
         public TrackLiveStatus Snapshot() => new(
@@ -283,7 +336,7 @@ public sealed class DualTrackCaptureEngine : ICaptureEngine
             EndpointId,
             DeviceName,
             Capture.Format,
-            _started && !_stopped,
+            IsHealthy,
             Fault,
             PeakLevel,
             Writer.SessionFrames,
@@ -301,21 +354,36 @@ public sealed class DualTrackCaptureEngine : ICaptureEngine
             Queue.TryEnqueue(header, pcm16);
         }
 
+        /// <summary>
+        /// The writer thread's outer boundary. A disk failure or disposed resource degrades the
+        /// track rather than terminating the process.
+        /// </summary>
         private void WriterLoop(CancellationToken token)
         {
-            while (!token.IsCancellationRequested)
+            try
             {
-                if (!DrainOnce(TimeSpan.FromMilliseconds(20)))
+                while (!token.IsCancellationRequested)
                 {
-                    // Nothing arrived. Keep the timeline moving so a stalled or silent
-                    // endpoint produces recorded silence instead of a short track.
-                    Writer.AdvanceTo(CaptureClock.Now());
+                    if (!DrainOnce(TimeSpan.FromMilliseconds(20)))
+                    {
+                        // Nothing arrived. Keep the timeline moving so a stalled or silent
+                        // endpoint produces recorded silence instead of a short track.
+                        Writer.AdvanceTo(CaptureClock.Now());
+                    }
+                }
+
+                while (DrainOnce(TimeSpan.Zero))
+                {
+                    // Intentionally empty; DrainOnce reports whether it made progress.
                 }
             }
-
-            while (DrainOnce(TimeSpan.Zero))
+            catch (OperationCanceledException)
             {
-                // Intentionally empty; DrainOnce reports whether it made progress.
+                // Ordinary shutdown.
+            }
+            catch (Exception ex)
+            {
+                RaiseFault($"{ex.GetType().Name} (HRESULT 0x{ex.HResult:X8})");
             }
         }
 
@@ -370,6 +438,20 @@ public sealed class DualTrackCaptureEngine : ICaptureEngine
             PeakLevel = Math.Max(peak / (double)short.MaxValue, PeakLevel * 0.85);
         }
 
+        private void RaiseFault(string message)
+        {
+            Interlocked.CompareExchange(ref _writerFault, message, null);
+
+            try
+            {
+                Faulted?.Invoke(message);
+            }
+            catch (Exception)
+            {
+                // A handler must never escalate a track fault into a process crash.
+            }
+        }
+
         public void Dispose()
         {
             if (_disposed)
@@ -380,11 +462,16 @@ public sealed class DualTrackCaptureEngine : ICaptureEngine
             _disposed = true;
             Stop(CaptureClock.Now());
 
-            Capture.Dispose();
-            Writer.Dispose();
-            Queue.Dispose();
-            _cts?.Dispose();
-            _device.Dispose();
+            // A thread that refused to stop may still touch these; leaking is safer than a
+            // use-after-dispose inside the audio engine.
+            if (_writerStoppedCleanly)
+            {
+                Capture.Dispose();
+                Writer.Dispose();
+                Queue.Dispose();
+                _cts?.Dispose();
+                _device.Dispose();
+            }
         }
     }
 }

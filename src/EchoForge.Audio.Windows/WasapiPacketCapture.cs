@@ -1,4 +1,4 @@
-using EchoForge.Contracts.Audio;
+﻿using EchoForge.Contracts.Audio;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
@@ -37,6 +37,9 @@ public sealed class WasapiPacketCapture : IDisposable
     private Thread? _thread;
     private CancellationTokenSource? _cts;
     private byte[] _scratch = [];
+    private string? _fault;
+    private bool _started;
+    private bool _stopRequested;
     private bool _disposed;
 
     /// <param name="device">The endpoint to capture. Ownership stays with the caller.</param>
@@ -93,6 +96,22 @@ public sealed class WasapiPacketCapture : IDisposable
     /// <summary>The QPC position of the first packet, which anchors this track on the timeline.</summary>
     public long? FirstPacketQpc { get; private set; }
 
+    /// <summary>
+    /// A safe diagnostic description of the fault that stopped this capture, or null while
+    /// healthy. Carries the exception type and HRESULT where available; never meeting content
+    /// and never a full private path.
+    /// </summary>
+    public string? Fault => Volatile.Read(ref _fault);
+
+    /// <summary>
+    /// True only while the capture thread is genuinely alive and unfaulted. This is deliberately
+    /// not "Start was called once": a removed endpoint or a COM failure must show as unhealthy.
+    /// </summary>
+    public bool IsHealthy => _started && Fault is null && !_stopRequested && (_thread?.IsAlive ?? false);
+
+    /// <summary>Raised once, off the capture thread's hot path, when the thread faults.</summary>
+    public event EventHandler<string>? Faulted;
+
     /// <summary>Starts the capture thread.</summary>
     public void Start()
     {
@@ -106,6 +125,7 @@ public sealed class WasapiPacketCapture : IDisposable
         CancellationToken token = _cts.Token;
 
         _audioClient.Start();
+        _started = true;
         _thread = new Thread(() => Run(token))
         {
             IsBackground = true,
@@ -115,18 +135,35 @@ public sealed class WasapiPacketCapture : IDisposable
         _thread.Start();
     }
 
-    /// <summary>Stops the capture thread and the audio client.</summary>
-    public void Stop()
+    /// <summary>
+    /// Stops the capture thread and the audio client.
+    /// </summary>
+    /// <returns>
+    /// False when the thread would not stop within the grace period. The caller must not dispose
+    /// resources the thread may still be touching, so this is surfaced rather than swallowed.
+    /// </returns>
+    public bool Stop()
     {
-        if (_thread is null)
+        _stopRequested = true;
+
+        Thread? thread = _thread;
+        if (thread is null)
         {
-            return;
+            return true;
         }
 
         _cts?.Cancel();
         _packetEvent?.Set();
-        _thread.Join(TimeSpan.FromSeconds(5));
-        _thread = null;
+
+        bool stopped = thread.Join(TimeSpan.FromSeconds(5));
+        if (stopped)
+        {
+            _thread = null;
+        }
+        else
+        {
+            SetFault("capture thread did not stop within 5 s");
+        }
 
         try
         {
@@ -136,28 +173,81 @@ public sealed class WasapiPacketCapture : IDisposable
         {
             // The endpoint may already be gone. Stopping is best effort.
         }
+
+        return stopped;
     }
 
+    /// <summary>
+    /// The capture thread's outer boundary.
+    ///
+    /// <para>
+    /// Every exception is caught here. A COM error, a removed endpoint, an unsupported format, or
+    /// a disposed resource must degrade the session, not terminate the process — an unhandled
+    /// exception on a background thread would take the whole app down and lose the recording.
+    /// </para>
+    /// </summary>
     private void Run(CancellationToken token)
     {
-        AudioCaptureClient capture = _audioClient.AudioCaptureClient;
-
-        while (!token.IsCancellationRequested)
+        try
         {
-            if (_packetEvent is not null)
+            AudioCaptureClient capture = _audioClient.AudioCaptureClient;
+
+            while (!token.IsCancellationRequested)
             {
-                _packetEvent.WaitOne(PollInterval);
-            }
-            else
-            {
-                Thread.Sleep(PollInterval);
+                if (_packetEvent is not null)
+                {
+                    _packetEvent.WaitOne(PollInterval);
+                }
+                else
+                {
+                    Thread.Sleep(PollInterval);
+                }
+
+                Drain(capture, token);
             }
 
-            Drain(capture, token);
+            // One last drain so frames already in the engine buffer are not lost on stop.
+            Drain(capture, CancellationToken.None);
+        }
+        catch (OperationCanceledException)
+        {
+            // Ordinary shutdown.
+        }
+        catch (Exception ex)
+        {
+            SetFault(Describe(ex));
+        }
+    }
+
+    /// <summary>
+    /// Records a fault once and notifies. Silence is never a fault: an endpoint that simply has
+    /// nothing to play produces no packets and stays healthy.
+    /// </summary>
+    private void SetFault(string message)
+    {
+        if (Interlocked.CompareExchange(ref _fault, message, null) is not null)
+        {
+            return;
         }
 
-        // One last drain so frames already in the engine buffer are not lost on stop.
-        Drain(capture, CancellationToken.None);
+        try
+        {
+            Faulted?.Invoke(this, message);
+        }
+        catch (Exception)
+        {
+            // A handler must never be able to escalate a track fault into a process crash.
+        }
+    }
+
+    /// <summary>Builds a diagnostic string with no meeting content and no private paths.</summary>
+    private static string Describe(Exception ex)
+    {
+        string detail = ex is System.Runtime.InteropServices.COMException com
+            ? $"HRESULT 0x{com.HResult:X8}"
+            : $"HRESULT 0x{ex.HResult:X8}";
+
+        return $"{ex.GetType().Name} ({detail})";
     }
 
     private void Drain(AudioCaptureClient capture, CancellationToken token)
@@ -284,3 +374,4 @@ public sealed class WasapiPacketCapture : IDisposable
         _disposed = true;
     }
 }
+

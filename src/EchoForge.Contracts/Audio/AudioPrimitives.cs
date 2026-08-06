@@ -51,21 +51,29 @@ public sealed record CaptureFormat(int SampleRate, int Channels, int BitsPerSamp
 /// The clock anchors for one captured packet, taken straight from the audio engine.
 ///
 /// <para>
-/// <see cref="DevicePosition"/> and <see cref="QpcPosition"/> are the authority for the
-/// session timeline. The moment managed code observed the packet is deliberately absent
-/// from this type: arrival time is not a clock, and the plan names treating it as one as
-/// the most likely architectural failure.
+/// <see cref="QpcPosition"/> is the canonical session-time anchor and the only one the timeline
+/// is built from. <see cref="DevicePosition"/> is <b>diagnostic</b>: it counts frames in the
+/// endpoint's own clock domain, which is not the mix format's whenever the audio engine
+/// resamples, and it must not be treated as a mix-format frame counter unless that endpoint's
+/// rate has been explicitly calibrated. Phase 0 measured a 16 kHz microphone resampled to a
+/// 48 kHz mix whose device position advanced at one third of the delivered frame rate.
+/// </para>
+///
+/// <para>
+/// The moment managed code observed the packet is deliberately absent from this type: arrival
+/// time is not a clock, and the plan names treating it as one as the most likely architectural
+/// failure.
 /// </para>
 /// </summary>
-/// <param name="DevicePosition">Device stream position of the first frame, in frames.</param>
+/// <param name="DevicePosition">Device stream position of the first frame, in the device's own frame units.</param>
 /// <param name="QpcPosition">Performance-counter value for the packet, in 100-nanosecond units.</param>
-/// <param name="FrameCount">Number of frames in the packet.</param>
-/// <param name="Flags">Condition flags reported with the packet.</param>
+/// <param name="FrameCount">Number of mix-format frames in the packet.</param>
+/// <param name="Conditions">Condition flags reported with the packet.</param>
 public readonly record struct PacketHeader(
     long DevicePosition,
     long QpcPosition,
     int FrameCount,
-    AudioPacketConditions Flags)
+    AudioPacketConditions Conditions)
 {
     /// <summary>Device position immediately after this packet.</summary>
     public long EndDevicePosition => DevicePosition + FrameCount;

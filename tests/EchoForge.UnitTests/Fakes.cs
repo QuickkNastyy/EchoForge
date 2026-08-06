@@ -36,6 +36,10 @@ public sealed class FakeCaptureEngine : ICaptureEngine
 
     public IReadOnlyList<AudioChunkMetadata> CompletedChunks => _chunks;
 
+    public event EventHandler<ChunkFinalizedEventArgs>? ChunkFinalized;
+
+    public event EventHandler<TrackFaultedEventArgs>? TrackFaulted;
+
     public void Start()
     {
         if (ThrowOnStart)
@@ -79,15 +83,19 @@ public sealed class FakeCaptureEngine : ICaptureEngine
             frames,
             $"hash-{index:D6}",
             [],
-            1);
+            Request.EpochIndex);
 
         _chunks.Add(chunk);
+        ChunkFinalized?.Invoke(this, new ChunkFinalizedEventArgs(chunk));
         return chunk;
     }
 
-    /// <summary>Marks a track as no longer capturing, as a device loss would.</summary>
-    public void FailTrack(SourceTrack track, string fault) =>
+    /// <summary>Marks a track as no longer capturing, as a device loss or thread fault would.</summary>
+    public void FailTrack(SourceTrack track, string fault)
+    {
         _tracks[track] = _tracks[track] with { IsCapturing = false, Fault = fault };
+        TrackFaulted?.Invoke(this, new TrackFaultedEventArgs(track, fault));
+    }
 
     public void Dispose() => Disposed = true;
 

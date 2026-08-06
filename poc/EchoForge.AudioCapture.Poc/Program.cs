@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using EchoForge.Audio.Windows;
 using EchoForge.Contracts.Audio;
 using EchoForge.Contracts.Recording;
@@ -226,7 +226,7 @@ internal static class Program
                 Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
                     $"  dev {header.DevicePosition,12} (+{header.DevicePosition - firstDevice,9})  " +
                     $"qpc {header.QpcPosition,16} (+{(header.QpcPosition - firstQpc) / 10_000.0,9:0.0} ms)  " +
-                    $"frames {header.FrameCount,5}  bytes {payload.Length,6}  {header.Flags}"));
+                    $"frames {header.FrameCount,5}  bytes {payload.Length,6}  {header.Conditions}"));
             }
         }
 
@@ -373,7 +373,7 @@ internal static class Program
 
         Console.WriteLine();
         Console.WriteLine(ok
-            ? "  result  chunk integrity PASS · timing NOT QUALIFIED"
+            ? "  result  chunk integrity PASS Â· timing NOT QUALIFIED"
             : "  result  FAIL");
         return ok ? 0 : 3;
     }
@@ -506,3 +506,4 @@ internal static class Program
         return index >= 0 && index + 1 < args.Length ? args[index + 1] : null;
     }
 }
+

@@ -1,5 +1,5 @@
-using System.Globalization;
 using System.Security.Cryptography;
+using System.Text.Json;
 using EchoForge.Contracts.Audio;
 
 namespace EchoForge.Audio.Windows;
@@ -9,10 +9,9 @@ namespace EchoForge.Audio.Windows;
 ///
 /// <para>
 /// The timeline is built from each packet's <see cref="PacketHeader.QpcPosition"/>, never from
-/// when managed code observed the packet. When the QPC position runs ahead of the frames
-/// written so far, the missing frames are written as explicit silence and recorded as a
-/// discontinuity, so a chunk's frame count always equals its wall-clock duration. That
-/// property is what lets the two tracks be aligned later without guessing.
+/// when managed code observed the packet. When the QPC position runs ahead of the frames written
+/// so far, the missing frames are written as explicit silence and recorded as a discontinuity, so
+/// a chunk's frame count always equals its wall-clock duration.
 /// </para>
 ///
 /// <para>
@@ -20,24 +19,31 @@ namespace EchoForge.Audio.Windows;
 /// advanced 160 frames for every 480 frames delivered: the endpoint captures at 16 kHz and the
 /// audio engine resamples up to the 48 kHz mix format. <see cref="PacketHeader.DevicePosition"/>
 /// counts frames in the <em>device's</em> rate, not the mix format's, so it cannot be used as a
-/// frame counter whenever the engine resamples. It is retained as a diagnostic and as a
-/// corroborating discontinuity signal only.
+/// frame counter whenever the engine resamples. It is retained as a diagnostic only.
+/// </para>
+///
+/// <para>
+/// <b>Durability.</b> A finalized chunk is discoverable without the journal: the writer emits a
+/// <c>.meta.json</c> record beside the audio immediately after the atomic rename, then notifies
+/// its owner. That closes the window where a crash would leave a complete WAV that nothing knew
+/// about. All of this happens on the writer thread; the capture thread never touches the disk.
 /// </para>
 /// </summary>
 public sealed class PcmChunkWriter : IDisposable
 {
     private readonly string _activeDirectory;
     private readonly string _chunksDirectory;
+    private readonly string _sessionRoot;
     private readonly CaptureFormat _format;
     private readonly SourceTrack _track;
     private readonly long _chunkFrames;
     private readonly long _flushIntervalFrames;
-    private readonly List<AudioChunkMetadata> _completed = [];
-    private readonly List<CaptureDiscontinuity> _pending = [];
-
     private readonly long _gapThresholdFrames;
     private readonly long _epochQpc;
     private readonly int _epochIndex;
+    private readonly Action<AudioChunkMetadata>? _chunkFinalized;
+    private readonly List<AudioChunkMetadata> _completed = [];
+    private readonly List<CaptureDiscontinuity> _pending = [];
 
     private WavPcm16Writer? _writer;
     private int _chunkIndex;
@@ -49,13 +55,16 @@ public sealed class PcmChunkWriter : IDisposable
     private bool _disposed;
 
     /// <param name="epochQpc">
-    /// The shared session epoch. Both tracks must be given the same value: it is what makes
-    /// t=0 mean the same instant on each, and therefore what makes them alignable at all.
+    /// The shared epoch origin. Both tracks must be given the same value: it is what makes t=0
+    /// mean the same instant on each, and therefore what makes them alignable at all.
     /// </param>
     /// <param name="firstChunkIndex">
     /// The index this epoch's first chunk takes. Resuming after a pause continues the session's
-    /// numbering rather than restarting it, so chunk indices stay unique and contiguous across
-    /// epochs and no finalized file is ever overwritten.
+    /// numbering, so chunk indices stay unique across epochs and no finalized file is overwritten.
+    /// </param>
+    /// <param name="chunkFinalized">
+    /// Raised on the writer thread once a chunk is complete, hashed, and its metadata record is
+    /// durable. The handler must not block for long.
     /// </param>
     public PcmChunkWriter(
         string trackDirectory,
@@ -65,29 +74,36 @@ public sealed class PcmChunkWriter : IDisposable
         TimeSpan? chunkDuration = null,
         TimeSpan? flushInterval = null,
         int firstChunkIndex = 1,
-        int epochIndex = 1)
+        int epochIndex = 1,
+        string? sessionRoot = null,
+        Action<AudioChunkMetadata>? chunkFinalized = null)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(firstChunkIndex, 1);
-        _chunkIndex = firstChunkIndex - 1;
-        _epochIndex = epochIndex;
         ArgumentException.ThrowIfNullOrWhiteSpace(trackDirectory);
         ArgumentNullException.ThrowIfNull(format);
+        ArgumentOutOfRangeException.ThrowIfLessThan(firstChunkIndex, 1);
 
         _format = format;
         _track = track;
         _epochQpc = epochQpc;
+        _epochIndex = epochIndex;
+        _chunkIndex = firstChunkIndex - 1;
+        _chunkFinalized = chunkFinalized;
+
         _activeDirectory = Path.Combine(trackDirectory, "active");
         _chunksDirectory = Path.Combine(trackDirectory, "chunks");
         Directory.CreateDirectory(_activeDirectory);
         Directory.CreateDirectory(_chunksDirectory);
 
+        // Relative paths are recorded against the session root so a moved session still resolves.
+        _sessionRoot = sessionRoot ?? Path.GetDirectoryName(Path.GetDirectoryName(trackDirectory)!)!;
+
         _chunkFrames = format.FramesForDuration(chunkDuration ?? TimeSpan.FromSeconds(60));
         _flushIntervalFrames = format.FramesForDuration(flushInterval ?? TimeSpan.FromSeconds(2));
 
         // QPC timestamps carry sub-millisecond jitter and packets are not perfectly evenly
-        // spaced, so only a gap larger than this counts as missing audio. Below it, the frame
-        // count is left to catch up on its own rather than churning tiny silences and drops.
+        // spaced, so only a gap larger than this counts as missing audio.
         _gapThresholdFrames = format.FramesForDuration(TimeSpan.FromMilliseconds(30));
+
         if (_chunkFrames <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(chunkDuration), "Chunk duration must cover at least one frame.");
@@ -103,23 +119,18 @@ public sealed class PcmChunkWriter : IDisposable
     /// <summary>The index the next chunk will take.</summary>
     public int NextChunkIndex => _chunkIndex + 1;
 
-    /// <summary>Frames of silence inserted to cover gaps the device position reported.</summary>
+    /// <summary>Frames of silence inserted to cover gaps the session clock reported.</summary>
     public long SilenceFramesInserted { get; private set; }
 
     /// <summary>Discontinuities recorded on the chunk currently being written.</summary>
     public IReadOnlyList<CaptureDiscontinuity> PendingDiscontinuities => _pending;
 
     /// <summary>
-    /// True once <see cref="Complete"/> has run. A sealed writer ignores further audio,
-    /// silence, and overflow reports, so nothing can be appended to a session after it has
-    /// been finalized, validated, and written to the manifest.
+    /// True once <see cref="Complete"/> has run. A sealed writer ignores further audio, silence,
+    /// and overflow reports, so nothing can be appended to a finalized session.
     /// </summary>
     public bool IsSealed => _sealed;
 
-    /// <summary>
-    /// Places one captured packet on the timeline, inserting silence for any frames the
-    /// device position says were skipped.
-    /// </summary>
     public void Write(in PacketHeader header, ReadOnlySpan<byte> pcm16)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -138,8 +149,6 @@ public sealed class PcmChunkWriter : IDisposable
         }
         else if (-gap > _gapThresholdFrames)
         {
-            // The packet claims a moment already covered by frames on the timeline. Drop the
-            // overlap rather than rewriting audio that is already written.
             skipFrames = (int)Math.Min(-gap, frames);
             RecordDiscontinuity(new CaptureDiscontinuity(
                 DiscontinuityKind.TimestampError,
@@ -148,11 +157,11 @@ public sealed class PcmChunkWriter : IDisposable
                 $"packet timestamp is {-gap} frames behind the timeline; {skipFrames} overlapping frames dropped"));
         }
 
-        if ((header.Flags & AudioPacketConditions.DataDiscontinuity) != 0)
+        if ((header.Conditions & AudioPacketConditions.DataDiscontinuity) != 0)
         {
             RecordDiscontinuity(new CaptureDiscontinuity(
                 DiscontinuityKind.EngineDiscontinuity,
-                header.DevicePosition,
+                _sessionFrames,
                 0,
                 "engine reported dropped data before this packet"));
         }
@@ -160,16 +169,14 @@ public sealed class PcmChunkWriter : IDisposable
         int remaining = frames - skipFrames;
         if (remaining > 0)
         {
-            bool silent = (header.Flags & AudioPacketConditions.Silent) != 0 || pcm16.IsEmpty;
+            bool silent = (header.Conditions & AudioPacketConditions.Silent) != 0 || pcm16.IsEmpty;
             if (silent)
             {
                 Append(default, remaining, silence: true);
             }
             else
             {
-                int offset = skipFrames * _format.BytesPerFrame;
-                int length = remaining * _format.BytesPerFrame;
-                Append(pcm16.Slice(offset, length), remaining, silence: false);
+                Append(pcm16.Slice(skipFrames * _format.BytesPerFrame, remaining * _format.BytesPerFrame), remaining, silence: false);
             }
         }
 
@@ -181,18 +188,14 @@ public sealed class PcmChunkWriter : IDisposable
     /// explicit silence.
     ///
     /// <para>
-    /// This is what keeps a stalled endpoint honest. When a device stops delivering — a silent
-    /// loopback endpoint, or a headset microphone that powers down — no packet ever arrives to
-    /// reveal that time passed, and a writer driven only by packets would simply end the track
-    /// early. Phase 0 measured exactly that: a headset microphone that stopped after ten
-    /// seconds of a thirty-second run. The writer thread calls this while idle, and the
-    /// recorder calls it once more at stop.
+    /// This is what keeps a stalled endpoint honest. When a device stops delivering, no packet
+    /// arrives to reveal that time passed, and a writer driven only by packets would end the
+    /// track early. Phase 0 measured exactly that.
     /// </para>
     /// </summary>
     /// <param name="exact">
-    /// When true the jitter threshold is bypassed and the timeline is filled to the exact
-    /// moment. Used for the final pad at stop, where leaving up to a threshold's worth of
-    /// slack would show up directly as a track-length difference between the two tracks.
+    /// Bypasses the jitter threshold. Used for the final pad at stop, where leaving slack would
+    /// show up directly as a track-length difference between the two tracks.
     /// </param>
     public void AdvanceTo(long qpcPosition, bool exact = false)
     {
@@ -209,10 +212,7 @@ public sealed class PcmChunkWriter : IDisposable
         }
     }
 
-    /// <summary>
-    /// Records that the bounded queue dropped audio. The gap is not silently backfilled;
-    /// it is written as silence and reported.
-    /// </summary>
+    /// <summary>Records that the bounded queue dropped audio. The gap is reported, never backfilled.</summary>
     public void RecordOverflow(long frameCount, string detail)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -222,13 +222,10 @@ public sealed class PcmChunkWriter : IDisposable
         }
 
         RecordDiscontinuity(new CaptureDiscontinuity(
-            DiscontinuityKind.QueueOverflow, _lastDevicePosition, frameCount, detail));
+            DiscontinuityKind.QueueOverflow, _sessionFrames, frameCount, detail));
     }
 
-    /// <summary>
-    /// Finalizes the active chunk, if any, and seals the writer. Idempotent: calling it again,
-    /// or writing to it afterwards, changes nothing on disk.
-    /// </summary>
+    /// <summary>Finalizes the active chunk, if any, and seals the writer. Idempotent.</summary>
     public void Complete()
     {
         if (_disposed || _sealed)
@@ -255,7 +252,7 @@ public sealed class PcmChunkWriter : IDisposable
         _disposed = true;
     }
 
-    /// <summary>Where a moment sits on the session timeline, in mix-format frames.</summary>
+    /// <summary>Where a moment sits on this epoch's timeline, in mix-format frames.</summary>
     private long TimelineFramesAt(long qpcPosition) => (long)Math.Round(
         CaptureClock.UnitsToSeconds(qpcPosition - _epochQpc) * _format.SampleRate,
         MidpointRounding.AwayFromZero);
@@ -313,13 +310,14 @@ public sealed class PcmChunkWriter : IDisposable
         _chunkIndex++;
         _chunkStartSessionFrame = _sessionFrames;
         _writer = new WavPcm16Writer(ActivePath(_chunkIndex), _format);
+        WriteActiveRecord(0);
         return _writer;
     }
 
     private void FlushActive(WavPcm16Writer writer)
     {
         writer.FlushToDisk();
-        WriteSidecar(writer.FramesWritten);
+        WriteActiveRecord(writer.FramesWritten);
         _framesSinceFlush = 0;
     }
 
@@ -332,54 +330,113 @@ public sealed class PcmChunkWriter : IDisposable
 
         long frames = _writer.FramesWritten;
         string activePath = _writer.Path;
+        int index = _chunkIndex;
+        double startSeconds = (double)_chunkStartSessionFrame / _format.SampleRate;
+        List<CaptureDiscontinuity> discontinuities = [.. _pending];
+
         _writer.Close();
         _writer = null;
 
-        string finalPath = Path.Combine(_chunksDirectory, ChunkFileName(_chunkIndex));
+        string finalPath = Path.Combine(_chunksDirectory, ChunkFileName(index));
         File.Move(activePath, finalPath, overwrite: false);
 
-        string sidecar = SidecarPath(_chunkIndex);
-        if (File.Exists(sidecar))
-        {
-            File.Delete(sidecar);
-        }
+        string sha = ComputeSha256(finalPath);
+        string relative = Relative(finalPath);
 
-        double startSeconds = (double)_chunkStartSessionFrame / _format.SampleRate;
-
-        _completed.Add(new AudioChunkMetadata(
-            _chunkIndex,
-            Path.GetRelativePath(Path.GetDirectoryName(_chunksDirectory)!, finalPath).Replace('\\', '/'),
+        AudioChunkMetadata metadata = new(
+            index,
+            relative,
             _track,
             startSeconds,
             startSeconds + ((double)frames / _format.SampleRate),
             _format.SampleRate,
             _format.Channels,
             frames,
-            ComputeSha256(finalPath),
-            [.. _pending],
-            _epochIndex));
+            sha,
+            discontinuities,
+            _epochIndex);
 
+        // Durable before anything else learns the chunk exists. A crash after this point is
+        // recoverable from the record alone, with no journal line and no snapshot.
+        WriteRecord(FinalizedRecordPath(index), BuildRecord(index, frames, startSeconds, relative, sha, true, discontinuities));
+
+        // The active sidecar has been superseded by the finalized record.
+        DeleteIfPresent(ActiveRecordPath(index));
+
+        _completed.Add(metadata);
         _pending.Clear();
         _framesSinceFlush = 0;
+
+        _chunkFinalized?.Invoke(metadata);
     }
 
     private void RecordDiscontinuity(CaptureDiscontinuity discontinuity) => _pending.Add(discontinuity);
 
-    private void WriteSidecar(long framesWritten)
+    /// <summary>
+    /// Writes the active chunk's record. Carries everything recovery needs to place a repaired
+    /// chunk on the timeline: track, index, epoch, format, frames, start offset, and the epoch's
+    /// QPC origin. Recovery must never have to invent a start time.
+    /// </summary>
+    private void WriteActiveRecord(long framesWritten)
     {
-        string json = string.Create(CultureInfo.InvariantCulture,
-            $$"""
-            {"chunk_index":{{_chunkIndex}},"frames_written":{{framesWritten}},"last_device_position":{{_lastDevicePosition}},"sample_rate":{{_format.SampleRate}},"channels":{{_format.Channels}}}
-            """);
-
-        File.WriteAllText(SidecarPath(_chunkIndex), json);
+        double startSeconds = (double)_chunkStartSessionFrame / _format.SampleRate;
+        WriteRecord(
+            ActiveRecordPath(_chunkIndex),
+            BuildRecord(_chunkIndex, framesWritten, startSeconds, Relative(ActivePath(_chunkIndex)), null, false, _pending));
     }
 
-    private string ActivePath(int index) =>
-        Path.Combine(_activeDirectory, $"{index:D6}.part.wav");
+    private ChunkRecord BuildRecord(
+        int index,
+        long frames,
+        double startSeconds,
+        string relativePath,
+        string? sha,
+        bool finalized,
+        IReadOnlyList<CaptureDiscontinuity> discontinuities) => new()
+        {
+            Track = _track.ToString(),
+            Index = index,
+            Epoch = _epochIndex,
+            SampleRate = _format.SampleRate,
+            Channels = _format.Channels,
+            BitsPerSample = _format.BitsPerSample,
+            Frames = frames,
+            StartSeconds = startSeconds,
+            EpochQpc = _epochQpc,
+            RelativePath = relativePath,
+            Sha256 = sha,
+            Finalized = finalized,
+            Discontinuities = [.. discontinuities.Select(DiscontinuityRecord.From)],
+        };
 
-    private string SidecarPath(int index) =>
-        Path.Combine(_activeDirectory, $"{index:D6}.part.state.json");
+    private static void WriteRecord(string path, ChunkRecord record)
+    {
+        string temporary = path + ".tmp";
+        using (FileStream stream = new(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            JsonSerializer.Serialize(stream, record, ChunkRecord.Json);
+            stream.Flush(flushToDisk: true);
+        }
+
+        File.Move(temporary, path, overwrite: true);
+    }
+
+    private static void DeleteIfPresent(string path)
+    {
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+    }
+
+    private string Relative(string path) =>
+        Path.GetRelativePath(_sessionRoot, path).Replace('\\', '/');
+
+    private string ActivePath(int index) => Path.Combine(_activeDirectory, $"{index:D6}.part.wav");
+
+    private string ActiveRecordPath(int index) => Path.Combine(_activeDirectory, $"{index:D6}.part.state.json");
+
+    private string FinalizedRecordPath(int index) => Path.Combine(_chunksDirectory, $"{index:D6}.meta.json");
 
     private static string ChunkFileName(int index) => $"{index:D6}.wav";
 

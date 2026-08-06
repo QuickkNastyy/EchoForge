@@ -1,4 +1,4 @@
-using EchoForge.Contracts.Audio;
+﻿using EchoForge.Contracts.Audio;
 
 namespace EchoForge.Audio.Windows;
 
@@ -54,7 +54,7 @@ public sealed class DriftEstimator
     /// </summary>
     public void Add(in PacketHeader header)
     {
-        if ((header.Flags & AudioPacketConditions.TimestampError) != 0)
+        if ((header.Conditions & AudioPacketConditions.TimestampError) != 0)
         {
             return;
         }
@@ -100,3 +100,4 @@ public sealed class DriftEstimator
         return slope * 3600.0 * 1000.0;
     }
 }
+

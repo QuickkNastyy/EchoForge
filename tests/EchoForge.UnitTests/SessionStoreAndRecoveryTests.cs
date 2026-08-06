@@ -141,12 +141,32 @@ public sealed class SessionRecoveryTests : IDisposable
 
         if (withSidecar)
         {
-            File.WriteAllText(
+            WriteChunkRecord(
                 Path.Combine(active, "000002.part.state.json"),
-                "{\"chunk_index\":2,\"frames_written\":1000,\"last_device_position\":0,\"sample_rate\":48000,\"channels\":2}");
+                track: "Microphone", index: 2, epoch: 1, frames: 1_000, startSeconds: 60.0);
         }
 
         return paths;
+    }
+
+    /// <summary>
+    /// Writes the durable per-chunk record the writer emits. Recovery needs every field here to
+    /// place a repaired chunk without inventing a start time or an epoch.
+    /// </summary>
+    private static void WriteChunkRecord(
+        string path, string track, int index, int epoch, long frames, double startSeconds, bool finalized = false)
+    {
+        string relative = finalized
+            ? $"tracks/{track.ToLowerInvariant()}/chunks/{index:D6}.wav"
+            : $"tracks/{track.ToLowerInvariant()}/active/{index:D6}.part.wav";
+
+        File.WriteAllText(path, $$"""
+            {"schema_version":1,"track":"{{track}}","index":{{index}},"epoch":{{epoch}},
+             "sample_rate":48000,"channels":2,"bits_per_sample":16,"frames":{{frames}},
+             "start_seconds":{{startSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
+             "epoch_qpc":1000,"relative_path":"{{relative}}","finalized":{{(finalized ? "true" : "false")}},
+             "discontinuities":[]}
+            """.ReplaceLineEndings(string.Empty));
     }
 
     [Fact]
@@ -176,10 +196,13 @@ public sealed class SessionRecoveryTests : IDisposable
         Assert.Equal(0, outcome.ChunksRecovered);
         Assert.Equal(1, outcome.ChunksQuarantined);
         Assert.Equal(SessionState.NeedsAttention, outcome.State);
-        Assert.Single(Directory.GetFiles(paths.QuarantineRoot));
-
-        // The finalized chunk from the journal is untouched.
         Assert.Contains(outcome.Notes, n => n.Contains("quarantined", StringComparison.Ordinal));
+
+        // Audio, its metadata record, and the reason are all preserved under their own names.
+        string[] quarantined = Directory.GetFiles(paths.QuarantineRoot);
+        Assert.Contains(quarantined, f => f.EndsWith("000002.part.wav", StringComparison.Ordinal));
+        Assert.Contains(quarantined, f => f.EndsWith("000002.part.state.json", StringComparison.Ordinal));
+        Assert.Contains(quarantined, f => f.EndsWith(".reason.txt", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -191,7 +214,11 @@ public sealed class SessionRecoveryTests : IDisposable
 
         Assert.Equal(1, outcome.ChunksQuarantined);
         Assert.Empty(_repairer.Repaired);
-        Assert.Contains(outcome.Notes, n => n.Contains("sidecar", StringComparison.Ordinal));
+        Assert.Contains(outcome.Notes, n => n.Contains("metadata record", StringComparison.Ordinal));
+
+        // The sidecar is diagnostic evidence and the reason is preserved beside the audio.
+        SessionPaths paths = _store.Resolve("rec-3");
+        Assert.Contains(Directory.GetFiles(paths.QuarantineRoot), f => f.EndsWith(".reason.txt", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -232,9 +259,10 @@ public sealed class SessionRecoveryTests : IDisposable
     {
         SessionPaths paths = BuildInterruptedSession("rec-6");
 
-        // A second track whose active chunk has no sidecar.
+        // A second track whose active chunk has no metadata record.
         string systemActive = Path.Combine(paths.TrackRoot(SourceTrack.System), "active");
         Directory.CreateDirectory(systemActive);
+        Directory.CreateDirectory(Path.Combine(paths.TrackRoot(SourceTrack.System), "chunks"));
         File.WriteAllBytes(Path.Combine(systemActive, "000003.part.wav"), new byte[512]);
 
         RecoveryOutcome outcome = NewService().Recover("rec-6");

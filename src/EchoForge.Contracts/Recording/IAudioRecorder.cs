@@ -32,12 +32,16 @@ public sealed record RecorderStatus(
 }
 
 /// <summary>What to capture, with the endpoints pinned by stable ID for the whole epoch.</summary>
+/// <param name="SessionRoot">Session folder, so chunk records can store paths relative to it.</param>
+/// <param name="EpochIndex">Which epoch this engine is capturing.</param>
 public sealed record CaptureRequest(
     string RenderEndpointId,
     string CaptureEndpointId,
     string TracksRoot,
     long EpochQpc,
-    int FirstChunkIndex);
+    int FirstChunkIndex,
+    string SessionRoot = "",
+    int EpochIndex = 1);
 
 /// <summary>
 /// The capture engine, abstracted so the recording state machine can be driven by a fake.
@@ -50,6 +54,19 @@ public sealed record CaptureRequest(
 /// </summary>
 public interface ICaptureEngine : IDisposable
 {
+    /// <summary>
+    /// Raised on a writer thread the moment a chunk is complete, hashed, and its metadata record
+    /// is durable — not when the epoch closes. Handlers must not block; the recording state
+    /// machine hands the work to its own persistence queue.
+    /// </summary>
+    event EventHandler<ChunkFinalizedEventArgs>? ChunkFinalized;
+
+    /// <summary>
+    /// Raised when a capture or writer thread faults. Delivered off the faulting thread's hot
+    /// path so a device failure degrades the session instead of terminating the process.
+    /// </summary>
+    event EventHandler<TrackFaultedEventArgs>? TrackFaulted;
+
     /// <summary>Opens both endpoints and begins capturing.</summary>
     void Start();
 
@@ -61,6 +78,27 @@ public interface ICaptureEngine : IDisposable
 
     /// <summary>Chunks finalized by this epoch, in order.</summary>
     IReadOnlyList<AudioChunkMetadata> CompletedChunks { get; }
+}
+
+/// <summary>A chunk that is now complete and durable on disk.</summary>
+public sealed class ChunkFinalizedEventArgs(AudioChunkMetadata chunk) : EventArgs
+{
+    public AudioChunkMetadata Chunk { get; } = chunk;
+}
+
+/// <summary>
+/// A track's capture or writer thread has failed.
+/// </summary>
+/// <param name="track">Which track stopped.</param>
+/// <param name="fault">
+/// A safe diagnostic message: exception type and HRESULT where available. Never meeting content
+/// and never a full private path.
+/// </param>
+public sealed class TrackFaultedEventArgs(SourceTrack track, string fault) : EventArgs
+{
+    public SourceTrack Track { get; } = track;
+
+    public string Fault { get; } = fault;
 }
 
 /// <summary>Creates capture engines. Injected so the state machine can be tested without hardware.</summary>
