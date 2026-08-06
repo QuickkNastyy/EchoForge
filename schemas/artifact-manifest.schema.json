@@ -22,6 +22,7 @@
         "artifact_id",
         "kind",
         "repository",
+        "url",
         "revision",
         "filename",
         "size_bytes",
@@ -43,16 +44,21 @@
           "enum": ["speech-model", "summary-model", "diarization-model", "runtime"]
         },
         "repository": {
-          "description": "Exact source repository or release URL.",
+          "description": "The project this artifact comes from: a source repository or a package index project page. Identity, not a fetch location.",
           "type": "string",
           "minLength": 3
         },
+        "url": {
+          "description": "The exact immutable HTTPS URL this one file is fetched from, pinned to the revision above. The downloader reads this and nothing else: an URL that lives anywhere other than this manifest is outside the gate.",
+          "type": "string",
+          "pattern": "^https://[^\\s]+$"
+        },
         "revision": {
-          "description": "Full immutable commit SHA or release tag. Never main, master, latest, or an alias.",
+          "description": "Full immutable commit SHA or release tag. Never main, master, latest, or an alias. Spelled out as character classes because JSON Schema patterns are ECMA-262 and have no inline (?i) flag: written with one, this guard silently fails to compile instead of rejecting anything.",
           "type": "string",
           "minLength": 7,
           "not": {
-            "pattern": "^(?i)(main|master|latest|head|dev|develop|trunk|stable|newest)$"
+            "pattern": "^([Mm][Aa][Ii][Nn]|[Mm][Aa][Ss][Tt][Ee][Rr]|[Ll][Aa][Tt][Ee][Ss][Tt]|[Hh][Ee][Aa][Dd]|[Dd][Ee][Vv]|[Dd][Ee][Vv][Ee][Ll][Oo][Pp]|[Tt][Rr][Uu][Nn][Kk]|[Ss][Tt][Aa][Bb][Ll][Ee]|[Nn][Ee][Ww][Ee][Ss][Tt])$"
           }
         },
         "filename": {

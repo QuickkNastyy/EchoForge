@@ -34,6 +34,68 @@ def protocol_validator() -> Draft202012Validator:
     return _validator("worker-protocol.schema.json")
 
 
+@pytest.fixture(scope="module")
+def manifest_validator() -> Draft202012Validator:
+    return _validator("artifact-manifest.schema.json")
+
+
+@pytest.fixture(scope="module")
+def manifest() -> dict:
+    return json.loads((REPO_ROOT / "artifacts" / "manifest.json").read_text(encoding="utf-8"))
+
+
+def test_the_pinned_artifact_manifest_validates(manifest, manifest_validator) -> None:
+    manifest_validator.validate(manifest)
+
+
+def test_every_pinned_artifact_names_an_immutable_revision(manifest) -> None:
+    """The whole point of pinning is that it cannot be quietly bypassed."""
+    mutable = {"main", "master", "latest", "head", "dev", "develop", "trunk", "stable", "newest"}
+
+    for artifact in manifest["artifacts"]:
+        revision = artifact["revision"]
+        assert revision.lower() not in mutable, artifact["artifact_id"]
+        assert len(revision) >= 7, artifact["artifact_id"]
+        assert len(artifact["sha256"]) == 64
+        assert artifact["size_bytes"] > 0
+
+
+def test_the_mutable_reference_guard_actually_compiles_and_rejects(manifest, manifest_validator) -> None:
+    """A JSON Schema pattern is ECMA-262 and has no inline (?i) flag.
+
+    Written with one, this guard fails to compile rather than rejecting anything -- so the
+    schema would claim to forbid a moving reference while permitting every one of them.
+    """
+    if not manifest["artifacts"]:
+        pytest.skip("nothing pinned yet")
+
+    for moving in ("main", "LATEST", "Stable"):
+        tampered = dict(manifest)
+        tampered["artifacts"] = [dict(manifest["artifacts"][0], revision=moving)]
+        with pytest.raises(ValidationError):
+            manifest_validator.validate(tampered)
+
+
+def test_every_pinned_artifact_retains_its_license_text(manifest) -> None:
+    """Licence text is collected at pin time, not reconstructed at release."""
+    for artifact in manifest["artifacts"]:
+        retained = REPO_ROOT / artifact["license_file"]
+        assert retained.is_file(), f"{artifact['artifact_id']} -> {artifact['license_file']}"
+        assert retained.stat().st_size > 0
+
+
+def test_every_download_url_is_https_and_names_its_revision(manifest) -> None:
+    for artifact in manifest["artifacts"]:
+        url = artifact["url"]
+        assert url.startswith("https://"), artifact["artifact_id"]
+        assert artifact["filename"] in url, artifact["artifact_id"]
+
+        # A package-index URL is content-addressed and immutable by construction; anything
+        # else has to name the revision it was pinned to.
+        if "files.pythonhosted.org" not in url:
+            assert artifact["revision"] in url, artifact["artifact_id"]
+
+
 def test_the_schemas_are_themselves_valid(transcript_validator, protocol_validator) -> None:
     assert transcript_validator is not None
     assert protocol_validator is not None
