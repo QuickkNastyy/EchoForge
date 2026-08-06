@@ -3,8 +3,16 @@
 [Oo]bj/
 [Dd]ebug/
 [Rr]elease/
-artifacts/
 publish/
+
+# A build output directory called "artifacts" anywhere below the root is ignored, but the
+# pinned artifact manifest at the root is the gate's own authority and must be committed.
+# Without the re-inclusion below it was silently untracked, so a fresh clone had no manifest
+# at all and nothing to verify downloads against.
+**/artifacts/
+!/artifacts/
+/artifacts/*
+!/artifacts/manifest.json
 *.user
 *.suo
 *.userprefs
