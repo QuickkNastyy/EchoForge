@@ -71,6 +71,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         StopCommand = new AsyncRelayCommand(StopAsync, _gate, () => IsRecording || IsPaused, m => Notice = m);
         RefreshDevicesCommand = new AsyncRelayCommand(
             () => Task.Run(RefreshDevices), _gate, () => DevicesEditable, m => Notice = m);
+        ContinueRecoveredCommand = new AsyncRelayCommand(
+            ContinueRecoveredAsync, _gate, () => IsReady && HasPendingContinuation && !IsRecording, m => Notice = m);
+        FinishRecoveredCommand = new AsyncRelayCommand(
+            FinishRecoveredAsync, _gate, () => IsReady && HasPendingContinuation && !IsRecording, m => Notice = m);
 
         _gate.Changed += (_, _) => Dispatch(RaiseCommands);
 
@@ -106,6 +110,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public AsyncRelayCommand StopCommand { get; }
 
     public AsyncRelayCommand RefreshDevicesCommand { get; }
+
+    public AsyncRelayCommand ContinueRecoveredCommand { get; }
+
+    public AsyncRelayCommand FinishRecoveredCommand { get; }
 
     public AudioEndpointInfo? SelectedRender
     {
@@ -153,6 +161,100 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public bool CanStart =>
         IsReady && !IsRecording && !IsPaused && SelectedRender is not null && SelectedCapture is not null;
+
+    /// <summary>
+    /// An unfinished recording found at startup, waiting for the user to continue or finish it.
+    /// EchoForge never resumes one on its own.
+    /// </summary>
+    public RecoveryCandidate? PendingContinuation { get; private set; }
+
+    public bool HasPendingContinuation => PendingContinuation is not null;
+
+    public string ContinuationMessage => PendingContinuation is null
+        ? string.Empty
+        : $"A recording from {PendingContinuation.CreatedUtc.ToLocalTime():d MMM, HH:mm} was " +
+          $"{PendingContinuation.Describe()}. It holds {PendingContinuation.ChunkCount} saved segments.";
+
+    /// <summary>Offers a recovered recording. Shown, never acted on automatically.</summary>
+    public void OfferContinuation(RecoveryCandidate? candidate) => Dispatch(() =>
+    {
+        PendingContinuation = candidate;
+        OnChanged(nameof(PendingContinuation));
+        OnChanged(nameof(HasPendingContinuation));
+        OnChanged(nameof(ContinuationMessage));
+        RaiseCommands();
+    });
+
+    /// <summary>
+    /// Adopts the recovered session and opens a new epoch, after checking both pinned endpoints
+    /// are actually present. A missing device leaves it paused and says which one.
+    /// </summary>
+    private async Task ContinueRecoveredAsync()
+    {
+        if (PendingContinuation is not { } candidate)
+        {
+            return;
+        }
+
+        List<string> missing = [];
+        if (_catalog.FindById(candidate.RenderEndpointId) is null)
+        {
+            missing.Add($"the playback device ({candidate.RenderDeviceName})");
+        }
+
+        if (_catalog.FindById(candidate.CaptureEndpointId) is null)
+        {
+            missing.Add($"the microphone ({candidate.CaptureDeviceName})");
+        }
+
+        if (missing.Count > 0)
+        {
+            Notice = $"This recording cannot continue yet: {string.Join(" and ", missing)} " +
+                     "is not available. Reconnect it and try again, or finish the recording instead.";
+            return;
+        }
+
+        try
+        {
+            await Task.Run(() =>
+            {
+                _controller.AdoptRecoveredSession(candidate);
+                _controller.Resume();
+            }).ConfigureAwait(true);
+
+            OfferContinuation(null);
+            Notice = null;
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notice = ex.Message;
+        }
+    }
+
+    /// <summary>Adopts the recovered session and immediately finishes it, keeping its audio.</summary>
+    private async Task FinishRecoveredAsync()
+    {
+        if (PendingContinuation is not { } candidate)
+        {
+            return;
+        }
+
+        try
+        {
+            await Task.Run(() =>
+            {
+                _controller.AdoptRecoveredSession(candidate);
+                _controller.Stop();
+            }).ConfigureAwait(true);
+
+            OfferContinuation(null);
+            Notice = "The earlier recording has been saved.";
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notice = ex.Message;
+        }
+    }
 
     /// <summary>Opens the readiness gate once recovery has finished, successfully or not.</summary>
     public void MarkReady(string? summary = null, string? warning = null) => Dispatch(() =>
@@ -498,6 +600,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         ResumeCommand.RaiseCanExecuteChanged();
         StopCommand.RaiseCanExecuteChanged();
         RefreshDevicesCommand.RaiseCanExecuteChanged();
+        ContinueRecoveredCommand.RaiseCanExecuteChanged();
+        FinishRecoveredCommand.RaiseCanExecuteChanged();
     }
 
     private void OnChanged([CallerMemberName] string? name = null) =>

@@ -105,6 +105,9 @@ public sealed class RecordingController : IDisposable
     private DateTimeOffset _createdUtc;
     private DateTimeOffset? _startedUtc;
     private DateTimeOffset? _endedUtc;
+    private DateTimeOffset? _intendedEndUtc;
+    private SessionState? _intendedOutcome;
+    private bool _terminalEventWritten;
     private TimeSpan _completedEpochDuration;
     private long _completedBytes;
     private DateTimeOffset? _currentEpochStartedUtc;
@@ -370,6 +373,95 @@ public sealed class RecordingController : IDisposable
         }
     }
 
+    /// <summary>
+    /// Takes over a recording that was never finished, without starting capture.
+    ///
+    /// <para>
+    /// The session is adopted whole: its ID, epochs, tracks, endpoint pins, and chunk numbering
+    /// all carry over, and the controller lands in <see cref="SessionState.Paused"/>. Nothing is
+    /// captured until the user explicitly resumes, and when they do the new epoch continues the
+    /// numbering so no finalized WAV is ever appended to. Finalizing instead is equally valid.
+    /// </para>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The session is already claimed by another owner, or this controller is mid-session.
+    /// </exception>
+    public void AdoptRecoveredSession(RecoveryCandidate candidate)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        lock (_gate)
+        {
+            if (State is not (SessionState.New or SessionState.Recorded or SessionState.Failed or SessionState.NeedsAttention))
+            {
+                throw new InvalidOperationException($"Cannot adopt a recording from state {State}.");
+            }
+
+            ResetSessionState();
+            _lostEndpoints.Clear();
+            _journalledFaults.Clear();
+            _chunkNotifications.Clear();
+            _generation++;
+
+            SessionId = candidate.SessionId;
+            _paths = _store.Resolve(candidate.SessionId);
+            _createdUtc = candidate.CreatedUtc;
+            _startedUtc = candidate.StartedUtc;
+
+            // Only one process may continue a session. Claiming the lease is what enforces it.
+            if (_leases is not null)
+            {
+                _lease = _leases.TryAcquire(candidate.SessionId);
+                if (_lease is null)
+                {
+                    SessionId = null;
+                    throw new InvalidOperationException(
+                        "This recording is already open somewhere else.");
+                }
+            }
+
+            _request = new RecordingRequest(
+                candidate.RenderEndpointId, candidate.RenderDeviceName,
+                candidate.CaptureEndpointId, candidate.CaptureDeviceName);
+
+            _epochs.AddRange(candidate.Epochs);
+            foreach (SessionTrack track in candidate.Tracks)
+            {
+                TrackAccumulator accumulator = new()
+                {
+                    Track = track.Track,
+                    DeviceId = track.DeviceId,
+                    DeviceName = track.DeviceName,
+                    Format = track.Format,
+                };
+
+                accumulator.Chunks.AddRange(track.Chunks);
+                _tracks[track.Track] = accumulator;
+
+                foreach (AudioChunkMetadata chunk in track.Chunks)
+                {
+                    // Already journalled by the original session; never write them again.
+                    _journalledChunks.Add((chunk.Track, chunk.Index));
+                }
+            }
+
+            _epochIndex = candidate.NextEpochIndex - 1;
+            _nextChunkIndex = candidate.NextChunkIndex;
+            AwaitingResumeAfterSuspend = candidate.Reason == SessionContinuationReason.Suspended;
+
+            _store.Append(SessionId, JournalEvent.Create(
+                JournalEventTypes.SessionAdopted, _clock.UtcNow(),
+                ("session_id", SessionId),
+                ("reason", candidate.Reason.ToString()),
+                ("next_epoch", Text(candidate.NextEpochIndex)),
+                ("next_chunk_index", Text(candidate.NextChunkIndex))));
+
+            Phase = CapturePhase.Idle;
+            SetState(SessionState.Paused, $"Continuing a recording that was {candidate.Describe()}.");
+        }
+    }
+
     public void Pause()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -411,6 +503,14 @@ public sealed class RecordingController : IDisposable
     {
         lock (_gate)
         {
+            // A previous finalization that failed part way through left the session retryable.
+            // Stopping again resumes it from where it got to rather than doing nothing.
+            if (_intendedEndUtc is not null && _endedUtc is null && SessionId is not null)
+            {
+                FinalizeSession(_intendedOutcome ?? SessionState.NeedsAttention, "retrying the save");
+                return;
+            }
+
             if (State is not (SessionState.Recording or SessionState.Degraded or SessionState.Paused))
             {
                 return;
@@ -549,18 +649,24 @@ public sealed class RecordingController : IDisposable
         lock (_gate)
         {
             DrainChunkNotifications();
-            return new SessionSnapshot(
-                SessionId ?? string.Empty,
-                State,
-                _createdUtc,
-                _startedUtc,
-                _endedUtc,
-                [.. _epochs],
-                [.. _tracks.Values
-                    .OrderBy(t => t.Track)
-                    .Select(t => new SessionTrack(t.Track, t.DeviceId, t.DeviceName, t.Format, [.. t.Chunks.OrderBy(c => c.Index)]))]);
+            return BuildSnapshot(State, _endedUtc);
         }
     }
+
+    /// <summary>
+    /// Builds a snapshot with explicit state and end time, so finalization can persist the
+    /// intended terminal values before committing them to memory.
+    /// </summary>
+    private SessionSnapshot BuildSnapshot(SessionState state, DateTimeOffset? endedUtc) => new(
+        SessionId ?? string.Empty,
+        state,
+        _createdUtc,
+        _startedUtc,
+        endedUtc,
+        [.. _epochs],
+        [.. _tracks.Values
+            .OrderBy(t => t.Track)
+            .Select(t => new SessionTrack(t.Track, t.DeviceId, t.DeviceName, t.Format, [.. t.Chunks.OrderBy(c => c.Index)]))]);
 
     private void ResetSessionState()
     {
@@ -571,6 +677,10 @@ public sealed class RecordingController : IDisposable
         _epochIndex = 0;
         _diskWarned = false;
         _endedUtc = null;
+        _intendedEndUtc = null;
+        _intendedOutcome = null;
+        _terminalEventWritten = false;
+        NeedsReconciliation = false;
         _startedUtc = null;
         _completedEpochDuration = TimeSpan.Zero;
         _completedBytes = 0;
@@ -840,26 +950,62 @@ public sealed class RecordingController : IDisposable
             throw new ArgumentOutOfRangeException(nameof(outcome), outcome, "Not a terminal outcome.");
         }
 
-        // A failure stays a failure; otherwise a lagging journal downgrades the outcome.
-        SessionState effective = outcome == SessionState.Failed
+        // One intended end time and one intended kind of ending, both kept across retries so a
+        // second attempt neither moves the recorded end nor turns a failure into a success.
+        _intendedEndUtc ??= _clock.UtcNow();
+        _intendedOutcome ??= outcome;
+
+        // The downgrade is re-evaluated every attempt: a session whose ledger fell behind — even
+        // if a later retry got through — is one a human should look at.
+        SessionState effective = _intendedOutcome.Value == SessionState.Failed
             ? SessionState.Failed
-            : NeedsReconciliation ? SessionState.NeedsAttention : outcome;
+            : NeedsReconciliation ? SessionState.NeedsAttention : _intendedOutcome.Value;
 
-        _endedUtc = _clock.UtcNow();
-
-        // Written synchronously, not through the queue: the terminal record must be durable
-        // before the snapshot that claims it.
-        _store.Append(SessionId!, JournalEvent.Create(
-            JournalEventTypes.SessionEnded, _endedUtc.Value,
-            ("session_id", SessionId!),
-            ("outcome", effective.ToString()),
-            ("reason", reason)));
-
-        SetState(effective, reason);
-        WriteSnapshot();
+        // Capture has stopped by this point, so the session is no longer live whatever happens
+        // to the writes below. Releasing here means a finalization failure cannot strand the
+        // lease and lock recovery out of the session forever.
         Phase = CapturePhase.Stopped;
+        ReleaseLease();
 
-        // The session is finished, so recovery may have it back.
+        try
+        {
+            // Written synchronously, not through the queue: the terminal record must be durable
+            // before the snapshot that claims it. Guarded so a retry cannot write it twice.
+            if (!_terminalEventWritten)
+            {
+                _store.Append(SessionId!, JournalEvent.Create(
+                    JournalEventTypes.SessionEnded, _intendedEndUtc.Value,
+                    ("session_id", SessionId!),
+                    ("outcome", effective.ToString()),
+                    ("reason", reason)));
+
+                _terminalEventWritten = true;
+            }
+
+            _store.WriteSnapshot(BuildSnapshot(effective, _intendedEndUtc));
+
+            // Only now is finalization complete. Setting this earlier would make a failed
+            // attempt look finished and block every retry.
+            _endedUtc = _intendedEndUtc;
+            SetState(effective, reason);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The audio and its per-chunk records are already durable; only the ledger and the
+            // projection are behind. Leave the session retryable and say so.
+            _endedUtc = null;
+            NeedsReconciliation = true;
+            SetState(SessionState.NeedsAttention, "the recording could not be fully saved");
+
+            Notice?.Invoke(this,
+                "Your audio is saved, but EchoForge could not finish writing this recording's " +
+                $"record file ({ex.GetType().Name}). It will be checked and repaired the next time " +
+                "EchoForge starts.");
+        }
+    }
+
+    private void ReleaseLease()
+    {
         _lease?.Dispose();
         _lease = null;
     }
@@ -1024,9 +1170,7 @@ public sealed class RecordingController : IDisposable
 
         _persistence.Drain(TimeSpan.FromSeconds(5));
         _persistence.Dispose();
-
-        _lease?.Dispose();
-        _lease = null;
+        ReleaseLease();
     }
 
     private sealed class TrackAccumulator
@@ -1042,3 +1186,4 @@ public sealed class RecordingController : IDisposable
         public List<AudioChunkMetadata> Chunks { get; } = [];
     }
 }
+

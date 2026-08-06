@@ -80,6 +80,22 @@
       <TextBlock Text="{Binding Notice}" TextWrapping="Wrap" Foreground="{StaticResource Ink}" />
     </Border>
 
+    <!-- An unfinished recording found at startup. Shown, never acted on automatically. -->
+    <Border Grid.Row="1" Margin="0,0,0,14" CornerRadius="6" Padding="14,11"
+            Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1"
+            Visibility="{Binding HasPendingContinuation, Converter={StaticResource BoolToVis}}">
+      <StackPanel>
+        <TextBlock Text="{Binding ContinuationMessage}" TextWrapping="Wrap" FontWeight="SemiBold" />
+        <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Foreground="{StaticResource InkDim}"
+                   Text="Continuing adds a new segment to the same recording. Finishing keeps what was already captured." />
+        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+          <Button Content="Resume recovered recording" Style="{StaticResource PrimaryButton}"
+                  Command="{Binding ContinueRecoveredCommand}" Margin="0,0,10,0" />
+          <Button Content="Finish it instead" Command="{Binding FinishRecoveredCommand}" />
+        </StackPanel>
+      </StackPanel>
+    </Border>
+
     <!-- Device selection. Disabled while recording: endpoints are pinned for the session. -->
     <StackPanel Grid.Row="2" Margin="0,0,0,16" IsEnabled="{Binding DevicesEditable}">
       <TextBlock Text="CAPTURE FROM" Style="{StaticResource Label}" Margin="0,0,0,8" />

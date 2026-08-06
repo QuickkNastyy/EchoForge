@@ -119,6 +119,14 @@ public partial class App : System.Windows.Application, IDisposable
                     (needsAttention > 0 ? $". {Plural(needsAttention, "session")} needs attention." : ".");
             }
 
+            // Unfinished recordings are offered back, never resumed automatically.
+            IReadOnlyList<Contracts.Sessions.RecoveryCandidate> continuable = await Task.Run(() =>
+                new SessionRecoveryService(store, new WavChunkRepairer(), null, leases)
+                    .FindContinuationCandidates()).ConfigureAwait(true);
+
+            Contracts.Sessions.RecoveryCandidate? candidate = continuable.Count > 0 ? continuable[0] : null;
+
+            _viewModel?.OfferContinuation(candidate);
             _viewModel?.MarkReady(summary);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

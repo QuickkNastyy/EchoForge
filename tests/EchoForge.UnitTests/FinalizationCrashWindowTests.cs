@@ -122,7 +122,10 @@ public sealed class FinalizationCrashWindowTests : IDisposable
         RecoveryOutcome outcome = Recover();
 
         Assert.Equal(1, outcome.ChunksRecovered);
-        Assert.Equal(SessionState.Recorded, outcome.State);
+
+        // The epoch never closed, so this is an unfinished recording the user can continue or
+        // finalize — not something recovery may quietly declare finished on their behalf.
+        Assert.Equal(SessionState.Paused, outcome.State);
         AssertCanonicalChunk();
 
         // The audio moved into chunks and nothing was left behind in active.
@@ -164,7 +167,7 @@ public sealed class FinalizationCrashWindowTests : IDisposable
         RecoveryOutcome outcome = Recover();
 
         Assert.Equal(1, outcome.ChunksReconciled);
-        Assert.Equal(SessionState.Recorded, outcome.State);
+        Assert.Equal(SessionState.Paused, outcome.State);
         AssertCanonicalChunk();
     }
 

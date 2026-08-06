@@ -66,7 +66,8 @@ public sealed class SessionRecoveryService
         foreach (string sessionId in _store.EnumerateSessions())
         {
             RecoveryOutcome outcome = Recover(sessionId);
-            if (!outcome.Skipped && (outcome.ChangedAnything || outcome.State is SessionState.NeedsAttention))
+            if (!outcome.Skipped &&
+                (outcome.ChangedAnything || outcome.State is SessionState.NeedsAttention or SessionState.Paused))
             {
                 outcomes.Add(outcome);
             }
@@ -75,21 +76,65 @@ public sealed class SessionRecoveryService
         return outcomes;
     }
 
+    /// <summary>
+    /// Sessions that were never finished and can be continued, newest first. Recovery reports
+    /// them; it never resumes anything on its own.
+    /// </summary>
+    public IReadOnlyList<RecoveryCandidate> FindContinuationCandidates()
+    {
+        List<RecoveryCandidate> candidates = [];
+        foreach (string sessionId in _store.EnumerateSessions())
+        {
+            SessionSnapshot? snapshot = _store.ReadSnapshot(sessionId);
+            if (snapshot is null)
+            {
+                continue;
+            }
+
+            if (RecoveryCandidate.From(snapshot) is { } candidate)
+            {
+                candidates.Add(candidate);
+            }
+        }
+
+        return candidates;
+    }
+
+    /// <summary>
+    /// Recovers one session while holding its lease.
+    ///
+    /// <para>
+    /// The lease is <em>acquired</em>, not merely checked. Asking whether a session is leased and
+    /// then proceeding is a check-then-act race: a recorder could claim it in the gap and the two
+    /// would repair and write the same files at once. Acquisition is the only correctness
+    /// mechanism, and it is held across repair, reconciliation, journal writes, and snapshot
+    /// replacement.
+    /// </para>
+    /// </summary>
     public RecoveryOutcome Recover(string sessionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
 
+        if (_leases is null)
+        {
+            return RecoverHoldingLease(sessionId);
+        }
+
+        using ISessionLease? lease = _leases.TryAcquire(sessionId);
+        if (lease is null)
+        {
+            return new RecoveryOutcome(
+                sessionId, SessionState.Recording, 0, 0, 0, false, false,
+                ["session is in use and was left alone"], Skipped: true);
+        }
+
+        return RecoverHoldingLease(sessionId);
+    }
+
+    private RecoveryOutcome RecoverHoldingLease(string sessionId)
+    {
         SessionPaths paths = _store.Resolve(sessionId);
         List<string> notes = [];
-
-        // A leased session is live in this or another process. Recovery must not touch it: it
-        // would repair chunks the recorder is still writing and rewrite a snapshot underneath it.
-        if (_leases?.IsLeased(sessionId) == true)
-        {
-            notes.Add("session is in use and was left alone");
-            return new RecoveryOutcome(
-                sessionId, SessionState.Recording, 0, 0, 0, false, false, notes, Skipped: true);
-        }
 
         JournalReadResult journal = _store.ReadJournal(sessionId);
         bool truncatedTail = journal.TruncatedFinalLine;
@@ -177,7 +222,14 @@ public sealed class SessionRecoveryService
                 : SessionState.NeedsAttention;
         }
 
-        // No terminal event: the session was interrupted. Audio that survived is still usable.
+        // No terminal event: the session never finished. Whether it was paused, suspended, or
+        // still recording, deciding it is "recorded" would quietly make a choice that belongs to
+        // the user, so it stays Paused and is offered back as a continuation candidate.
+        if (snapshot.Epochs.Count > 0)
+        {
+            return SessionState.Paused;
+        }
+
         return snapshot.HasAudio ? SessionState.Recorded : SessionState.NeedsAttention;
     }
 
