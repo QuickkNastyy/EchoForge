@@ -359,6 +359,37 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             render.Id, render.FriendlyName, capture.Id, capture.FriendlyName))).ConfigureAwait(true);
     }
 
+    /// <summary>
+    /// Stops any open session and waits for it to be durable.
+    ///
+    /// <para>
+    /// Everything slow — joining capture threads, finalizing and hashing chunks, fsyncing the
+    /// journal, writing the snapshot — happens on a background thread, so the window keeps
+    /// repainting and can show Stopping then Saving while it runs.
+    /// </para>
+    /// </summary>
+    /// <returns>False when the recording could not be made durable, in which case do not close.</returns>
+    public async Task<bool> FinalizeForShutdownAsync()
+    {
+        try
+        {
+            return await Task.Run(() =>
+            {
+                _controller.Stop();
+
+                // Signals and journal writes must both settle before the app may exit.
+                bool signals = _controller.WaitForSignals(TimeSpan.FromSeconds(10));
+                bool writes = _controller.FlushPendingWrites(TimeSpan.FromSeconds(10));
+                return signals && writes;
+            }).ConfigureAwait(true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            Notice = $"Saving failed: {ex.Message}";
+            return false;
+        }
+    }
+
     private Task PauseAsync() => Task.Run(_controller.Pause);
 
     private Task ResumeAsync() => Task.Run(_controller.Resume);

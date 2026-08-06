@@ -26,6 +26,7 @@ public partial class App : System.Windows.Application, IDisposable
     private RecordingController? _controller;
     private MainViewModel? _viewModel;
     private TrayIndicator? _tray;
+    private ShutdownCoordinator? _shutdown;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -66,12 +67,23 @@ public partial class App : System.Windows.Application, IDisposable
         window.DataContext = _viewModel;
         MainWindow = window;
 
+        // Every exit path — the close button, tray Exit, and Windows shutting down — goes
+        // through one coordinator so none of them can close over an unsaved recording.
+        _shutdown = new ShutdownCoordinator(
+            _viewModel,
+            new DialogShutdownPrompt(window),
+            message => System.Windows.MessageBox.Show(window, message, "EchoForge",
+                MessageBoxButton.OK, MessageBoxImage.Warning));
+
+        window.UseShutdownCoordinator(_shutdown);
+
         _tray = new TrayIndicator(_viewModel, () =>
         {
             window.Show();
             window.WindowState = WindowState.Normal;
             window.Activate();
-        });
+        })
+        { Shutdown = _shutdown };
 
         window.Show();
 
@@ -119,6 +131,16 @@ public partial class App : System.Windows.Application, IDisposable
 
     private static string Plural(int count, string noun) =>
         count == 1 ? $"1 {noun}" : $"{count} {noun}s";
+
+    /// <summary>
+    /// Windows is ending the session. There is no opportunity to ask anything, so finalize as
+    /// far as the time allows rather than letting the process die mid-write.
+    /// </summary>
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        _viewModel?.FinalizeForShutdownAsync().GetAwaiter().GetResult();
+        base.OnSessionEnding(e);
+    }
 
     protected override void OnExit(ExitEventArgs e)
     {

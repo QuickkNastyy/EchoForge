@@ -5,37 +5,50 @@ namespace EchoForge.App;
 
 public partial class MainWindow : Window
 {
+    private ShutdownCoordinator? _shutdown;
+
     public MainWindow() => InitializeComponent();
 
+    /// <summary>Supplied by the composition root once the view model exists.</summary>
+    public void UseShutdownCoordinator(ShutdownCoordinator coordinator) => _shutdown = coordinator;
+
     /// <summary>
-    /// Closing while a session is live or paused would either lose audio or hide the fact that a
-    /// recording is still open. Both need an explicit choice.
+    /// Closing is asynchronous because saving is.
+    ///
+    /// <para>
+    /// The first close is always cancelled: WPF cannot await here, and letting it proceed would
+    /// tear the window down — and with it the process — while chunks were still being finalized.
+    /// The coordinator asks the user, awaits a durable save, and only then closes for real. A
+    /// failed save keeps the window open.
+    /// </para>
     /// </summary>
     protected override void OnClosing(CancelEventArgs e)
     {
-        if (DataContext is MainViewModel viewModel && (viewModel.IsRecording || viewModel.IsPaused))
+        if (_shutdown is null || _shutdown.IsShuttingDown)
         {
-            string message = viewModel.IsRecording
-                ? "A recording is still running. Stop it and save, or keep recording?"
-                : "This recording is paused and has not been saved. Stop it and save, or leave it open?";
-
-            string caption = viewModel.IsRecording ? "EchoForge is recording" : "EchoForge is paused";
-
-            MessageBoxResult answer = System.Windows.MessageBox.Show(
-                this, message, caption,
-                MessageBoxButton.OKCancel,
-                MessageBoxImage.Warning,
-                MessageBoxResult.Cancel);
-
-            if (answer != MessageBoxResult.OK)
-            {
-                e.Cancel = true;
-                return;
-            }
-
-            viewModel.StopCommand.Execute(null);
+            base.OnClosing(e);
+            return;
         }
 
-        base.OnClosing(e);
+        e.Cancel = true;
+        BeginShutdown();
+    }
+
+    /// <summary>
+    /// The one permitted async void: a framework event adapter. Every exception inside the
+    /// coordinator is already turned into a notice.
+    /// </summary>
+    private async void BeginShutdown()
+    {
+        if (_shutdown is null)
+        {
+            return;
+        }
+
+        if (await _shutdown.TryShutdownAsync().ConfigureAwait(true))
+        {
+            // IsShuttingDown is set, so this pass runs straight through OnClosing.
+            Close();
+        }
     }
 }

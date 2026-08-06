@@ -41,6 +41,9 @@ public sealed class TrayIndicator : IDisposable
         Redraw(force: true);
     }
 
+    /// <summary>Supplied by the composition root so tray Exit uses the same shutdown path.</summary>
+    public ShutdownCoordinator? Shutdown { get; set; }
+
     private ContextMenuStrip BuildMenu()
     {
         ContextMenuStrip menu = new();
@@ -51,8 +54,29 @@ public sealed class TrayIndicator : IDisposable
         stop.Click += (_, _) => _viewModel.StopCommand.Execute(null);
         menu.Items.Add(stop);
 
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Exit EchoForge", null, (_, _) => ExitThroughCoordinator());
+
         menu.Opening += (_, _) => stop.Enabled = _viewModel.IsRecording || _viewModel.IsPaused;
         return menu;
+    }
+
+    /// <summary>
+    /// Tray Exit takes the same route as the close button, so it cannot bypass the save.
+    /// This is a framework event adapter, hence async void.
+    /// </summary>
+    private async void ExitThroughCoordinator()
+    {
+        if (Shutdown is null)
+        {
+            System.Windows.Application.Current?.Shutdown();
+            return;
+        }
+
+        if (await Shutdown.TryShutdownAsync().ConfigureAwait(true))
+        {
+            System.Windows.Application.Current?.Shutdown();
+        }
     }
 
     private void OnViewModelChanged(object? sender, PropertyChangedEventArgs e)
