@@ -9,13 +9,23 @@ offline.
 
 ## Status
 
-Pre-implementation. The architecture and phased plan are complete; no code has
-been written yet.
+**Phase 0** (dual-track capture and recovery) is implementation-complete and
+automated-test green. Its long-duration and physical-hardware acceptance runs are
+deliberately deferred and tracked in
+[`docs/HARDENING_BACKLOG.md`](docs/HARDENING_BACKLOG.md); until those happen Phase 0
+is **not production-qualified**. Deferring a test is not passing it.
 
-Next step is **Phase 0** — proving that the selected playback endpoint and the
-microphone can be captured simultaneously into separate, valid, timeline-aligned
-files, and that an interrupted recording recovers cleanly. Phase 0 is a blocking
-gate: no GUI work begins until it passes.
+**Phase 1** (the recording application, session storage, crash recovery) is accepted.
+
+**Phase 2A, Pass 1** is complete: the NDJSON worker protocol, the transcript schema
+and contracts, the Windows Job Object worker supervisor, and a deterministic Python
+worker that performs **no speech recognition** and says so in everything it writes.
+See [`docs/PHASE2A_PASS1_REPORT.md`](docs/PHASE2A_PASS1_REPORT.md) for what exists and
+what Phase 2A still needs.
+
+No production model, CUDA component, or inference runtime has been added.
+`artifacts/manifest.json` is intentionally empty, and `scripts/verify-models.ps1`
+is the gate that keeps it that way.
 
 ## Plan
 
@@ -42,6 +52,19 @@ strategy, the eight-phase implementation plan, acceptance criteria, and risks.
 
 Source lives here. Recordings, models, transcripts, and logs live under
 `%LOCALAPPDATA%\EchoForge` and are never committed.
+
+## Building and testing
+
+```powershell
+dotnet build C:\EchoForge\EchoForge.slnx -c Debug --warnaserror
+dotnet test C:\EchoForge\EchoForge.slnx -c Debug
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\EchoForge\scripts\run-worker-tests.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\EchoForge\scripts\verify-models.ps1
+```
+
+The Python worker suite needs [uv](https://docs.astral.sh/uv/) and CPython 3.12. The
+.NET tests that launch the worker skip with an explanatory message when it is absent;
+everything else still runs.
 
 ## Recording consent
 
