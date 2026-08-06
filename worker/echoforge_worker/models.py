@@ -169,6 +169,113 @@ class RequestTrack:
 
 
 @dataclass(frozen=True, slots=True)
+class RequestDerivative:
+    """The 16 kHz mono audio the host prepared for one track, and its timing map."""
+
+    source_track: str
+    relative_path: str
+    timing_map_relative_path: str
+    sample_rate: int
+    channels: int
+    total_frames: int
+    sha256: str
+
+    @staticmethod
+    def from_json(obj: Any) -> RequestDerivative:
+        if not isinstance(obj, dict):
+            raise _invalid("derivative must be an object")
+        source_track = _as_str(_require(obj, "source_track", "derivative"), "derivative.source_track")
+        if source_track not in SOURCE_TRACKS:
+            raise _invalid(f"unknown source track {source_track!r}")
+        return RequestDerivative(
+            source_track=source_track,
+            relative_path=_as_str(_require(obj, "relative_path", "derivative"), "derivative.relative_path"),
+            timing_map_relative_path=_as_str(
+                _require(obj, "timing_map_relative_path", "derivative"), "derivative.timing_map_relative_path"
+            ),
+            sample_rate=_as_int(_require(obj, "sample_rate", "derivative"), "derivative.sample_rate", minimum=1),
+            channels=_as_int(_require(obj, "channels", "derivative"), "derivative.channels", minimum=1),
+            total_frames=_as_int(_require(obj, "total_frames", "derivative"), "derivative.total_frames", minimum=0),
+            sha256=_as_str(_require(obj, "sha256", "derivative"), "derivative.sha256"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RequestWindow:
+    """One unit of transcription work, already placed on the session timeline by the host."""
+
+    id: str
+    source_track: str
+    epoch: int
+    ordinal: int
+    start_frame: int
+    end_frame: int
+    session_start_seconds: float
+    session_end_seconds: float
+    overlap_before_seconds: float = 0.0
+    overlap_after_seconds: float = 0.0
+    input_fingerprint: str = ""
+
+    @property
+    def frames(self) -> int:
+        return max(0, self.end_frame - self.start_frame)
+
+    @staticmethod
+    def from_json(obj: Any, ordinal: int) -> RequestWindow:
+        if not isinstance(obj, dict):
+            raise _invalid("window must be an object")
+        source_track = _as_str(_require(obj, "source_track", "window"), "window.source_track")
+        if source_track not in SOURCE_TRACKS:
+            raise _invalid(f"unknown source track {source_track!r}")
+
+        window = RequestWindow(
+            id=_as_str(_require(obj, "id", "window"), "window.id"),
+            source_track=source_track,
+            epoch=_as_int(_require(obj, "epoch", "window"), "window.epoch", minimum=1),
+            ordinal=ordinal,
+            start_frame=_as_int(_require(obj, "start_frame", "window"), "window.start_frame", minimum=0),
+            end_frame=_as_int(_require(obj, "end_frame", "window"), "window.end_frame", minimum=0),
+            session_start_seconds=_as_number(
+                _require(obj, "session_start_seconds", "window"), "window.session_start_seconds", minimum=0.0
+            ),
+            session_end_seconds=_as_number(
+                _require(obj, "session_end_seconds", "window"), "window.session_end_seconds", minimum=0.0
+            ),
+            overlap_before_seconds=_as_number(obj.get("overlap_before_seconds", 0.0), "window.overlap_before_seconds", minimum=0.0),
+            overlap_after_seconds=_as_number(obj.get("overlap_after_seconds", 0.0), "window.overlap_after_seconds", minimum=0.0),
+            input_fingerprint=str(obj.get("input_fingerprint", "")),
+        )
+
+        if window.session_end_seconds < window.session_start_seconds:
+            raise _invalid(f"window {window.id} ends before it starts")
+        if window.end_frame < window.start_frame:
+            raise _invalid(f"window {window.id} has a negative frame range")
+
+        return window
+
+
+@dataclass(frozen=True, slots=True)
+class TimingSpan:
+    """One stretch of a derivative: either real audio or an explicit gap."""
+
+    kind: str
+    derivative_frame: int
+    frames: int
+    epoch: int
+    session_start_seconds: float
+    session_end_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class TimingMap:
+    """Where each part of a derivative came from. Gaps are what a transcript may not enter."""
+
+    sample_rate: int
+    total_frames: int
+    spans: tuple[TimingSpan, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RequestOptions:
     backend: str
     profile: str | None = None
@@ -176,6 +283,22 @@ class RequestOptions:
     segment_seconds: float | None = None
     test_mode: str | None = None
     test_delay_seconds: float | None = None
+
+    #: Absolute directory of the verified CTranslate2 model. Never an alias, never a repo id:
+    #: the registry resolved and verified this path, and the worker must not go looking.
+    model_path: str | None = None
+
+    compute_profile: str | None = None
+    beam_size: int | None = None
+
+    #: Conservative voice-activity filtering, using the Silero model inside the pinned wheel.
+    vad_filter: bool = True
+
+    word_timestamps: bool = True
+
+    #: Seeded into the recogniser as an initial prompt: names, jargon, acronyms.
+    initial_prompt: str | None = None
+    glossary: tuple[str, ...] = ()
 
     @staticmethod
     def from_json(obj: Any) -> RequestOptions:
@@ -189,6 +312,14 @@ class RequestOptions:
         delay = obj.get("test_delay_seconds")
         if delay is not None:
             delay = _as_number(delay, "options.test_delay_seconds", minimum=0.0)
+        glossary = obj.get("glossary")
+        if glossary is not None and not isinstance(glossary, list):
+            raise _invalid("options.glossary must be an array of terms")
+
+        beam = obj.get("beam_size")
+        if beam is not None:
+            beam = _as_int(beam, "options.beam_size", minimum=1)
+
         return RequestOptions(
             backend=_as_str(_require(obj, "backend", "options"), "options.backend"),
             profile=obj.get("profile") if isinstance(obj.get("profile"), str) else None,
@@ -196,6 +327,13 @@ class RequestOptions:
             segment_seconds=segment_seconds,
             test_mode=obj.get("test_mode") if isinstance(obj.get("test_mode"), str) else None,
             test_delay_seconds=delay,
+            model_path=obj.get("model_path") if isinstance(obj.get("model_path"), str) else None,
+            compute_profile=obj.get("compute_profile") if isinstance(obj.get("compute_profile"), str) else None,
+            beam_size=beam,
+            vad_filter=bool(obj.get("vad_filter", True)),
+            word_timestamps=bool(obj.get("word_timestamps", True)),
+            initial_prompt=obj.get("initial_prompt") if isinstance(obj.get("initial_prompt"), str) else None,
+            glossary=tuple(str(term) for term in (glossary or []) if str(term).strip()),
         )
 
 
@@ -210,6 +348,20 @@ class TranscriptionRequest:
     epochs: tuple[RequestEpoch, ...]
     tracks: tuple[RequestTrack, ...]
     options: RequestOptions
+
+    #: Present only for a production run. The placeholder backend ignores both and works from
+    #: the source chunks, which is what keeps it usable before any audio has been prepared.
+    derivatives: tuple[RequestDerivative, ...] = ()
+    windows: tuple[RequestWindow, ...] = ()
+
+    def derivative_for(self, source_track: str) -> RequestDerivative | None:
+        for derivative in self.derivatives:
+            if derivative.source_track == source_track:
+                return derivative
+        return None
+
+    def windows_for(self, source_track: str) -> tuple[RequestWindow, ...]:
+        return tuple(w for w in self.windows if w.source_track == source_track)
 
     @staticmethod
     def from_json(obj: Any) -> TranscriptionRequest:
@@ -271,6 +423,13 @@ class TranscriptionRequest:
             epochs=epochs,
             tracks=tracks,
             options=RequestOptions.from_json(_require(obj, "options", "request")),
+            derivatives=tuple(
+                RequestDerivative.from_json(d) for d in (obj.get("derivatives") or [])
+            ),
+            windows=tuple(
+                RequestWindow.from_json(w, ordinal)
+                for ordinal, w in enumerate(obj.get("windows") or [])
+            ),
         )
 
         if epochs and request.duration_seconds < epochs[-1].end_seconds - 1e-9:

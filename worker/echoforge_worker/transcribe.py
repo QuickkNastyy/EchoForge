@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 from abc import ABC, abstractmethod
-from typing import Callable, Final, Sequence
+from typing import Any, Callable, Final, Sequence
 
 from .audio import (
     SILENCE_RMS_THRESHOLD,
@@ -77,11 +77,32 @@ class BackendContext:
         cancelled: Callable[[], bool],
         on_chunk_completed: Callable[[str], None],
         on_warning: Callable[[str, str], None],
+        session_duration_seconds: float = 0.0,
+        on_window: Callable[[Any, str, int], None] | None = None,
     ) -> None:
         self._session_root = session_root
         self._cancelled = cancelled
         self._on_chunk_completed = on_chunk_completed
         self._on_warning = on_warning
+        self._session_duration = session_duration_seconds
+        self._on_window = on_window
+
+    @property
+    def session_root(self) -> str:
+        return self._session_root
+
+    @property
+    def session_duration_seconds(self) -> float:
+        return self._session_duration
+
+    def window_started(self, window: Any) -> None:
+        """Announced before the work, so a checkpoint records a window that was attempted."""
+        if self._on_window is not None:
+            self._on_window(window, "running", 0)
+
+    def window_completed(self, window: Any, segments: int) -> None:
+        if self._on_window is not None:
+            self._on_window(window, "succeeded", segments)
 
     def check_cancelled(self) -> None:
         """Raise at a safe boundary if the host has asked to stop."""
@@ -245,15 +266,27 @@ class MockBackend(TranscriptionBackend):
         )
 
 
-_BACKENDS: Final[dict[str, type[TranscriptionBackend]]] = {MockBackend.name: MockBackend}
+def _production_backends() -> dict[str, Any]:
+    """The production backend, offered only where its stack is actually installed.
+
+    Advertising it on a machine that cannot run it would turn a clear "not installed" into a
+    load failure halfway through a job.
+    """
+    from .whisper_backend import FasterWhisperBackend, production_stack_available
+
+    return {FasterWhisperBackend.name: FasterWhisperBackend} if production_stack_available() else {}
+
+
+def _registry() -> dict[str, Any]:
+    return {MockBackend.name: MockBackend, **_production_backends()}
 
 
 def available_backends() -> list[str]:
-    return sorted(_BACKENDS)
+    return sorted(_registry())
 
 
 def resolve_backend(name: str) -> TranscriptionBackend:
-    factory = _BACKENDS.get(name)
+    factory = _registry().get(name)
     if factory is None:
         raise WorkerFailure(
             ErrorCode.BACKEND_UNAVAILABLE,
@@ -316,8 +349,32 @@ def build_transcript(
     """Run the backend over both tracks and merge the result onto one timeline."""
     collected: list[Segment] = []
 
+    languages: dict[str, tuple[str, float | None]] = {}
+
     for track in request.tracks:
         context.check_cancelled()
+
+        # A production run works from the prepared windows; the placeholder works from the
+        # source chunks. Choosing here rather than in the backend is what lets both exist at
+        # once, and what keeps the placeholder usable before any audio has been prepared.
+        windows = request.windows_for(track.source_track)
+        derivative = request.derivative_for(track.source_track)
+
+        if windows and derivative is not None and hasattr(backend, "transcribe_windows"):
+            on_stage(
+                Stage.TRANSCRIBING_MICROPHONE
+                if track.source_track == MICROPHONE
+                else Stage.TRANSCRIBING_SYSTEM
+            )
+            collected.extend(
+                backend.transcribe_windows(  # type: ignore[attr-defined]
+                    track.source_track, windows, derivative, request.options, context
+                )
+            )
+            if hasattr(backend, "language_for"):
+                languages[track.source_track] = backend.language_for(track.source_track)  # type: ignore[attr-defined]
+            continue
+
         on_stage(
             Stage.TRANSCRIBING_MICROPHONE
             if track.source_track == MICROPHONE
@@ -332,8 +389,13 @@ def build_transcript(
 
     segments = _merge(request, collected)
 
+    # A real recogniser reports what it heard; a placeholder reports what it was told, which
+    # for it is always "undetermined". Neither is allowed to invent a detection result.
     languages = tuple(
-        (track.source_track, request.options.language or UNDETERMINED_LANGUAGE, None)
+        (
+            track.source_track,
+            *languages.get(track.source_track, (request.options.language or UNDETERMINED_LANGUAGE, None)),
+        )
         for track in sorted(request.tracks, key=lambda t: SOURCE_TRACKS.index(t.source_track))
     )
 
