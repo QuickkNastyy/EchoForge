@@ -124,7 +124,9 @@ internal static class Program
         }
 
         Console.WriteLine();
-        Console.WriteLine("elapsed   you    remote  chunks   queue    drop   drift ms/hr   align ms");
+        Console.WriteLine("Drift and offset below are packet/QPC ESTIMATES, not end-to-end alignment proof.");
+        Console.WriteLine();
+        Console.WriteLine("elapsed   you    remote  chunks   queue    drop   est ms/hr   est off ms");
 
         while (!stop.IsCancellationRequested)
         {
@@ -151,8 +153,8 @@ internal static class Program
         TrackStatus system = tracks.First(t => t.Track == SourceTrack.System);
         TrackStatus mic = tracks.First(t => t.Track == SourceTrack.Microphone);
 
-        double? relativeDrift = recorder.RelativeDriftMillisecondsPerHour();
-        double? alignment = recorder.AlignmentErrorMilliseconds();
+        double? relativeDrift = recorder.EstimatedRelativeDriftMillisecondsPerHour();
+        double? alignment = recorder.EstimatedOffsetMilliseconds();
 
         string line = string.Create(CultureInfo.InvariantCulture,
             $"{FormatElapsed(recorder.ElapsedSeconds),-9} {Meter(mic.PeakLevel)} {Meter(system.PeakLevel)}  " +
@@ -193,8 +195,11 @@ internal static class Program
         using NAudio.CoreAudioApi.MMDevice device = catalog.OpenDevice(endpointId);
 
         int printed = 0;
-        long firstDevice = -1;
-        long firstQpc = -1;
+        bool seen = false;
+        long firstDevice = 0;
+        long lastDeviceEnd = 0;
+        long firstQpc = 0;
+        long lastQpc = 0;
         long totalFrames = 0;
         long packets = 0;
 
@@ -202,11 +207,16 @@ internal static class Program
         {
             packets++;
             totalFrames += header.FrameCount;
-            if (firstDevice < 0)
+
+            if (!seen)
             {
+                seen = true;
                 firstDevice = header.DevicePosition;
                 firstQpc = header.QpcPosition;
             }
+
+            lastDeviceEnd = header.EndDevicePosition;
+            lastQpc = header.QpcPosition;
 
             if (printed < 15)
             {
@@ -229,11 +239,37 @@ internal static class Program
         capture.Stop();
 
         Console.WriteLine();
-        double wallSeconds = (capture.PacketCount > 0 ? 5.0 : 0);
+        if (!seen)
+        {
+            Console.WriteLine("  no packets: the endpoint produced no audio during the window.");
+            return 0;
+        }
+
+        double qpcSeconds = CaptureClock.UnitsToSeconds(lastQpc - firstQpc);
+        long deviceSpan = lastDeviceEnd - firstDevice;
+        double deliveredSeconds = totalFrames / (double)capture.Format.SampleRate;
+
         Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
-            $"  packets {packets}, frames {totalFrames} = {totalFrames / (double)capture.Format.SampleRate:0.000} s of audio in {wallSeconds:0.0} s wall"));
+            $"  packets           {packets}"));
         Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
-            $"  device position advanced {(firstDevice < 0 ? 0 : totalFrames)} frames; span {(firstDevice < 0 ? 0 : 0)}"));
+            $"  delivered frames  {totalFrames} = {deliveredSeconds:0.000} s at the {capture.Format.SampleRate} Hz mix rate"));
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"  qpc span          {qpcSeconds:0.000} s"));
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"  device position   {firstDevice} -> {lastDeviceEnd}, span {deviceSpan}"));
+
+        double ratio = totalFrames == 0 ? 0 : deviceSpan / (double)totalFrames;
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"  device/delivered  {ratio:0.0000}  (implied device rate {ratio * capture.Format.SampleRate:0} Hz)"));
+
+        if (Math.Abs(ratio - 1.0) > 0.01)
+        {
+            Console.WriteLine();
+            Console.WriteLine("  Device position advances in the endpoint's own clock domain, not the mix");
+            Console.WriteLine("  format's. It must NOT be used as a mix-format frame counter. Session time");
+            Console.WriteLine("  is anchored on QPC; device position is a diagnostic and discontinuity signal.");
+        }
+
         return 0;
     }
 
@@ -324,31 +360,78 @@ internal static class Program
             double minutes = Math.Max(values[0], values[1]) / 60.0;
 
             Console.WriteLine();
-            Console.WriteLine($"  track length difference  {differenceMs:0.0} ms over {minutes:0.00} min");
-
-            if (minutes >= 9.5)
-            {
-                bool tenMinuteGate = differenceMs <= 100.0;
-                Console.WriteLine($"  gate  <=100 ms at ten minutes    {(tenMinuteGate ? "PASS" : "FAIL")}");
-                ok &= tenMinuteGate;
-            }
-
-            if (minutes >= 59.0)
-            {
-                double perHour = differenceMs / (minutes / 60.0);
-                bool driftGate = perHour <= 50.0;
-                Console.WriteLine($"  gate  <=50 ms/hour residual      {(driftGate ? "PASS" : "FAIL")} ({perHour:0.0} ms/hr)");
-                ok &= driftGate;
-            }
-            else
-            {
-                Console.WriteLine("  gate  <=50 ms/hour residual      NOT QUALIFIED (needs a 60-minute run)");
-            }
+            Console.WriteLine("  diagnostics (not gates)");
+            Console.WriteLine($"    track length difference  {differenceMs:0.0} ms over {minutes:0.00} min");
+            Console.WriteLine("    Track duration does NOT measure alignment. Both tracks are padded to a");
+            Console.WriteLine("    shared stop instant, so equal durations say nothing about whether the");
+            Console.WriteLine("    audio on them lines up. This number is a sanity check only.");
         }
 
+        PrintTimingGates(sessionDirectory);
+
         Console.WriteLine();
-        Console.WriteLine(ok ? "  result  PASS" : "  result  FAIL");
+        Console.WriteLine(ok
+            ? "  result  chunk integrity PASS · timing NOT QUALIFIED"
+            : "  result  FAIL");
         return ok ? 0 : 3;
+    }
+
+    /// <summary>
+    /// Reports the Phase 0 timing gates from signal-based measurements when a session supplies
+    /// them, and says NOT QUALIFIED when it does not. Nothing here infers a pass from durations.
+    /// </summary>
+    private static void PrintTimingGates(string sessionDirectory)
+    {
+        List<AlignmentSample> samples = LoadAlignmentSamples(sessionDirectory);
+        AlignmentGateResult result = AlignmentQualification.Evaluate(samples);
+
+        Console.WriteLine();
+        Console.WriteLine("  timing gates");
+
+        Console.WriteLine(result.TenMinuteEvaluated
+            ? $"    <=100 ms alignment at ten minutes   {(result.TenMinutePassed ? "PASS" : "FAIL")} (worst {result.WorstOffsetMilliseconds:0.0} ms)"
+            : "    <=100 ms alignment at ten minutes   NOT QUALIFIED");
+
+        Console.WriteLine(result.DriftEvaluated
+            ? $"    <=50 ms/hour residual drift         {(result.DriftPassed ? "PASS" : "FAIL")} ({result.DriftMillisecondsPerHour:0.0} ms/hr)"
+            : "    <=50 ms/hour residual drift         NOT QUALIFIED");
+
+        Console.WriteLine($"    {result.Explanation}");
+
+        if (samples.Count == 0)
+        {
+            Console.WriteLine($"    Supply measurements at {Path.Combine("diagnostics", AlignmentSamplesFile)} to evaluate these gates:");
+            Console.WriteLine("    [ { \"session_seconds\": 60.0, \"offset_ms\": 3.2 }, ... ]");
+        }
+    }
+
+    private const string AlignmentSamplesFile = "alignment-measurements.json";
+
+    /// <summary>
+    /// Loads signal-based alignment measurements if the session carries them. The chirp harness
+    /// that produces this file is deferred hardening work; until it exists the list is empty and
+    /// the gates report NOT QUALIFIED.
+    /// </summary>
+    private static List<AlignmentSample> LoadAlignmentSamples(string sessionDirectory)
+    {
+        string path = Path.Combine(sessionDirectory, "diagnostics", AlignmentSamplesFile);
+        if (!File.Exists(path))
+        {
+            return [];
+        }
+
+        using FileStream stream = File.OpenRead(path);
+        using System.Text.Json.JsonDocument document = System.Text.Json.JsonDocument.Parse(stream);
+
+        List<AlignmentSample> samples = [];
+        foreach (System.Text.Json.JsonElement element in document.RootElement.EnumerateArray())
+        {
+            samples.Add(new AlignmentSample(
+                element.GetProperty("session_seconds").GetDouble(),
+                element.GetProperty("offset_ms").GetDouble()));
+        }
+
+        return samples;
     }
 
     private static int Repair(string[] args)

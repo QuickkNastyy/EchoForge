@@ -44,6 +44,7 @@ public sealed class PcmChunkWriter : IDisposable
     private long _sessionFrames;
     private long _framesSinceFlush;
     private long _lastDevicePosition;
+    private bool _sealed;
     private bool _disposed;
 
     /// <param name="epochQpc">
@@ -95,12 +96,23 @@ public sealed class PcmChunkWriter : IDisposable
     public IReadOnlyList<CaptureDiscontinuity> PendingDiscontinuities => _pending;
 
     /// <summary>
+    /// True once <see cref="Complete"/> has run. A sealed writer ignores further audio,
+    /// silence, and overflow reports, so nothing can be appended to a session after it has
+    /// been finalized, validated, and written to the manifest.
+    /// </summary>
+    public bool IsSealed => _sealed;
+
+    /// <summary>
     /// Places one captured packet on the timeline, inserting silence for any frames the
     /// device position says were skipped.
     /// </summary>
     public void Write(in PacketHeader header, ReadOnlySpan<byte> pcm16)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_sealed)
+        {
+            return;
+        }
 
         long gap = TimelineFramesAt(header.QpcPosition) - _sessionFrames;
         int frames = header.FrameCount;
@@ -171,6 +183,10 @@ public sealed class PcmChunkWriter : IDisposable
     public void AdvanceTo(long qpcPosition, bool exact = false)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_sealed)
+        {
+            return;
+        }
 
         long gap = TimelineFramesAt(qpcPosition) - _sessionFrames;
         if (gap > (exact ? 0 : _gapThresholdFrames))
@@ -186,19 +202,32 @@ public sealed class PcmChunkWriter : IDisposable
     public void RecordOverflow(long frameCount, string detail)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        RecordDiscontinuity(new CaptureDiscontinuity(
-            DiscontinuityKind.QueueOverflow, _lastDevicePosition, frameCount, detail));
-    }
-
-    /// <summary>Finalizes the active chunk, if any. Idempotent.</summary>
-    public void Complete()
-    {
-        if (_disposed || _writer is null)
+        if (_sealed)
         {
             return;
         }
 
-        FinalizeChunk();
+        RecordDiscontinuity(new CaptureDiscontinuity(
+            DiscontinuityKind.QueueOverflow, _lastDevicePosition, frameCount, detail));
+    }
+
+    /// <summary>
+    /// Finalizes the active chunk, if any, and seals the writer. Idempotent: calling it again,
+    /// or writing to it afterwards, changes nothing on disk.
+    /// </summary>
+    public void Complete()
+    {
+        if (_disposed || _sealed)
+        {
+            return;
+        }
+
+        if (_writer is not null)
+        {
+            FinalizeChunk();
+        }
+
+        _sealed = true;
     }
 
     public void Dispose()

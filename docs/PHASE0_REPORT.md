@@ -2,7 +2,19 @@
 
 **Machine:** Windows 11 Pro 26200, .NET SDK 10.0.302, NAudio 2.3.0
 **Endpoints used:** Headphones (Astro A50 Game) render · Headset Microphone (Astro A50 Voice) capture
-**Status:** capture path working; **timing gates not yet qualified**
+
+## Status
+
+| | |
+|---|---|
+| Implementation | **Complete enough to continue.** The capture and timeline design is settled and built. |
+| Automated tests | **Passing.** 42 tests green; build clean with warnings as errors. |
+| Real-hardware qualification | **Deferred** by explicit product decision. See `HARDENING_BACKLOG.md`. |
+| Production qualification | **Not qualified.** No timing or durability gate has been measured. |
+
+Phase 1 proceeds on the implemented capture system. It does **not** proceed on a claim that the
+timing gates passed — they have not been run. Deferring a test is not passing it, and none of the
+original thresholds have been weakened.
 
 This records what Phase 0 has actually measured. Estimates are not promoted to results.
 
@@ -69,23 +81,56 @@ chunk writers.
 - Silence inserted from the clock; gaps recorded as discontinuities, never hidden.
 - Every finalized chunk decodes with an independent reader (`validate` re-reads from disk and
   trusts nothing the recorder wrote).
-- 29 unit tests green, covering chunk rotation, boundary splitting, silence insertion, jitter
-  rejection, overlap dropping, WAV repair with partial-frame trimming, bounded-queue overflow
-  accounting, and drift-rate recovery.
+- 42 unit tests green, covering chunk rotation, boundary splitting, silence advanced from the
+  session clock, jitter rejection, overlap dropping, writer sealing after stop, WAV repair with
+  partial-frame trimming, bounded-queue overflow accounting, drift-rate recovery, and
+  alignment-gate evaluation.
 - Capture threads perform no disk I/O, hashing, or UI work.
 
 Latest one-minute run: both tracks 00:01:00, two chunks each, all valid, zero dropped frames.
 
-## Not yet qualified
+### Stop and Dispose are idempotent
 
-| Gate | Status |
-|---|---|
-| ≤100 ms post-correction alignment at ten minutes | **Not measured.** Needs the chirp test. |
-| ≤50 ms/hour residual drift over a continuous 60-minute run | **Not run.** |
-| 250 ms over three hours | Not run. |
-| Process kill after ≥2 chunks, restart, recover active part | Repair is unit-tested; the real kill/restart cycle has not been exercised. |
-| Device unplug, sleep/resume, near-full disk | Not exercised. |
-| Bounded memory over a three-hour soak | Not measured. |
+A reviewed defect: `TrackPipeline.Dispose()` called `Stop()` unconditionally, so disposing after
+an explicit stop padded the timeline to "now", manufactured silence, and finalized a fresh chunk —
+mutating a session that had already been validated and written to `session.json`.
+
+`PcmChunkWriter.Complete()` now **seals** the writer. A sealed writer ignores further audio,
+silence, and overflow reports. `TrackPipeline` tracks started/stopped/disposed state separately,
+so a second stop or a later dispose does nothing, while a pipeline whose `Start` failed part way
+through can still be cleaned up. Regression tests capture a SHA-256 fingerprint of the track
+directory and assert it is byte-for-byte identical after a post-stop advance, write, overflow
+report, second complete, and dispose.
+
+## Deferred — not measured, not passed
+
+Every item below is tracked in `HARDENING_BACKLOG.md` with its original threshold, required
+equipment, procedure, and the evidence that must be captured.
+
+| Gate | Backlog | Status |
+|---|---|---|
+| ≤100 ms post-correction alignment at ten minutes | H-01 | `DEFERRED` — needs the chirp harness |
+| ≤50 ms/hour residual drift over a continuous 60-minute run | H-02 | `DEFERRED` |
+| Forced process kill, restart, recover active part | H-03 | `DEFERRED` — recovery logic is automated-tested; the physical cycle is not |
+| Physical device unplug | H-04 | `DEFERRED` |
+| Sleep / resume | H-05 | `DEFERRED` |
+| Near-full disk | H-06 | `DEFERRED` |
+| Three-hour memory and queue soak | H-07 | `DEFERRED` |
+| 250 ms over three hours (final acceptance) | — | `DEFERRED` |
+
+### Why track duration cannot stand in for any of these
+
+The validator previously derived the alignment and drift gates from the difference in final WAV
+lengths. That was wrong and has been removed. Both tracks are padded to a shared stop instant, so
+**equal durations are guaranteed by construction and say nothing about whether the audio lines
+up**. Packet/QPC figures are also insufficient: they cannot see analogue latency in either
+direction. Only a signal that travels the whole path measures the whole path.
+
+`validate` now prints duration difference as a labelled diagnostic and reports both timing gates
+as `NOT QUALIFIED` unless a session supplies signal-based measurements at
+`<session>/diagnostics/alignment-measurements.json`. When that file exists the gates are evaluated
+by `AlignmentQualification`, which is implemented and unit-tested now, so the chirp harness can be
+added later without touching the capture system.
 
 ### The open measurement
 
@@ -123,7 +168,11 @@ run is the next thing that has to happen, and it has to happen on this hardware.
 
 ## Next
 
-1. Run the 60-minute qualification capture and read the residual drift gate.
-2. Build the chirp offset harness and separate the fixed offset from the drift rate.
-3. Exercise kill/restart, device unplug, and sleep/resume against real devices.
-4. Only then move to Phase 1.
+Phase 1 is proceeding now on the implemented capture system, by product decision.
+
+The hardening work below must be completed before EchoForge can be called production-qualified.
+It is tracked in `HARDENING_BACKLOG.md` and must not be dropped:
+
+1. Build the chirp offset harness and separate the stable ~32 ms fixed offset from any drift rate (H-01).
+2. Run the 60-minute qualification capture and read the residual drift gate (H-02).
+3. Exercise kill/restart, device unplug, sleep/resume, near-full disk, and the three-hour soak (H-03 – H-07).

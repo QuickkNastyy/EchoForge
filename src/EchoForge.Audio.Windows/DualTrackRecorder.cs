@@ -59,6 +59,7 @@ public sealed class DualTrackRecorder : IDisposable
     private StreamWriter? _journal;
     private CaptureClock? _clock;
     private bool _running;
+    private bool _stopped;
     private bool _disposed;
 
     public DualTrackRecorder(
@@ -120,13 +121,24 @@ public sealed class DualTrackRecorder : IDisposable
         _running = true;
     }
 
-    /// <summary>Stops both endpoints, finalizes every chunk, and writes the manifest. Idempotent.</summary>
+    /// <summary>
+    /// Stops both endpoints, finalizes every chunk, and writes the manifest.
+    ///
+    /// <para>
+    /// Idempotent by contract, not by accident. After the first successful stop no further
+    /// frames, silence, chunks, hashes, journal lines, or manifest data are produced — a
+    /// second <see cref="Stop"/>, or a <see cref="Dispose"/> afterwards, leaves the session
+    /// exactly as validation found it.
+    /// </para>
+    /// </summary>
     public void Stop()
     {
-        if (!_running)
+        if (_stopped || !_running)
         {
             return;
         }
+
+        _stopped = true;
 
         // One stop instant for both tracks. Stopping them sequentially and letting each pad
         // to its own "now" would leave the tracks different lengths for no physical reason.
@@ -152,11 +164,17 @@ public sealed class DualTrackRecorder : IDisposable
     public IReadOnlyList<TrackStatus> Snapshot() => [.. _tracks.Select(t => t.Snapshot())];
 
     /// <summary>
-    /// Alignment between the two tracks in milliseconds, computed from how far each track's
-    /// device clock has diverged from the shared performance counter. Null until both tracks
-    /// have enough anchors to fit a line.
+    /// <b>Estimate only.</b> How far the two tracks' delivered audio has diverged from each
+    /// other relative to the shared performance counter, in milliseconds.
+    ///
+    /// <para>
+    /// This is a packet-level estimate, not an end-to-end alignment measurement. It cannot see
+    /// analogue latency in either direction, so it must never be reported as satisfying the
+    /// alignment gate. Real qualification needs the signal-based chirp harness, which is
+    /// deferred hardening work; see <see cref="AlignmentQualification"/>.
+    /// </para>
     /// </summary>
-    public double? AlignmentErrorMilliseconds()
+    public double? EstimatedOffsetMilliseconds()
     {
         if (_tracks.Count != 2)
         {
@@ -168,8 +186,11 @@ public sealed class DualTrackRecorder : IDisposable
         return _tracks[0].Drift.AnchorCount > 1 && _tracks[1].Drift.AnchorCount > 1 ? a - b : null;
     }
 
-    /// <summary>Relative drift rate between the two tracks, in milliseconds per hour.</summary>
-    public double? RelativeDriftMillisecondsPerHour()
+    /// <summary>
+    /// <b>Estimate only.</b> Relative drift rate between the two tracks in milliseconds per
+    /// hour, fitted from packet timestamps. Not a substitute for the signal-based drift gate.
+    /// </summary>
+    public double? EstimatedRelativeDriftMillisecondsPerHour()
     {
         if (_tracks.Count != 2)
         {
@@ -227,7 +248,7 @@ public sealed class DualTrackRecorder : IDisposable
                 silence_frames_inserted = t.Writer.SilenceFramesInserted,
                 dropped_frames = t.Queue.DroppedFrames,
                 peak_queued_frames = t.Queue.PeakQueuedFrames,
-                drift_ms_per_hour = t.Drift.MillisecondsPerHour(),
+                estimated_drift_ms_per_hour = t.Drift.MillisecondsPerHour(),
                 chunks = t.Writer.CompletedChunks.Select(c => new
                 {
                     index = c.Index,
@@ -282,6 +303,9 @@ public sealed class DualTrackRecorder : IDisposable
         private Thread? _writerThread;
         private CancellationTokenSource? _cts;
         private long _reportedDroppedFrames;
+        private bool _started;
+        private bool _pipelineStopped;
+        private bool _pipelineDisposed;
 
         public TrackPipeline(
             MMDevice device,
@@ -333,18 +357,36 @@ public sealed class DualTrackRecorder : IDisposable
             };
             _writerThread.Start();
             Capture.Start();
+            _started = true;
         }
 
+        /// <summary>
+        /// Stops capture and finalizes this track. Safe to call twice, and safe to call on a
+        /// pipeline whose <see cref="Start"/> failed part way through.
+        /// </summary>
         public void Stop(long stopQpc)
         {
+            if (_pipelineStopped)
+            {
+                return;
+            }
+
+            _pipelineStopped = true;
+
             Capture.Stop();
             _cts?.Cancel();
             _writerThread?.Join(TimeSpan.FromSeconds(10));
             _writerThread = null;
 
-            // Pad to the shared end of the session. Without this, a track whose endpoint
-            // stalled would simply be shorter than the recording it belongs to.
-            Writer.AdvanceTo(stopQpc, exact: true);
+            // Pad to the shared end of the session, but only for a track that actually ran.
+            // Advancing a never-started track would manufacture a chunk of pure silence.
+            if (_started)
+            {
+                Writer.AdvanceTo(stopQpc, exact: true);
+            }
+
+            // Sealing here is what makes a later Dispose a no-op rather than a chance to
+            // append silence and a fresh chunk after the manifest has already been written.
             Writer.Complete();
         }
 
@@ -447,7 +489,17 @@ public sealed class DualTrackRecorder : IDisposable
 
         public void Dispose()
         {
+            if (_pipelineDisposed)
+            {
+                return;
+            }
+
+            _pipelineDisposed = true;
+
+            // Only stops if it has not already stopped; a stopped pipeline is sealed and
+            // this call cannot add anything to the session.
             Stop(CaptureClock.Now());
+
             Capture.Dispose();
             Writer.Dispose();
             Queue.Dispose();
