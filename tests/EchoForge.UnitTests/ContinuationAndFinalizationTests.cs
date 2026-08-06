@@ -110,7 +110,7 @@ public sealed class ContinuationAndFinalizationTests : IDisposable
     }
 
     [Fact]
-    public void AFailedSnapshotWriteAlsoBecomesNeedsAttentionWithoutDuplicatingTheTerminalEvent()
+    public void AFailedSnapshotWriteDoesNotRewriteADurableTerminalOutcome()
     {
         SwitchableStore store = new(_store);
         using RecordingController controller = NewController(store);
@@ -120,17 +120,26 @@ public sealed class ContinuationAndFinalizationTests : IDisposable
         store.FailSnapshotWrites = true;
         controller.Stop();
 
-        Assert.Equal(SessionState.NeedsAttention, controller.State);
+        // The terminal event landed as Recorded before the projection failed. That outcome is
+        // now canonical, so the failure is a reconciliation warning rather than a new verdict.
+        Assert.Equal(SessionState.Recorded, controller.State);
+        Assert.True(controller.NeedsReconciliation);
         Assert.Null(controller.EndedUtc);
 
-        // The terminal event landed before the snapshot failed, so a retry must not repeat it.
+        JournalEvent afterFailure = Assert.Single(
+            _store.ReadJournal(sessionId).Events, e => e.Type == JournalEventTypes.SessionEnded);
+        Assert.Equal(nameof(SessionState.Recorded), afterFailure.Field("outcome"));
+
+        // The retry writes the snapshot with that same outcome, never a contradictory one.
         store.FailSnapshotWrites = false;
         controller.Stop();
-        controller.Dispose();
+
+        Assert.Equal(SessionState.Recorded, controller.State);
+        Assert.NotNull(controller.EndedUtc);
 
         JournalReadResult journal = _store.ReadJournal(sessionId);
         Assert.Single(journal.Events, e => e.Type == JournalEventTypes.SessionEnded);
-        Assert.NotNull(controller.EndedUtc);
+        Assert.Equal(SessionState.Recorded, _store.ReadSnapshot(sessionId)!.State);
     }
 
     [Fact]

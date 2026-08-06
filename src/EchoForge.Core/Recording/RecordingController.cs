@@ -107,6 +107,10 @@ public sealed class RecordingController : IDisposable
     private DateTimeOffset? _endedUtc;
     private DateTimeOffset? _intendedEndUtc;
     private SessionState? _intendedOutcome;
+
+    /// <summary>The outcome recorded in a durable session_ended event. Immutable once set.</summary>
+    private SessionState? _durableOutcome;
+
     private bool _terminalEventWritten;
     private TimeSpan _completedEpochDuration;
     private long _completedBytes;
@@ -398,6 +402,63 @@ public sealed class RecordingController : IDisposable
                 throw new InvalidOperationException($"Cannot adopt a recording from state {State}.");
             }
 
+            // Everything that can fail happens before any state is touched, so a refused lease
+            // or a failed write leaves this controller exactly as it was and still usable.
+            SessionPaths paths = _store.Resolve(candidate.SessionId);
+            ISessionLease? lease = null;
+
+            if (_leases is not null)
+            {
+                lease = _leases.TryAcquire(candidate.SessionId);
+                if (lease is null)
+                {
+                    throw new InvalidOperationException("This recording is already open somewhere else.");
+                }
+            }
+
+            DateTimeOffset adoptedAt = _clock.UtcNow();
+            List<SessionEpoch> epochs = [.. candidate.Epochs];
+
+            // A recording that crashed mid-epoch left it open. Close it at the last durable audio
+            // boundary before a new one is opened, so there are never two open epochs and the
+            // missing time reads as a gap rather than as continuous audio.
+            SessionEpoch open = epochs[^1];
+            List<JournalEvent> pending = [];
+
+            if (open.EndedUtc is null)
+            {
+                DateTimeOffset boundary = open.StartedUtc + DurableAudioIn(candidate, open.Index);
+                epochs[^1] = open with { EndedUtc = boundary, EndReason = EpochEndReason.Interrupted };
+
+                pending.Add(JournalEvent.Create(
+                    JournalEventTypes.EpochEnded, boundary,
+                    ("epoch", Text(open.Index)),
+                    ("reason", nameof(EpochEndReason.Interrupted)),
+                    ("closed_by", "recovery")));
+            }
+
+            pending.Add(JournalEvent.Create(
+                JournalEventTypes.SessionAdopted, adoptedAt,
+                ("session_id", candidate.SessionId),
+                ("reason", candidate.Reason.ToString()),
+                ("next_epoch", Text(candidate.NextEpochIndex)),
+                ("next_chunk_index", Text(candidate.NextChunkIndex))));
+
+            try
+            {
+                foreach (JournalEvent journalEvent in pending)
+                {
+                    _store.Append(candidate.SessionId, journalEvent);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                lease?.Dispose();
+                throw new InvalidOperationException(
+                    $"This recording could not be opened for continuing ({ex.GetType().Name}).", ex);
+            }
+
+            // Past this point nothing can fail, so the mutation is safe to commit.
             ResetSessionState();
             _lostEndpoints.Clear();
             _journalledFaults.Clear();
@@ -405,27 +466,17 @@ public sealed class RecordingController : IDisposable
             _generation++;
 
             SessionId = candidate.SessionId;
-            _paths = _store.Resolve(candidate.SessionId);
+            _paths = paths;
+            _lease = lease;
             _createdUtc = candidate.CreatedUtc;
             _startedUtc = candidate.StartedUtc;
-
-            // Only one process may continue a session. Claiming the lease is what enforces it.
-            if (_leases is not null)
-            {
-                _lease = _leases.TryAcquire(candidate.SessionId);
-                if (_lease is null)
-                {
-                    SessionId = null;
-                    throw new InvalidOperationException(
-                        "This recording is already open somewhere else.");
-                }
-            }
 
             _request = new RecordingRequest(
                 candidate.RenderEndpointId, candidate.RenderDeviceName,
                 candidate.CaptureEndpointId, candidate.CaptureDeviceName);
 
-            _epochs.AddRange(candidate.Epochs);
+            _epochs.AddRange(epochs);
+
             foreach (SessionTrack track in candidate.Tracks)
             {
                 TrackAccumulator accumulator = new()
@@ -446,16 +497,18 @@ public sealed class RecordingController : IDisposable
                 }
             }
 
+            // Carry the history forward so the timer, chunk counts, and byte totals continue from
+            // what was already recorded instead of restarting at zero.
+            _completedEpochDuration = TimeSpan.FromSeconds(
+                _epochs.Sum(e => e.Duration?.TotalSeconds ?? 0));
+
+            _completedBytes = candidate.Tracks
+                .SelectMany(t => t.Chunks)
+                .Sum(c => c.SampleFrames * c.Channels * 2);
+
             _epochIndex = candidate.NextEpochIndex - 1;
             _nextChunkIndex = candidate.NextChunkIndex;
             AwaitingResumeAfterSuspend = candidate.Reason == SessionContinuationReason.Suspended;
-
-            _store.Append(SessionId, JournalEvent.Create(
-                JournalEventTypes.SessionAdopted, _clock.UtcNow(),
-                ("session_id", SessionId),
-                ("reason", candidate.Reason.ToString()),
-                ("next_epoch", Text(candidate.NextEpochIndex)),
-                ("next_chunk_index", Text(candidate.NextChunkIndex))));
 
             Phase = CapturePhase.Idle;
             SetState(SessionState.Paused, $"Continuing a recording that was {candidate.Describe()}.");
@@ -679,6 +732,7 @@ public sealed class RecordingController : IDisposable
         _endedUtc = null;
         _intendedEndUtc = null;
         _intendedOutcome = null;
+        _durableOutcome = null;
         _terminalEventWritten = false;
         NeedsReconciliation = false;
         _startedUtc = null;
@@ -955,17 +1009,23 @@ public sealed class RecordingController : IDisposable
         _intendedEndUtc ??= _clock.UtcNow();
         _intendedOutcome ??= outcome;
 
-        // The downgrade is re-evaluated every attempt: a session whose ledger fell behind — even
-        // if a later retry got through — is one a human should look at.
-        SessionState effective = _intendedOutcome.Value == SessionState.Failed
+        // Once session_ended is durable its outcome is immutable: the journal is the canonical
+        // ledger, and a retry that recomputed a different answer would leave the snapshot
+        // contradicting the event that already describes the session.
+        SessionState effective = _durableOutcome ?? (_intendedOutcome.Value == SessionState.Failed
             ? SessionState.Failed
-            : NeedsReconciliation ? SessionState.NeedsAttention : _intendedOutcome.Value;
+            : NeedsReconciliation ? SessionState.NeedsAttention : _intendedOutcome.Value);
 
-        // Capture has stopped by this point, so the session is no longer live whatever happens
-        // to the writes below. Releasing here means a finalization failure cannot strand the
-        // lease and lock recovery out of the session forever.
         Phase = CapturePhase.Stopped;
-        ReleaseLease();
+
+        // The lease covers the whole attempt. Releasing before the writes would let recovery in
+        // while the terminal event and snapshot were still being written.
+        if (!EnsureLeaseForFinalization())
+        {
+            NeedsReconciliation = true;
+            SetState(SessionState.NeedsAttention, "this recording is open elsewhere and could not be saved here");
+            return;
+        }
 
         try
         {
@@ -980,6 +1040,7 @@ public sealed class RecordingController : IDisposable
                     ("reason", reason)));
 
                 _terminalEventWritten = true;
+                _durableOutcome = effective;
             }
 
             _store.WriteSnapshot(BuildSnapshot(effective, _intendedEndUtc));
@@ -995,13 +1056,63 @@ public sealed class RecordingController : IDisposable
             // projection are behind. Leave the session retryable and say so.
             _endedUtc = null;
             NeedsReconciliation = true;
-            SetState(SessionState.NeedsAttention, "the recording could not be fully saved");
+
+            // A projection failure is a warning about the snapshot, not a change to what the
+            // session was. The canonical outcome, once durable, is not revised here.
+            SetState(_durableOutcome ?? SessionState.NeedsAttention,
+                "the recording could not be fully saved");
 
             Notice?.Invoke(this,
                 "Your audio is saved, but EchoForge could not finish writing this recording's " +
                 $"record file ({ex.GetType().Name}). It will be checked and repaired the next time " +
                 "EchoForge starts.");
         }
+        finally
+        {
+            ReleaseLease();
+        }
+    }
+
+    /// <summary>
+    /// Makes sure the session lease is held for a finalization attempt, reacquiring it when an
+    /// earlier attempt released it. Returns false when another owner holds it, in which case
+    /// nothing may be written.
+    /// </summary>
+    private bool EnsureLeaseForFinalization()
+    {
+        if (_leases is null || _lease is not null || SessionId is null)
+        {
+            return true;
+        }
+
+        // A session that never opened an epoch captured nothing, so there is no audio for
+        // recovery to collide with. Refusing to record its failure because the lease is
+        // unavailable would strand it with no terminal event at all.
+        if (_epochs.Count == 0)
+        {
+            return true;
+        }
+
+        _lease = _leases.TryAcquire(SessionId);
+        return _lease is not null;
+    }
+
+    /// <summary>
+    /// How much audio an epoch durably captured, measured from its own chunks. This is the last
+    /// boundary EchoForge can honestly vouch for, so an interrupted epoch is closed there rather
+    /// than at a guessed wall-clock moment.
+    /// </summary>
+    private static TimeSpan DurableAudioIn(RecoveryCandidate candidate, int epochIndex)
+    {
+        double seconds = candidate.Tracks
+            .SelectMany(t => t.Chunks)
+            .Where(c => c.EpochIndex == epochIndex && c.SampleRate > 0)
+            .GroupBy(c => c.Track)
+            .Select(g => g.Sum(c => (double)c.SampleFrames / c.SampleRate))
+            .DefaultIfEmpty(0)
+            .Max();
+
+        return TimeSpan.FromSeconds(seconds);
     }
 
     private void ReleaseLease()
