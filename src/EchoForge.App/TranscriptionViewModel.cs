@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Windows.Threading;
+using EchoForge.Contracts.Artifacts;
 using EchoForge.Contracts.Processing;
 using EchoForge.Contracts.Transcripts;
 using EchoForge.Core.Exports;
@@ -70,11 +71,16 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         TranscribeAgainCommand = new AsyncRelayCommand(TranscribeAsync, _gate, () => CanTranscribeAgain, m => Error = m);
         CancelCommand = new AsyncRelayCommand(CancelAsync, _gate, () => CanCancel, m => Error = m);
         ExportCommand = new AsyncRelayCommand(ExportAsync, _gate, () => CanExport, m => Error = m);
+        PrepareProductionCommand = new AsyncRelayCommand(
+            () => PrepareAsync(installMissing: false), _gate, () => CanPrepare, m => Error = m);
+        InstallModelsCommand = new AsyncRelayCommand(
+            () => PrepareAsync(installMissing: true), _gate, () => CanPrepare, m => Error = m);
 
         _gate.Changed += (_, _) => Dispatch(RaiseCommands);
 
         _coordinator.StateChanged += OnCoordinatorStateChanged;
         _coordinator.ProgressChanged += OnCoordinatorProgress;
+        _coordinator.PreparationProgress += OnPreparationProgress;
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -86,6 +92,12 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
     public AsyncRelayCommand CancelCommand { get; }
 
     public AsyncRelayCommand ExportCommand { get; }
+
+    /// <summary>Checks artifacts and prepares audio, without downloading anything.</summary>
+    public AsyncRelayCommand PrepareProductionCommand { get; }
+
+    /// <summary>The same, but permitted to download the pinned models first.</summary>
+    public AsyncRelayCommand InstallModelsCommand { get; }
 
     public ObservableCollection<TranscriptRevisionOption> Revisions { get; } = [];
 
@@ -247,6 +259,36 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
     public bool CanExport => HasTranscript && !_shuttingDown && !IsWorking;
 
     /// <summary>
+    /// Production preparation is available for a settled recording, when nothing else is running
+    /// and this build can do it at all. On a machine with no worker runtime the buttons simply
+    /// are not there, and recording is unaffected.
+    /// </summary>
+    public bool CanPrepare =>
+        HasSession && _sessionSettled && _hostReady && !_shuttingDown &&
+        _coordinator.SupportsProductionProfiles && !IsPreparing &&
+        !IsWorking && !_coordinator.IsRunning && !_coordinator.IsQueued;
+
+    public bool SupportsProduction => _coordinator.SupportsProductionProfiles;
+
+    public bool IsPreparing { get; private set; }
+
+    /// <summary>
+    /// Where production readiness stands, in the words the window shows.
+    ///
+    /// <para>
+    /// Distinct from the transcription stage on purpose: this build can have a finished
+    /// placeholder transcript and no production models at all, and saying so plainly is the whole
+    /// point of the surface.
+    /// </para>
+    /// </summary>
+    public string ProductionStatus { get; private set; } = string.Empty;
+
+    public bool HasProductionStatus => !string.IsNullOrWhiteSpace(ProductionStatus);
+
+    /// <summary>Set once preparation has produced a plan. Speech recognition is still not implemented.</summary>
+    public string ProductionPlanSummary { get; private set; } = string.Empty;
+
+    /// <summary>
     /// Pushed by the main view model on every refresh, so this view model never has to observe
     /// the recorder itself and the two can never disagree about whether capture is live.
     /// </summary>
@@ -338,6 +380,63 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         Notice = null;
         return Task.Run(_coordinator.Cancel);
     }
+
+    /// <summary>
+    /// Prepares a production profile: verify or install the pinned artifacts, build the 16 kHz
+    /// derivatives, and plan the windows. It stops before any recogniser runs, and says so.
+    /// </summary>
+    private async Task PrepareAsync(bool installMissing)
+    {
+        if (_sessionId is not { } sessionId)
+        {
+            return;
+        }
+
+        Error = null;
+        IsPreparing = true;
+        ProductionStatus = "Checking installed models…";
+        OnChanged(nameof(IsPreparing));
+        OnChanged(nameof(ProductionStatus));
+        OnChanged(nameof(HasProductionStatus));
+        RaiseCommands();
+
+        try
+        {
+            PreparationResult result = await _coordinator
+                .PrepareAsync(sessionId, ProcessingProfile.CpuInt8, installMissing)
+                .ConfigureAwait(true);
+
+            ProductionStatus = result.Message;
+
+            if (result.IsReady && result.Plan is { } plan)
+            {
+                ProductionPlanSummary = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{plan.Windows.Count} windows · {plan.WindowSeconds:0} s each · {plan.OverlapSeconds:0} s overlap");
+            }
+            else if (result.Stage is PreparationStage.Failed or PreparationStage.Blocked)
+            {
+                Error = result.Message;
+            }
+        }
+        finally
+        {
+            IsPreparing = false;
+            OnChanged(nameof(IsPreparing));
+            OnChanged(nameof(ProductionStatus));
+            OnChanged(nameof(HasProductionStatus));
+            OnChanged(nameof(ProductionPlanSummary));
+            RefreshFromCoordinator();
+        }
+    }
+
+    private void OnPreparationProgress(object? sender, PreparationProgressEventArgs e) => Dispatch(() =>
+    {
+        ProductionStatus = e.Detail;
+        ProgressPercent = Math.Round(e.Fraction * 100, 1);
+        OnChanged(nameof(ProductionStatus));
+        OnChanged(nameof(HasProductionStatus));
+    });
 
     private async Task ExportAsync()
     {
@@ -475,6 +574,8 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         nameof(IsPlaceholderBackend), nameof(PlaceholderWarning), nameof(BackendSummary),
         nameof(HasSession), nameof(SelectedRevision),
         nameof(CanTranscribe), nameof(CanTranscribeAgain), nameof(CanCancel), nameof(CanExport),
+        nameof(CanPrepare), nameof(SupportsProduction), nameof(IsPreparing),
+        nameof(ProductionStatus), nameof(HasProductionStatus), nameof(ProductionPlanSummary),
     ];
 
     private void RaiseCommands()
@@ -483,6 +584,8 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         TranscribeAgainCommand.RaiseCanExecuteChanged();
         CancelCommand.RaiseCanExecuteChanged();
         ExportCommand.RaiseCanExecuteChanged();
+        PrepareProductionCommand.RaiseCanExecuteChanged();
+        InstallModelsCommand.RaiseCanExecuteChanged();
     }
 
     /// <summary>Marshals onto the dispatcher when the coordinator raises from a worker thread.</summary>
@@ -512,5 +615,6 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         _disposed = true;
         _coordinator.StateChanged -= OnCoordinatorStateChanged;
         _coordinator.ProgressChanged -= OnCoordinatorProgress;
+        _coordinator.PreparationProgress -= OnPreparationProgress;
     }
 }

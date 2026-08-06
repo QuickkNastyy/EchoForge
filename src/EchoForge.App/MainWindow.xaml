@@ -243,6 +243,31 @@
               <TextBlock Margin="0,8,0,0" Style="{StaticResource Label}" Foreground="{StaticResource InkFaint}"
                          Text="{Binding BackendSummary}" TextWrapping="Wrap" />
             </StackPanel>
+
+            <!-- Production readiness. Separate from the transcription stage above, because this
+                 build can hold a finished placeholder transcript and no production models. -->
+            <StackPanel Margin="0,14,0,0"
+                        Visibility="{Binding SupportsProduction, Converter={StaticResource BoolToVis}}">
+              <Border Height="1" Background="{StaticResource Line}" Margin="0,0,0,12" />
+
+              <TextBlock Text="PRODUCTION SPEECH RECOGNITION" Style="{StaticResource Label}" />
+
+              <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="{StaticResource InkDim}"
+                         Text="Preparation installs the pinned models, converts the recording to 16 kHz mono, and plans the transcription windows. Recognition itself is not implemented in this build." />
+
+              <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{StaticResource Ink}"
+                         Text="{Binding ProductionStatus}"
+                         Visibility="{Binding HasProductionStatus, Converter={StaticResource BoolToVis}}" />
+
+              <TextBlock Margin="0,4,0,0" Style="{StaticResource Label}" Foreground="{StaticResource Remote}"
+                         Text="{Binding ProductionPlanSummary}" />
+
+              <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                <Button Content="Check and prepare audio" Command="{Binding PrepareProductionCommand}"
+                        Margin="0,0,10,0" />
+                <Button Content="Download models and prepare" Command="{Binding InstallModelsCommand}" />
+              </StackPanel>
+            </StackPanel>
           </StackPanel>
         </Border>
       </StackPanel>

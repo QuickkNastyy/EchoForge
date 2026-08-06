@@ -103,6 +103,7 @@ public sealed class TranscriptionCoordinator : IDisposable
 
     private PendingRequest? _pending;
     private RunningAttempt? _running;
+    private bool _preparing;
     private bool _disposed;
 
     public TranscriptionCoordinator(
@@ -110,13 +111,130 @@ public sealed class TranscriptionCoordinator : IDisposable
         ITranscriptionStore transcripts,
         WorkerSupervisor supervisor,
         ICaptureActivityGate? captureGate = null,
-        TimeProvider? clock = null)
+        TimeProvider? clock = null,
+        ProcessingPreparation? preparation = null)
     {
         _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
         _transcripts = transcripts ?? throw new ArgumentNullException(nameof(transcripts));
         _supervisor = supervisor ?? throw new ArgumentNullException(nameof(supervisor));
         _captureGate = captureGate ?? NoRecordingInProgressGate.Instance;
         _clock = clock ?? TimeProvider.System;
+        _preparation = preparation;
+    }
+
+    private readonly ProcessingPreparation? _preparation;
+
+    /// <summary>
+    /// True when this build can prepare for a production profile at all. False leaves the
+    /// placeholder path working exactly as before, which is what keeps a machine with no models
+    /// fully usable.
+    /// </summary>
+    public bool SupportsProductionProfiles => _preparation is not null;
+
+    public ProcessingPreparation? Preparation => _preparation;
+
+    public event EventHandler<PreparationProgressEventArgs>? PreparationProgress;
+
+    /// <summary>
+    /// Installs artifacts, builds the 16 kHz derivatives, and plans transcription windows for a
+    /// production profile — and stops there.
+    ///
+    /// <para>
+    /// Deliberately separate from <see cref="Request"/>. Nothing here loads a model or produces a
+    /// transcript; the deterministic placeholder remains the only thing that does. Recording still
+    /// wins: preparation is refused while capture is live, and cancelling it leaves sources and
+    /// every previous revision untouched.
+    /// </para>
+    /// </summary>
+    public async Task<PreparationResult> PrepareAsync(
+        string sessionId,
+        string profileId,
+        bool installMissing = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (_preparation is null)
+        {
+            return new PreparationResult(
+                PreparationStage.Failed,
+                "This installation cannot prepare production transcription.",
+                "preparation_unavailable");
+        }
+
+        if (_captureGate.IsCaptureActive)
+        {
+            return new PreparationResult(
+                PreparationStage.Blocked,
+                "Preparation is waiting because a recording is in progress. Recording always has priority.",
+                "recording_active");
+        }
+
+        lock (_sync)
+        {
+            if (_running is not null || _preparing)
+            {
+                return new PreparationResult(
+                    PreparationStage.Blocked,
+                    "Another processing job is already running. Only one runs at a time.",
+                    "busy");
+            }
+
+            _preparing = true;
+        }
+
+        try
+        {
+            SessionSnapshot? snapshot = _sessions.ReadSnapshot(sessionId);
+            SessionPaths paths = _sessions.Resolve(sessionId);
+
+            if (snapshot is null)
+            {
+                return new PreparationResult(PreparationStage.Failed, "That recording could not be read.", "session_unreadable");
+            }
+
+            SourceVerification verification = SourceChunkVerifier.Verify(snapshot, paths.Root);
+            if (!verification.Ok)
+            {
+                return new PreparationResult(
+                    PreparationStage.Failed, DescribeRefusal(verification.Code!), verification.Code);
+            }
+
+            RequestBuildResult built = BuildRequest(
+                snapshot, paths, new TranscriptionOptions(), 1, paths.TranscriptStagingPath(1));
+
+            if (!built.Succeeded)
+            {
+                return new PreparationResult(
+                    PreparationStage.Failed,
+                    "EchoForge could not describe this recording to the preparation pipeline.",
+                    built.Failure?.Code);
+            }
+
+            void Forward(object? sender, PreparationProgressEventArgs e) => PreparationProgress?.Invoke(this, e);
+
+            _preparation.Progress += Forward;
+            try
+            {
+                return await _preparation
+                    .PrepareAsync(built.Request!, profileId, installMissing, cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                _preparation.Progress -= Forward;
+            }
+        }
+        finally
+        {
+            lock (_sync)
+            {
+                _preparing = false;
+            }
+
+            RaiseStateChanged();
+        }
     }
 
     public event EventHandler<TranscriptionProgressEventArgs>? ProgressChanged;
@@ -384,7 +502,9 @@ public sealed class TranscriptionCoordinator : IDisposable
 
         lock (_sync)
         {
-            if (_disposed || _running is not null || _pending is null)
+            // Preparation counts as the one heavy job too: it hashes gigabytes, resamples hours
+            // of audio, and would otherwise run alongside a worker doing the same thing.
+            if (_disposed || _running is not null || _preparing || _pending is null)
             {
                 return false;
             }

@@ -26,14 +26,19 @@ is **not production-qualified**. Deferring a test is not passing it.
   activation, the processing coordinator, the application surface, and JSON / TXT / SRT /
   VTT exports.
 
-The transcription backend in this build performs **no speech recognition**. It reads the
-real audio and emits deterministic placeholder text, and it says so on the worker
-handshake, in every transcript it writes, in the app, and in the exported file. Phase 2B
+**Phase 2B, Pass 1** is complete: the production artifacts are pinned with verified
+digests, downloads are resumable and verified before activation, and recordings are
+converted to 16 kHz mono derivatives with timing maps and divided into overlapping
+transcription windows. See [`docs/PHASE2B_PASS1_REPORT.md`](docs/PHASE2B_PASS1_REPORT.md).
+
+The transcription backend in this build still performs **no speech recognition**. It reads
+the real audio and emits deterministic placeholder text, and it says so on the worker
+handshake, in every transcript it writes, in the app, and in the exported file. Pass 2
 replaces it with faster-whisper behind the same interface.
 
-No production model, CUDA component, or inference runtime has been added.
-`artifacts/manifest.json` is intentionally empty, and `scripts/verify-models.ps1`
-is the gate that keeps it that way.
+`artifacts/manifest.json` lists every file EchoForge may download, each pinned to an
+immutable revision with a verified size and SHA-256; `scripts/verify-models.ps1` is the
+gate that keeps anything else out. No model is downloaded until you ask for one.
 
 ## Plan
 

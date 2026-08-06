@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows;
 using EchoForge.Audio.Windows;
 using EchoForge.Contracts.Recording;
+using EchoForge.Infrastructure.Artifacts;
 using EchoForge.Contracts.Settings;
 using EchoForge.Core.Exports;
 using EchoForge.Core.Recording;
@@ -33,6 +34,7 @@ public partial class App : System.Windows.Application, IDisposable
     private ShutdownCoordinator? _shutdown;
     private TranscriptionCoordinator? _coordinator;
     private FileTranscriptionStore? _transcripts;
+    private ArtifactRegistry? _registry;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -174,11 +176,26 @@ public partial class App : System.Windows.Application, IDisposable
         }
 
         _transcripts = new FileTranscriptionStore(store);
+
+        // Production preparation is composed only when the pinned manifest itself is sound. A
+        // manifest that fails validation permits nothing rather than permitting less: the
+        // placeholder path keeps working and no download can happen.
+        _registry = ArtifactRegistry.TryOpen(
+            Path.Combine(RepositoryWorkerRoot(), "artifacts", "manifest.json"),
+            out IReadOnlyList<string> manifestProblems);
+
+        ProcessingPreparation? preparation = _registry is null
+            ? null
+            : new ProcessingPreparation(store, _registry, new DerivativeBuilder(store));
+
         _coordinator = new TranscriptionCoordinator(
             store,
             _transcripts,
             new WorkerSupervisor(options, new RecordingCaptureGate(_controller)),
-            new RecordingCaptureGate(_controller));
+            new RecordingCaptureGate(_controller),
+            preparation: preparation);
+
+        _ = manifestProblems;
 
         // Recording always has priority, so the coordinator hears about capture the moment the
         // recorder does rather than discovering it on a poll.
@@ -278,6 +295,9 @@ public partial class App : System.Windows.Application, IDisposable
         _coordinator?.Dispose();
         _coordinator = null;
         _transcripts = null;
+
+        _registry?.Dispose();
+        _registry = null;
 
         _controller?.Dispose();
         _controller = null;
