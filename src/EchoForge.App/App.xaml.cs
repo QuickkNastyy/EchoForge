@@ -45,6 +45,7 @@ public partial class App : System.Windows.Application, IDisposable
         base.OnStartup(e);
 
         FileSessionStore store = new();
+        FileSessionLeaseProvider leases = new(store);
         ISettingsStore settings = new JsonSettingsStore();
         _catalog = new AudioDeviceCatalog();
         _endpoints = new MmDeviceEndpointMonitor();
@@ -57,7 +58,8 @@ public partial class App : System.Windows.Application, IDisposable
             new VolumeDiskSpaceProbe(),
             policy: null,
             endpoints: _endpoints,
-            power: _power);
+            power: _power,
+            leases: leases);
 
         MainWindow window = new();
         _viewModel = new MainViewModel(_controller, _catalog, settings, new DialogConsentPrompt(window));
@@ -74,38 +76,44 @@ public partial class App : System.Windows.Application, IDisposable
         window.Show();
 
         // Recovery walks every session folder and hashes files, so it runs off the UI thread.
-        _ = RunRecoveryScanAsync(store, window);
+        // Start stays disabled until it finishes; the window is responsive throughout.
+        _ = RunRecoveryScanAsync(store, leases);
     }
 
     /// <summary>
-    /// Settles interrupted sessions in the background and reports what actually happened, by
-    /// session rather than by note count.
+    /// Settles interrupted sessions in the background, then opens the readiness gate.
+    ///
+    /// <para>
+    /// The gate opens whether or not recovery succeeded: a recovery problem must not lock the
+    /// user out of recording. It does say what happened, counted by session rather than by note.
+    /// </para>
     /// </summary>
-    private async Task RunRecoveryScanAsync(FileSessionStore store, Window window)
+    private async Task RunRecoveryScanAsync(FileSessionStore store, FileSessionLeaseProvider leases)
     {
         try
         {
             IReadOnlyList<RecoveryOutcome> outcomes = await Task.Run(() =>
-                new SessionRecoveryService(store, new WavChunkRepairer()).ScanAll()).ConfigureAwait(true);
+                new SessionRecoveryService(store, new WavChunkRepairer(), null, leases).ScanAll())
+                .ConfigureAwait(true);
 
-            if (outcomes.Count == 0)
+            string? summary = null;
+            if (outcomes.Count > 0)
             {
-                return;
+                int needsAttention = outcomes.Count(o => o.State == Contracts.Sessions.SessionState.NeedsAttention);
+                int chunks = outcomes.Sum(o => o.ChunksRecovered + o.ChunksReconciled);
+
+                summary = $"Recovered {Plural(outcomes.Count, "interrupted recording")} on startup" +
+                    (chunks > 0 ? $", restoring {Plural(chunks, "audio chunk")}" : string.Empty) +
+                    (needsAttention > 0 ? $". {Plural(needsAttention, "session")} needs attention." : ".");
             }
 
-            int needsAttention = outcomes.Count(o => o.State == Contracts.Sessions.SessionState.NeedsAttention);
-            int chunks = outcomes.Sum(o => o.ChunksRecovered + o.ChunksReconciled);
-
-            string summary = $"Recovered {Plural(outcomes.Count, "interrupted recording")} on startup" +
-                (chunks > 0 ? $", restoring {Plural(chunks, "audio chunk")}" : string.Empty) +
-                (needsAttention > 0 ? $". {Plural(needsAttention, "session")} needs attention." : ".");
-
-            window.Dispatcher.Invoke(() => _viewModel?.ShowRecoverySummary(summary));
+            _viewModel?.MarkReady(summary);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            window.Dispatcher.Invoke(() =>
-                _viewModel?.ShowRecoverySummary($"Recovery could not finish: {ex.GetType().Name}"));
+            _viewModel?.MarkReady(
+                warning: $"EchoForge could not finish checking earlier recordings ({ex.GetType().Name}). " +
+                         "You can still record, but any interrupted sessions may need attention.");
         }
     }
 

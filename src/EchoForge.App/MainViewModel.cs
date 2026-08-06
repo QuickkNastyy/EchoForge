@@ -136,8 +136,44 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public bool IndicatorVisible => IsRecording;
 
+    /// <summary>
+    /// False until the startup recovery scan has finished.
+    ///
+    /// <para>
+    /// Recording must not begin while recovery is still walking the session folders: the two
+    /// could otherwise touch the same session, with recovery repairing chunks a live recorder is
+    /// writing. Recovery failing still opens the gate — a recovery problem must not lock the user
+    /// out of recording — but it says so.
+    /// </para>
+    /// </summary>
+    public bool IsReady { get; private set; }
+
+    public string ReadinessMessage { get; private set; } = "Checking interrupted recordings…";
+
     public bool CanStart =>
-        !IsRecording && !IsPaused && SelectedRender is not null && SelectedCapture is not null;
+        IsReady && !IsRecording && !IsPaused && SelectedRender is not null && SelectedCapture is not null;
+
+    /// <summary>Opens the readiness gate once recovery has finished, successfully or not.</summary>
+    public void MarkReady(string? summary = null, string? warning = null) => Dispatch(() =>
+    {
+        IsReady = true;
+        ReadinessMessage = string.Empty;
+
+        if (warning is not null)
+        {
+            Notice = warning;
+        }
+        else if (summary is not null)
+        {
+            Notice = summary;
+        }
+
+        OnChanged(nameof(IsReady));
+        OnChanged(nameof(ReadinessMessage));
+        OnChanged(nameof(CanStart));
+        OnChanged(nameof(StatusHeadline));
+        RaiseCommands();
+    });
 
     public string StatusHeadline
     {
@@ -175,8 +211,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         ? $"EchoForge — recording {Elapsed}"
         : IsPaused ? "EchoForge — paused" : "EchoForge";
 
-    /// <summary>Shows the startup recovery result, once the background scan has finished.</summary>
-    public void ShowRecoverySummary(string summary) => Dispatch(() => Notice = summary);
 
     private void LoadDevices()
     {
@@ -378,7 +412,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             SessionState.Finalizing => "Saving",
             SessionState.Recorded => "Saved",
             SessionState.Failed => "Failed",
-            _ => "Ready",
+            SessionState.NeedsAttention => "Needs attention",
+            _ => IsReady ? "Ready" : "Checking interrupted recordings…",
         };
 
         foreach (string name in RefreshedProperties)

@@ -184,6 +184,9 @@
       <Button Content="Refresh devices" Command="{Binding RefreshDevicesCommand}" />
 
       <TextBlock Style="{StaticResource Label}" VerticalAlignment="Center" Margin="18,0,0,0"
+                 Foreground="{StaticResource InkDim}" Text="{Binding ReadinessMessage}" />
+
+      <TextBlock Style="{StaticResource Label}" VerticalAlignment="Center" Margin="18,0,0,0"
                  Text="Chunks · 60 s · PCM16 · separate tracks" />
     </StackPanel>
   </Grid>

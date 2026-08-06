@@ -87,7 +87,9 @@ public sealed class RecordingController : IDisposable
 
     private readonly IEndpointMonitor? _endpoints;
     private readonly IPowerMonitor? _power;
+    private readonly ISessionLeaseProvider? _leases;
     private readonly HashSet<string> _lostEndpoints = new(StringComparer.OrdinalIgnoreCase);
+    private ISessionLease? _lease;
 
     public RecordingController(
         ISessionStore store,
@@ -96,8 +98,10 @@ public sealed class RecordingController : IDisposable
         IDiskSpaceProbe disk,
         DiskPolicy? policy = null,
         IEndpointMonitor? endpoints = null,
-        IPowerMonitor? power = null)
+        IPowerMonitor? power = null,
+        ISessionLeaseProvider? leases = null)
     {
+        _leases = leases;
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(engineFactory);
         ArgumentNullException.ThrowIfNull(clock);
@@ -276,6 +280,19 @@ public sealed class RecordingController : IDisposable
             SessionId = Guid.NewGuid().ToString("n");
             _createdUtc = _clock.UtcNow();
             _paths = _store.Create(SessionId);
+
+            // Claim the session for its whole lifetime, so startup recovery in this or another
+            // process leaves it alone rather than repairing chunks still being written.
+            if (_leases is not null)
+            {
+                _lease = _leases.TryAcquire(SessionId);
+                if (_lease is null)
+                {
+                    const string Busy = "this session folder is already in use";
+                    FailStart(Busy, journalSession: false);
+                    throw new InvalidOperationException(Busy);
+                }
+            }
 
             (bool allowed, string? reason) = _policy.CanStart(_disk.AvailableBytes(_paths.Root));
             if (!allowed)
@@ -768,6 +785,10 @@ public sealed class RecordingController : IDisposable
 
         SetState(effective, reason);
         WriteSnapshot();
+
+        // The session is finished, so recovery may have it back.
+        _lease?.Dispose();
+        _lease = null;
     }
 
     /// <summary>
@@ -927,6 +948,9 @@ public sealed class RecordingController : IDisposable
 
         _persistence.Drain(TimeSpan.FromSeconds(5));
         _persistence.Dispose();
+
+        _lease?.Dispose();
+        _lease = null;
     }
 
     private sealed class TrackAccumulator

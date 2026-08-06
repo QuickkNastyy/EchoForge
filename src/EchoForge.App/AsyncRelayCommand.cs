@@ -75,7 +75,10 @@ public sealed class AsyncRelayCommand : ICommand
     /// </summary>
     public async void Execute(object? parameter)
     {
-        if (!_gate.TryEnter())
+        // Re-check rather than trusting the caller. WPF disables the button, but Execute can be
+        // invoked directly — from the tray menu, a keyboard binding, or a test — and a command
+        // that is not currently allowed must do nothing.
+        if (!CanExecute(parameter) || !_gate.TryEnter())
         {
             return;
         }

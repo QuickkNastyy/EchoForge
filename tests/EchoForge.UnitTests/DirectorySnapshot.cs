@@ -21,10 +21,20 @@ public sealed record DirectorySnapshot(IReadOnlyList<string> Entries)
         foreach (string file in Directory.GetFiles(root, "*", SearchOption.AllDirectories)
                      .OrderBy(f => f, StringComparer.Ordinal))
         {
-            using FileStream stream = new(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            string hash = Convert.ToHexStringLower(SHA256.HashData(stream));
             string relative = Path.GetRelativePath(root, file).Replace('\\', '/');
-            entries.Add($"{relative}|{new FileInfo(file).Length}|{hash}");
+
+            try
+            {
+                using FileStream stream = new(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                string hash = Convert.ToHexStringLower(SHA256.HashData(stream));
+                entries.Add($"{relative}|{new FileInfo(file).Length}|{hash}");
+            }
+            catch (IOException)
+            {
+                // A session lease is held with FileShare.None and cannot be read at all. Its
+                // presence is still worth recording; its contents are not the point.
+                entries.Add($"{relative}|<exclusively held>");
+            }
         }
 
         return new DirectorySnapshot(entries);

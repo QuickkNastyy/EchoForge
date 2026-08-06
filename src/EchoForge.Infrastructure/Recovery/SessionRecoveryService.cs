@@ -15,10 +15,11 @@ public sealed record RecoveryOutcome(
     int ChunksQuarantined,
     bool SnapshotRebuilt,
     bool JournalTruncated,
-    IReadOnlyList<string> Notes)
+    IReadOnlyList<string> Notes,
+    bool Skipped = false)
 {
     public bool ChangedAnything =>
-        ChunksRecovered > 0 || ChunksReconciled > 0 || ChunksQuarantined > 0 || SnapshotRebuilt;
+        !Skipped && (ChunksRecovered > 0 || ChunksReconciled > 0 || ChunksQuarantined > 0 || SnapshotRebuilt);
 }
 
 /// <summary>
@@ -43,14 +44,20 @@ public sealed class SessionRecoveryService
     private readonly ISessionStore _store;
     private readonly IActiveChunkRepairer _repairer;
     private readonly TimeProvider _time;
+    private readonly ISessionLeaseProvider? _leases;
 
-    public SessionRecoveryService(ISessionStore store, IActiveChunkRepairer repairer, TimeProvider? time = null)
+    public SessionRecoveryService(
+        ISessionStore store,
+        IActiveChunkRepairer repairer,
+        TimeProvider? time = null,
+        ISessionLeaseProvider? leases = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(repairer);
         _store = store;
         _repairer = repairer;
         _time = time ?? TimeProvider.System;
+        _leases = leases;
     }
 
     public IReadOnlyList<RecoveryOutcome> ScanAll()
@@ -59,7 +66,7 @@ public sealed class SessionRecoveryService
         foreach (string sessionId in _store.EnumerateSessions())
         {
             RecoveryOutcome outcome = Recover(sessionId);
-            if (outcome.ChangedAnything || outcome.State is SessionState.NeedsAttention)
+            if (!outcome.Skipped && (outcome.ChangedAnything || outcome.State is SessionState.NeedsAttention))
             {
                 outcomes.Add(outcome);
             }
@@ -74,6 +81,15 @@ public sealed class SessionRecoveryService
 
         SessionPaths paths = _store.Resolve(sessionId);
         List<string> notes = [];
+
+        // A leased session is live in this or another process. Recovery must not touch it: it
+        // would repair chunks the recorder is still writing and rewrite a snapshot underneath it.
+        if (_leases?.IsLeased(sessionId) == true)
+        {
+            notes.Add("session is in use and was left alone");
+            return new RecoveryOutcome(
+                sessionId, SessionState.Recording, 0, 0, 0, false, false, notes, Skipped: true);
+        }
 
         JournalReadResult journal = _store.ReadJournal(sessionId);
         bool truncatedTail = journal.TruncatedFinalLine;

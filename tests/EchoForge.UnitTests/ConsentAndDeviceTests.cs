@@ -77,7 +77,16 @@ public sealed class ConsentAndDeviceTests : IDisposable
         _temp.Dispose();
     }
 
-    private MainViewModel NewViewModel() => new(_controller, _catalog, _settings, _consent);
+    /// <summary>
+    /// These tests are about consent and device selection, so the readiness gate is opened up
+    /// front. Gating itself is covered by <see cref="ReadinessAndLeaseTests"/>.
+    /// </summary>
+    private MainViewModel NewViewModel()
+    {
+        MainViewModel vm = new(_controller, _catalog, _settings, _consent);
+        vm.MarkReady();
+        return vm;
+    }
 
     [Fact]
     public void ClickingStartIsNotItselfConsent()
