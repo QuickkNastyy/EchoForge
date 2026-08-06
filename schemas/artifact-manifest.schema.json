@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://echoforge.local/schemas/artifact-manifest.schema.json",
+  "title": "EchoForge pinned artifact manifest",
+  "description": "Every model and inference runtime EchoForge is allowed to download. Nothing outside this file may be fetched, and every entry must name an immutable revision. A branch name or a mutable model alias is a build failure, not a warning.",
+  "type": "object",
+  "required": ["schema_version", "artifacts"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "notes": { "type": "string" },
+    "artifacts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/artifact" }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "kind",
+        "repository",
+        "revision",
+        "filename",
+        "size_bytes",
+        "sha256",
+        "license",
+        "license_file",
+        "runtime_version",
+        "profiles",
+        "verified_utc"
+      ],
+      "properties": {
+        "artifact_id": {
+          "description": "EchoForge's stable internal name, e.g. stt.large-v3-turbo.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$"
+        },
+        "kind": {
+          "description": "What sort of artifact this is.",
+          "enum": ["speech-model", "summary-model", "diarization-model", "runtime"]
+        },
+        "repository": {
+          "description": "Exact source repository or release URL.",
+          "type": "string",
+          "minLength": 3
+        },
+        "revision": {
+          "description": "Full immutable commit SHA or release tag. Never main, master, latest, or an alias.",
+          "type": "string",
+          "minLength": 7,
+          "not": {
+            "pattern": "^(?i)(main|master|latest|head|dev|develop|trunk|stable|newest)$"
+          }
+        },
+        "filename": {
+          "description": "Exact file to fetch. Never a directory or a glob.",
+          "type": "string",
+          "minLength": 1,
+          "not": { "pattern": "[*?]" }
+        },
+        "size_bytes": {
+          "description": "Expected byte length, checked before hashing.",
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "sha256": {
+          "description": "Expected digest of the complete file, lower-case hex.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "license": {
+          "description": "SPDX identifier or named license.",
+          "type": "string",
+          "minLength": 2
+        },
+        "license_file": {
+          "description": "Repository-relative path of the retained license or NOTICE text.",
+          "type": "string",
+          "minLength": 1
+        },
+        "provenance": {
+          "description": "Where this artifact came from and who published it, when the repository alone is ambiguous.",
+          "type": "string"
+        },
+        "runtime_version": {
+          "description": "The runtime build this artifact was verified against.",
+          "type": "string",
+          "minLength": 1
+        },
+        "profiles": {
+          "description": "Processing profiles this artifact is compatible with.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["cuda-fp16", "cuda-int8-float16", "cpu-int8", "vulkan", "any"] }
+        },
+        "verified_utc": {
+          "description": "When this entry was last checked against its source.",
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}
