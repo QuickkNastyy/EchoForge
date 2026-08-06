@@ -165,5 +165,9 @@ public sealed class FakeChunkRepairer : IActiveChunkRepairer
             : new ChunkRepairOutcome(false, 0, 0, "header could not be reconstructed");
     }
 
-    public ChunkValidation Validate(string chunkPath) => new(true, FrameCount, null);
+    public int SampleRate { get; set; } = 48_000;
+
+    public int Channels { get; set; } = 2;
+
+    public ChunkValidation Validate(string chunkPath) => new(true, FrameCount, null, SampleRate, Channels);
 }

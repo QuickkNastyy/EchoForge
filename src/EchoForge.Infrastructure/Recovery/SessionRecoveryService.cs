@@ -98,11 +98,21 @@ public sealed class SessionRecoveryService
         }
 
         (int recovered, int quarantined) = RecoverActiveChunks(sessionId, paths, notes);
-        int reconciled = ReconcileFinalizedChunks(sessionId, paths, journal.Events, notes);
 
-        // Re-read: recovery appends its own chunk events, and a snapshot built from the
-        // pre-recovery view would omit them and never converge across repeated runs.
+        // Re-read before reconciling. Repair appends its own chunk_completed events, and
+        // reconciling against the pre-repair view would journal a repaired chunk a second time.
         journal = _store.ReadJournal(sessionId);
+
+        (int reconciled, int rejected) = ReconcileFinalizedChunks(sessionId, paths, journal.Events, notes);
+        quarantined += 0;
+
+        // Re-read again: reconciliation appends too, and a snapshot built from the pre-recovery
+        // view would omit those chunks and never converge across repeated runs.
+        journal = _store.ReadJournal(sessionId);
+        if (rejected > 0)
+        {
+            notes.Add($"{rejected} finalized chunk(s) could not be verified and were left untouched");
+        }
         SessionSnapshot rebuilt = SessionSnapshotBuilder.FromJournal(sessionId, journal.Events, _time.GetUtcNow());
 
         SessionState state = DetermineState(rebuilt, quarantined, journal, notes);
@@ -133,7 +143,9 @@ public sealed class SessionRecoveryService
             return SessionState.NeedsAttention;
         }
 
-        if (notes.Any(n => n.Contains("cannot be placed", StringComparison.Ordinal)))
+        if (notes.Any(n =>
+                n.Contains("cannot be placed", StringComparison.Ordinal) ||
+                n.Contains("could not be verified", StringComparison.Ordinal)))
         {
             return SessionState.NeedsAttention;
         }
@@ -213,7 +225,11 @@ public sealed class SessionRecoveryService
                     x.SampleRate != y.SampleRate ||
                     x.Channels != y.Channels ||
                     x.Sha256 != y.Sha256 ||
-                    Math.Abs(x.StartSeconds - y.StartSeconds) > 0.0005)
+                    x.Track != y.Track ||
+                    !string.Equals(x.RelativePath, y.RelativePath, StringComparison.OrdinalIgnoreCase) ||
+                    x.Discontinuities.Count != y.Discontinuities.Count ||
+                    Math.Abs(x.StartSeconds - y.StartSeconds) > 0.0005 ||
+                    Math.Abs(x.EndSeconds - y.EndSeconds) > 0.0005)
                 {
                     return false;
                 }
@@ -227,16 +243,18 @@ public sealed class SessionRecoveryService
     /// Adds a journal record for every finalized WAV the journal does not already know about.
     /// This is what makes a crash between finalization and journal append survivable.
     /// </summary>
-    private int ReconcileFinalizedChunks(
+    private (int Reconciled, int Rejected) ReconcileFinalizedChunks(
         string sessionId, SessionPaths paths, IReadOnlyList<JournalEvent> events, List<string> notes)
     {
         if (!Directory.Exists(paths.TracksRoot))
         {
-            return 0;
+            return (0, 0);
         }
 
+        List<JournalEvent> chunkEvents = [.. events.Where(e => e.Type == JournalEventTypes.ChunkCompleted)];
+
         HashSet<(string Track, int Index)> known = [];
-        foreach (JournalEvent journalEvent in events.Where(e => e.Type == JournalEventTypes.ChunkCompleted))
+        foreach (JournalEvent journalEvent in chunkEvents)
         {
             string? track = journalEvent.Field("track");
             int? index = journalEvent.IntField("index");
@@ -247,6 +265,7 @@ public sealed class SessionRecoveryService
         }
 
         int reconciled = 0;
+        int rejected = 0;
 
         foreach (string trackDirectory in Directory.GetDirectories(paths.TracksRoot).OrderBy(d => d, StringComparer.Ordinal))
         {
@@ -270,16 +289,54 @@ public sealed class SessionRecoveryService
                     continue;
                 }
 
-                ChunkRecord? record = ReadChunkRecord(Path.Combine(chunks, $"{index:D6}.meta.json"));
+                string metaPath = Path.Combine(chunks, $"{index:D6}.meta.json");
+                string sidecarPath = Path.Combine(trackDirectory, "active", $"{index:D6}.part.state.json");
+
+                // Crash window: the WAV was renamed and hashed but its finalized record was never
+                // written. The active sidecar describes the same chunk and can reconstruct it.
+                bool reconstructed = false;
+                ChunkRecord? record = ReadChunkRecord(metaPath);
+
+                if (record is null && ReadChunkRecord(sidecarPath) is { } sidecar)
+                {
+                    ChunkValidation audio = _repairer.Validate(wav);
+                    if (audio.IsValid && audio.SampleRate == sidecar.SampleRate && audio.Channels == sidecar.Channels)
+                    {
+                        record = sidecar with
+                        {
+                            Frames = audio.FrameCount,
+                            Sha256 = Sha256(wav),
+                            Finalized = true,
+                            RelativePath = $"tracks/{trackName}/chunks/{index:D6}.wav",
+                        };
+
+                        reconstructed = true;
+                    }
+                }
+
                 if (record is null)
                 {
-                    // The audio is kept, but without its record we cannot say which epoch it
-                    // belongs to or where it starts. Say so rather than defaulting to zero.
                     ChunkValidation validation = _repairer.Validate(wav);
                     notes.Add(validation.IsValid
                         ? $"{trackName}/{index:D6}.wav has no metadata record and cannot be placed on the timeline; the audio is retained"
                         : $"{trackName}/{index:D6}.wav has no metadata record and did not validate: {validation.Problem}");
                     continue;
+                }
+
+                MetadataVerdict verdict = ChunkMetadataValidator.Verify(
+                    record, wav, trackName, paths.Root, chunkEvents, _repairer);
+
+                if (!verdict.Accepted)
+                {
+                    // Preserve everything exactly as found. Nothing is journalled as canonical.
+                    notes.Add($"{trackName}/{index:D6}.wav could not be verified: {verdict.Reason}");
+                    rejected++;
+                    continue;
+                }
+
+                if (reconstructed)
+                {
+                    WriteChunkRecord(metaPath, record);
                 }
 
                 _store.Append(sessionId, JournalEvent.Create(
@@ -291,15 +348,43 @@ public sealed class SessionRecoveryService
                     ("start_seconds", record.StartSeconds.ToString("0.####", CultureInfo.InvariantCulture)),
                     ("sample_rate", Text(record.SampleRate)),
                     ("channels", Text(record.Channels)),
-                    ("sha256", record.Sha256 ?? Sha256(wav)),
+                    ("sha256", record.Sha256!),
                     ("reconciled", "true")));
 
-                notes.Add($"reconciled {trackName}/{index:D6}.wav from its metadata record");
+                known.Add((trackName, index));
+
+                // Only now that the chunk is canonical is the sidecar redundant.
+                if (reconstructed)
+                {
+                    ArchiveSidecar(paths, sidecarPath);
+                    notes.Add($"reconstructed {trackName}/{index:D6}.wav from its active sidecar");
+                }
+                else
+                {
+                    notes.Add($"reconciled {trackName}/{index:D6}.wav from its metadata record");
+                }
+
                 reconciled++;
             }
         }
 
-        return reconciled;
+        return (reconciled, rejected);
+    }
+
+    /// <summary>
+    /// Moves a consumed sidecar into diagnostics rather than deleting it, so the evidence for a
+    /// reconstruction survives if the result is later questioned.
+    /// </summary>
+    private static void ArchiveSidecar(SessionPaths paths, string sidecarPath)
+    {
+        if (!File.Exists(sidecarPath))
+        {
+            return;
+        }
+
+        string archive = Path.Combine(paths.DiagnosticsRoot, "recovered-sidecars");
+        Directory.CreateDirectory(archive);
+        File.Move(sidecarPath, UniquePath(Path.Combine(archive, Path.GetFileName(sidecarPath))));
     }
 
     private (int Recovered, int Quarantined) RecoverActiveChunks(
@@ -345,6 +430,12 @@ public sealed class SessionRecoveryService
         if (record is null)
         {
             Quarantine(sessionId, partPath, "no metadata record; the format, epoch, and start time are unknown and must not be guessed", notes);
+            return false;
+        }
+
+        if (record.SampleRate <= 0 || record.Channels <= 0 || record.BitsPerSample != 16 || record.Epoch < 1)
+        {
+            Quarantine(sessionId, partPath, "the metadata record declares an unusable format or epoch", notes);
             return false;
         }
 
@@ -461,9 +552,11 @@ public sealed class SessionRecoveryService
 
         try
         {
+            // Only a missing or unparseable file reads as null. Judging the *contents* is the
+            // validator's job, so a corrupt field produces one clear "could not be verified"
+            // reason rather than masquerading as a missing record.
             using FileStream stream = File.OpenRead(path);
-            ChunkRecord? record = JsonSerializer.Deserialize<ChunkRecord>(stream, ChunkRecord.Json);
-            return record is null || record.SampleRate <= 0 || record.Channels <= 0 ? null : record;
+            return JsonSerializer.Deserialize<ChunkRecord>(stream, ChunkRecord.Json);
         }
         catch (Exception ex) when (ex is JsonException or IOException)
         {

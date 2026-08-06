@@ -299,6 +299,27 @@ sequenceDiagram
 
 Pause closes the active chunks and records a gap. Resume opens a new epoch; it never appends to an old WAV. Stop is idempotent. The persistent red indicator, tray icon, duration, and disk display remain visible throughout `recording` and `degraded` states.
 
+### Authority model
+
+Four kinds of artefact, with different standing. Confusing them is how recovery quietly loses or
+invents audio.
+
+| Artefact | Standing |
+|---|---|
+| Finalized WAV **plus a validated finalized `.meta.json`** | **Canonical source chunk.** Neither half alone is sufficient. |
+| `events.jsonl` | **Canonical lifecycle and event ledger.** Epochs, terminal outcome, and session history. |
+| `session.json`, and later the SQLite index | **Rebuildable projections.** Replaceable at any time from the two above. |
+| Active `.part.state.json` sidecars | **Recovery evidence only.** Never canonical; used to reconstruct a record when one is missing. |
+
+**Metadata never overrides a contradictory fact.** Before reconciliation may treat a record as
+canonical it is checked against the audio and the filesystem: supported schema, `finalized=true`,
+track matching its directory, index matching its filename, a relative path that resolves to
+exactly that file inside the session root, a usable format, epoch, start time, and discontinuity
+list, a WAV that independently validates, a format and frame count that match the audio, a SHA-256
+that matches the bytes, and no contradictory journal entry. On any disagreement everything is
+preserved byte for byte, nothing is journalled as canonical, the session is marked
+`NeedsAttention`, and a safe reason is reported.
+
 **Chunk records.** Every chunk carries a durable metadata record beside the audio: track, index, epoch, format, frames, start offset within the epoch, and the epoch's QPC origin. The active chunk's record is rewritten on each flush; a finalized chunk's record is written immediately after the atomic rename and before anything else is told the chunk exists. This is what makes a crash between finalization and the journal append survivable — startup reconciles the chunk directories against the journal and adds any missing record rather than ignoring audio the journal never heard about. Journal appends are handed to a dedicated persistence thread so neither the capture thread nor the writer thread blocks on fsync.
 
 The active `.part.wav` data stream and sidecar frame count are flushed to durable storage at most every two seconds and on pause/stop/device/power transitions. Closing patches the WAV header, flushes again, validates frame alignment and duration, atomically renames the file to `.wav`, and only then journals `chunk_completed`. The at-most-two-second flush cadence establishes the recovery-tail target; it does not change the 60-second chunk duration.

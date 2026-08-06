@@ -7,8 +7,20 @@ namespace EchoForge.Contracts.Audio;
 /// <param name="Problem">Why repair failed, or null.</param>
 public sealed record ChunkRepairOutcome(bool Repaired, long FrameCount, int TrimmedBytes, string? Problem);
 
-/// <summary>Result of independently decoding a finalized chunk.</summary>
-public sealed record ChunkValidation(bool IsValid, long FrameCount, string? Problem);
+/// <summary>
+/// Result of independently decoding a finalized chunk.
+///
+/// <para>
+/// The format is read back <em>from the file</em>, not from any metadata, so a metadata record
+/// can be checked against what the audio actually is rather than trusted about it.
+/// </para>
+/// </summary>
+public sealed record ChunkValidation(
+    bool IsValid,
+    long FrameCount,
+    string? Problem,
+    int SampleRate = 0,
+    int Channels = 0);
 
 /// <summary>
 /// Repairs and validates source chunks on behalf of recovery.

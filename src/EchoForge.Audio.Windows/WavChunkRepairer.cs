@@ -21,6 +21,11 @@ public sealed class WavChunkRepairer : IActiveChunkRepairer
     public ChunkValidation Validate(string chunkPath)
     {
         WavValidation result = WavPcm16Reader.Validate(chunkPath);
-        return new ChunkValidation(result.IsValid, result.FrameCount, result.Problem);
+        return new ChunkValidation(
+            result.IsValid,
+            result.FrameCount,
+            result.Problem,
+            result.Format?.SampleRate ?? 0,
+            result.Format?.Channels ?? 0);
     }
 }

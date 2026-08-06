@@ -21,7 +21,10 @@ public sealed class ChunkDurabilityTests : IDisposable
 
     private readonly TempDirectory _temp = new();
     private readonly FileSessionStore _store;
-    private readonly FakeChunkRepairer _repairer = new();
+
+    // These tests write real WAVs, so recovery decodes them with the real reader. Validation
+    // compares the metadata against the audio itself, which a fake could not exercise.
+    private readonly WavChunkRepairer _repairer = new();
 
     public ChunkDurabilityTests() => _store = new FileSessionStore(_temp.Path);
 
@@ -170,7 +173,15 @@ public sealed class ChunkDurabilityTests : IDisposable
         SessionPaths paths = _store.Create("dur-7");
         string chunks = Path.Combine(paths.TrackRoot(SourceTrack.Microphone), "chunks");
         Directory.CreateDirectory(chunks);
-        File.WriteAllBytes(Path.Combine(chunks, "000004.wav"), new byte[2048]);
+
+        // A perfectly good WAV with neither a finalized record nor an active sidecar to
+        // reconstruct one from: the audio is real but its place on the timeline is unknown.
+        using (WavPcm16Writer writer = new(Path.Combine(chunks, "000004.wav"), Mono48))
+        {
+            writer.WriteSilence(4_800);
+            writer.Close();
+        }
+
         _store.Append("dur-7", JournalEvent.Create(JournalEventTypes.SessionCreated, DateTimeOffset.UnixEpoch));
 
         RecoveryOutcome outcome = NewService().Recover("dur-7");
