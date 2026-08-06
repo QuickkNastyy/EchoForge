@@ -146,6 +146,77 @@ internal static class WorkerTestEnvironment
         return built.Request!;
     }
 
+    /// <summary>
+    /// Writes a complete, settled session into a real session store: PCM16 chunks on disk and a
+    /// snapshot whose digests are the digests of the bytes that were actually written.
+    ///
+    /// <para>
+    /// The hashes have to be genuine, because source verification re-checks them before every
+    /// job. A fixture with invented digests would make every coordinator test pass through the
+    /// refusal path instead of the one it meant to exercise.
+    /// </para>
+    /// </summary>
+    public static SessionSnapshot CreateRecordedSession(
+        ISessionStore store,
+        string sessionId,
+        double seconds = 3.0,
+        bool silent = false,
+        SessionState state = SessionState.Recorded)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+
+        SessionPaths paths = store.Create(sessionId);
+        const int sampleRate = 8000;
+        long frames = (long)Math.Round(seconds * sampleRate);
+
+        List<SessionTrack> tracks = [];
+        foreach (SourceTrack track in (SourceTrack[])[SourceTrack.Microphone, SourceTrack.System])
+        {
+            string name = track == SourceTrack.Microphone ? "microphone" : "system";
+            string relative = $"tracks/{name}/chunks/000001.wav";
+            string path = Path.Combine(paths.Root, relative.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+            WriteChunk(path, sampleRate, frames, silent, seed: track == SourceTrack.Microphone ? 1 : 2);
+
+            using FileStream stream = File.OpenRead(path);
+            string digest = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(stream));
+
+            tracks.Add(new SessionTrack(
+                track,
+                $"{name}-device",
+                $"{name} device",
+                new CaptureFormat(sampleRate, 1, 16),
+                [
+                    new AudioChunkMetadata(
+                        Index: 1,
+                        RelativePath: relative,
+                        Track: track,
+                        StartSeconds: 0,
+                        EndSeconds: seconds,
+                        SampleRate: sampleRate,
+                        Channels: 1,
+                        SampleFrames: frames,
+                        Sha256: digest,
+                        Discontinuities: [],
+                        EpochIndex: 1)
+                ]));
+        }
+
+        DateTimeOffset created = new(2026, 8, 6, 12, 0, 0, TimeSpan.Zero);
+        SessionSnapshot snapshot = new(
+            sessionId,
+            state,
+            created,
+            created,
+            created.AddSeconds(seconds),
+            [new SessionEpoch(1, created, created.AddSeconds(seconds), 0, 1, EpochEndReason.Stopped)],
+            tracks);
+
+        store.WriteSnapshot(snapshot);
+        return snapshot;
+    }
+
     /// <summary>A PCM16 chunk whose content is arithmetic, so the same arguments always agree.</summary>
     private static void WriteChunk(string path, int sampleRate, long frames, bool silent, int seed)
     {
