@@ -17,11 +17,19 @@ is **not production-qualified**. Deferring a test is not passing it.
 
 **Phase 1** (the recording application, session storage, crash recovery) is accepted.
 
-**Phase 2A, Pass 1** is complete: the NDJSON worker protocol, the transcript schema
-and contracts, the Windows Job Object worker supervisor, and a deterministic Python
-worker that performs **no speech recognition** and says so in everything it writes.
-See [`docs/PHASE2A_PASS1_REPORT.md`](docs/PHASE2A_PASS1_REPORT.md) for what exists and
-what Phase 2A still needs.
+**Phase 2A** is complete, in two passes:
+
+- [Pass 1](docs/PHASE2A_PASS1_REPORT.md) — the NDJSON worker protocol, the transcript
+  schema and contracts, the Windows Job Object worker supervisor, and a deterministic
+  Python worker.
+- [Pass 2](docs/PHASE2A_PASS2_REPORT.md) — immutable transcript revisions with atomic
+  activation, the processing coordinator, the application surface, and JSON / TXT / SRT /
+  VTT exports.
+
+The transcription backend in this build performs **no speech recognition**. It reads the
+real audio and emits deterministic placeholder text, and it says so on the worker
+handshake, in every transcript it writes, in the app, and in the exported file. Phase 2B
+replaces it with faster-whisper behind the same interface.
 
 No production model, CUDA component, or inference runtime has been added.
 `artifacts/manifest.json` is intentionally empty, and `scripts/verify-models.ps1`
@@ -64,7 +72,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\EchoForge\scripts\verify-
 
 The Python worker suite needs [uv](https://docs.astral.sh/uv/) and CPython 3.12. The
 .NET tests that launch the worker skip with an explanatory message when it is absent;
-everything else still runs.
+everything else still runs. The app behaves the same way: without a usable Python 3.12
+the transcription panel does not appear and recording works exactly as before.
 
 ## Recording consent
 
