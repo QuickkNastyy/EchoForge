@@ -79,12 +79,18 @@ public sealed class RecordingController : IDisposable
     private bool _diskWarned;
     private bool _disposed;
 
+    private readonly IEndpointMonitor? _endpoints;
+    private readonly IPowerMonitor? _power;
+    private readonly HashSet<string> _lostEndpoints = new(StringComparer.OrdinalIgnoreCase);
+
     public RecordingController(
         ISessionStore store,
         ICaptureEngineFactory engineFactory,
         ICaptureClock clock,
         IDiskSpaceProbe disk,
-        DiskPolicy? policy = null)
+        DiskPolicy? policy = null,
+        IEndpointMonitor? endpoints = null,
+        IPowerMonitor? power = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(engineFactory);
@@ -97,7 +103,125 @@ public sealed class RecordingController : IDisposable
         _disk = disk;
         _policy = policy ?? new DiskPolicy();
         _persistence = new JournalPersistenceQueue(store);
+
+        _endpoints = endpoints;
+        if (_endpoints is not null)
+        {
+            _endpoints.EndpointLost += OnEndpointLost;
+            _endpoints.DefaultChanged += OnDefaultEndpointChanged;
+            _endpoints.Start();
+        }
+
+        _power = power;
+        if (_power is not null)
+        {
+            _power.Suspending += OnSuspending;
+            _power.Resumed += OnResumed;
+            _power.Start();
+        }
     }
+
+    /// <summary>
+    /// True after a resume, until the user explicitly starts a new epoch. EchoForge never
+    /// restarts capture on its own after the machine wakes.
+    /// </summary>
+    public bool AwaitingResumeAfterSuspend { get; private set; }
+
+    /// <summary>Endpoints Windows has reported as lost during this session.</summary>
+    public IReadOnlyCollection<string> LostEndpoints => _lostEndpoints;
+
+    /// <summary>
+    /// Windows reported an endpoint gone. Only the two pinned for this session matter; an
+    /// unrelated device change must not disturb a running recording.
+    /// </summary>
+    private void OnEndpointLost(object? sender, EndpointChangedEventArgs e)
+    {
+        lock (_gate)
+        {
+            if (_request is null || !IsCapturing)
+            {
+                return;
+            }
+
+            bool isRender = string.Equals(e.EndpointId, _request.RenderEndpointId, StringComparison.OrdinalIgnoreCase);
+            bool isCapture = string.Equals(e.EndpointId, _request.CaptureEndpointId, StringComparison.OrdinalIgnoreCase);
+
+            if (!isRender && !isCapture)
+            {
+                return;
+            }
+
+            _lostEndpoints.Add(e.EndpointId);
+            SourceTrack track = isRender ? SourceTrack.System : SourceTrack.Microphone;
+
+            _store.Append(SessionId!, JournalEvent.Create(
+                JournalEventTypes.TrackFailed, _clock.UtcNow(),
+                ("track", track.ToString()),
+                ("device_id", e.EndpointId),
+                ("fault", $"endpoint {e.Change.ToString().ToLowerInvariant()}")));
+
+            bool bothLost =
+                _lostEndpoints.Contains(_request.RenderEndpointId) &&
+                _lostEndpoints.Contains(_request.CaptureEndpointId);
+
+            if (bothLost)
+            {
+                CloseEpoch(EpochEndReason.DeviceLost);
+                FinishSession("both endpoints were lost");
+                SetState(SessionState.Failed, "both endpoints were lost");
+                return;
+            }
+
+            SetState(SessionState.Degraded,
+                $"{(isRender ? "system audio" : "the microphone")} was {e.Change.ToString().ToLowerInvariant()}; " +
+                "the other track is still recording");
+        }
+    }
+
+    /// <summary>Reported, never followed. The pinned endpoints stay pinned.</summary>
+    private void OnDefaultEndpointChanged(object? sender, DefaultEndpointChangedEventArgs e)
+    {
+        // Deliberately does nothing to the recording. Recorded for diagnostics only.
+        if (SessionId is not null && IsCapturing)
+        {
+            _persistence.Enqueue(SessionId, JournalEvent.Create(
+                JournalEventTypes.DefaultEndpointChanged, _clock.UtcNow(),
+                ("device_id", e.EndpointId),
+                ("flow", e.IsRender ? "render" : "capture")));
+        }
+    }
+
+    /// <summary>
+    /// Finalizes both tracks and closes the epoch before the machine suspends. Audio during
+    /// sleep is unrecoverable, so the missing period becomes an explicit gap rather than a
+    /// pretence of continuity.
+    /// </summary>
+    private void OnSuspending(object? sender, EventArgs e)
+    {
+        lock (_gate)
+        {
+            if (State is not (SessionState.Recording or SessionState.Degraded))
+            {
+                return;
+            }
+
+            CloseEpoch(EpochEndReason.Suspended);
+            SetState(SessionState.Paused, "the computer went to sleep; recording paused and everything so far is saved");
+            AwaitingResumeAfterSuspend = true;
+            WriteSnapshot();
+        }
+    }
+
+    private void OnResumed(object? sender, EventArgs e)
+    {
+        if (AwaitingResumeAfterSuspend)
+        {
+            Notice?.Invoke(this, "The computer woke up. Recording is paused — choose Resume to continue into a new segment.");
+        }
+    }
+
+    /// <summary>An advisory message for the user that does not change the recording state.</summary>
+    public event EventHandler<string>? Notice;
 
     public SessionState State { get; private set; } = SessionState.New;
 
@@ -128,6 +252,8 @@ public sealed class RecordingController : IDisposable
             }
 
             ResetSessionState();
+            _lostEndpoints.Clear();
+            AwaitingResumeAfterSuspend = false;
             _request = request;
 
             SessionId = Guid.NewGuid().ToString("n");
@@ -187,6 +313,10 @@ public sealed class RecordingController : IDisposable
                 return;
             }
 
+            // Resuming after a device loss or a suspend re-opens the pinned endpoints. If one is
+            // still gone, OpenEpoch throws and the session stays paused rather than silently
+            // recording a single track or switching to a different device.
+            AwaitingResumeAfterSuspend = false;
             OpenEpoch();
         }
     }
@@ -652,6 +782,18 @@ public sealed class RecordingController : IDisposable
 
             _engine?.Dispose();
             _engine = null;
+        }
+
+        if (_endpoints is not null)
+        {
+            _endpoints.EndpointLost -= OnEndpointLost;
+            _endpoints.DefaultChanged -= OnDefaultEndpointChanged;
+        }
+
+        if (_power is not null)
+        {
+            _power.Suspending -= OnSuspending;
+            _power.Resumed -= OnResumed;
         }
 
         _persistence.Drain(TimeSpan.FromSeconds(5));
