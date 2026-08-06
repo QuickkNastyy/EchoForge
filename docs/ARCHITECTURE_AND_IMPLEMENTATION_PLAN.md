@@ -299,6 +299,8 @@ sequenceDiagram
 
 Pause closes the active chunks and records a gap. Resume opens a new epoch; it never appends to an old WAV. Stop is idempotent. The persistent red indicator, tray icon, duration, and disk display remain visible throughout `recording` and `degraded` states.
 
+**Chunk records.** Every chunk carries a durable metadata record beside the audio: track, index, epoch, format, frames, start offset within the epoch, and the epoch's QPC origin. The active chunk's record is rewritten on each flush; a finalized chunk's record is written immediately after the atomic rename and before anything else is told the chunk exists. This is what makes a crash between finalization and the journal append survivable — startup reconciles the chunk directories against the journal and adds any missing record rather than ignoring audio the journal never heard about. Journal appends are handed to a dedicated persistence thread so neither the capture thread nor the writer thread blocks on fsync.
+
 The active `.part.wav` data stream and sidecar frame count are flushed to durable storage at most every two seconds and on pause/stop/device/power transitions. Closing patches the WAV header, flushes again, validates frame alignment and duration, atomically renames the file to `.wav`, and only then journals `chunk_completed`. The at-most-two-second flush cadence establishes the recovery-tail target; it does not change the 60-second chunk duration.
 
 ### Processing lifecycle

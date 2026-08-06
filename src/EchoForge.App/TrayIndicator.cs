@@ -84,7 +84,23 @@ public sealed class TrayIndicator : IDisposable
         previous?.Dispose();
     }
 
-    /// <summary>Draws a filled red dot while capturing, a hollow outline otherwise.</summary>
+    // DllImport rather than LibraryImport: the source generator requires unsafe code, and one
+    // handle-releasing call does not justify enabling it across the UI project.
+#pragma warning disable SYSLIB1054
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool DestroyIcon(IntPtr handle);
+#pragma warning restore SYSLIB1054
+
+    /// <summary>
+    /// Draws a filled red dot while capturing, a hollow outline otherwise.
+    ///
+    /// <para>
+    /// <c>Icon.FromHandle</c> does not own the HICON that <c>GetHicon</c> creates, so the native
+    /// handle has to be destroyed explicitly. Redrawing on every state change would otherwise leak
+    /// a GDI handle each time.
+    /// </para>
+    /// </summary>
     private static Icon RenderIcon(bool recording)
     {
         using Bitmap bitmap = new(16, 16);
@@ -106,7 +122,17 @@ public sealed class TrayIndicator : IDisposable
             }
         }
 
-        return Icon.FromHandle(bitmap.GetHicon());
+        IntPtr handle = bitmap.GetHicon();
+        try
+        {
+            // Clone so the managed Icon owns its own copy and the native handle can go now.
+            using Icon temporary = Icon.FromHandle(handle);
+            return (Icon)temporary.Clone();
+        }
+        finally
+        {
+            DestroyIcon(handle);
+        }
     }
 
     public void Dispose()

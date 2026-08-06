@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows;
 using EchoForge.Audio.Windows;
+using EchoForge.Contracts.Recording;
 using EchoForge.Contracts.Settings;
 using EchoForge.Core.Recording;
 using EchoForge.Infrastructure.Recovery;
@@ -20,6 +21,8 @@ public partial class App : System.Windows.Application, IDisposable
 
     private Mutex? _instanceMutex;
     private AudioDeviceCatalog? _catalog;
+    private MmDeviceEndpointMonitor? _endpoints;
+    private SystemPowerMonitor? _power;
     private RecordingController? _controller;
     private MainViewModel? _viewModel;
     private TrayIndicator? _tray;
@@ -44,20 +47,21 @@ public partial class App : System.Windows.Application, IDisposable
         FileSessionStore store = new();
         ISettingsStore settings = new JsonSettingsStore();
         _catalog = new AudioDeviceCatalog();
-
-        // Recovery scan before anything can start a new recording, so an interrupted session is
-        // settled before its folder is touched again.
-        IReadOnlyList<string> notices = RunRecoveryScan(store);
+        _endpoints = new MmDeviceEndpointMonitor();
+        _power = new SystemPowerMonitor();
 
         _controller = new RecordingController(
             store,
             new DualTrackCaptureEngineFactory(_catalog),
             new SystemCaptureClock(),
-            new VolumeDiskSpaceProbe());
+            new VolumeDiskSpaceProbe(),
+            policy: null,
+            endpoints: _endpoints,
+            power: _power);
 
-        _viewModel = new MainViewModel(_controller, _catalog, settings, notices);
-
-        MainWindow window = new() { DataContext = _viewModel };
+        MainWindow window = new();
+        _viewModel = new MainViewModel(_controller, _catalog, settings, new DialogConsentPrompt(window));
+        window.DataContext = _viewModel;
         MainWindow = window;
 
         _tray = new TrayIndicator(_viewModel, () =>
@@ -68,20 +72,45 @@ public partial class App : System.Windows.Application, IDisposable
         });
 
         window.Show();
+
+        // Recovery walks every session folder and hashes files, so it runs off the UI thread.
+        _ = RunRecoveryScanAsync(store, window);
     }
 
-    private static IReadOnlyList<string> RunRecoveryScan(FileSessionStore store)
+    /// <summary>
+    /// Settles interrupted sessions in the background and reports what actually happened, by
+    /// session rather than by note count.
+    /// </summary>
+    private async Task RunRecoveryScanAsync(FileSessionStore store, Window window)
     {
         try
         {
-            SessionRecoveryService recovery = new(store, new WavChunkRepairer());
-            return [.. recovery.ScanAll().SelectMany(o => o.Notes)];
+            IReadOnlyList<RecoveryOutcome> outcomes = await Task.Run(() =>
+                new SessionRecoveryService(store, new WavChunkRepairer()).ScanAll()).ConfigureAwait(true);
+
+            if (outcomes.Count == 0)
+            {
+                return;
+            }
+
+            int needsAttention = outcomes.Count(o => o.State == Contracts.Sessions.SessionState.NeedsAttention);
+            int chunks = outcomes.Sum(o => o.ChunksRecovered + o.ChunksReconciled);
+
+            string summary = $"Recovered {Plural(outcomes.Count, "interrupted recording")} on startup" +
+                (chunks > 0 ? $", restoring {Plural(chunks, "audio chunk")}" : string.Empty) +
+                (needsAttention > 0 ? $". {Plural(needsAttention, "session")} needs attention." : ".");
+
+            window.Dispatcher.Invoke(() => _viewModel?.ShowRecoverySummary(summary));
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return [$"Recovery could not finish: {ex.Message}"];
+            window.Dispatcher.Invoke(() =>
+                _viewModel?.ShowRecoverySummary($"Recovery could not finish: {ex.GetType().Name}"));
         }
     }
+
+    private static string Plural(int count, string noun) =>
+        count == 1 ? $"1 {noun}" : $"{count} {noun}s";
 
     protected override void OnExit(ExitEventArgs e)
     {
@@ -104,6 +133,12 @@ public partial class App : System.Windows.Application, IDisposable
         _controller?.Dispose();
         _controller = null;
 
+        _endpoints?.Dispose();
+        _endpoints = null;
+
+        _power?.Dispose();
+        _power = null;
+
         _catalog?.Dispose();
         _catalog = null;
 
@@ -123,5 +158,32 @@ public partial class App : System.Windows.Application, IDisposable
         }
 
         GC.SuppressFinalize(this);
+    }
+}
+
+/// <summary>
+/// Shows the per-recording consent reminder as a modal dialog.
+///
+/// <para>
+/// The architecture requires a reminder before <em>every</em> recording. Clicking Start is not
+/// consent; this asks for an affirmative answer each time, and cancelling is a real cancel.
+/// </para>
+/// </summary>
+public sealed class DialogConsentPrompt(Window owner) : IConsentPrompt
+{
+    public Task<bool> ConfirmAsync()
+    {
+        MessageBoxResult answer = System.Windows.MessageBox.Show(
+            owner,
+            "Everyone in this meeting should know it's being recorded.\n\n" +
+            "Recording law varies by jurisdiction and by where each participant is. " +
+            "Obtaining the consent required for this meeting is your responsibility.\n\n" +
+            "Start recording now?",
+            "Before you record",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Information,
+            MessageBoxResult.Cancel);
+
+        return Task.FromResult(answer == MessageBoxResult.OK);
     }
 }

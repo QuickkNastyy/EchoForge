@@ -4,7 +4,6 @@ using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows.Threading;
-using EchoForge.Audio.Windows;
 using EchoForge.Contracts.Audio;
 using EchoForge.Contracts.Recording;
 using EchoForge.Contracts.Sessions;
@@ -15,62 +14,73 @@ using EchoForge.Core.Storage;
 namespace EchoForge.App;
 
 /// <summary>
+/// Asks the user to confirm before each recording starts. Abstracted so the view model's consent
+/// behaviour can be tested without showing a dialog.
+/// </summary>
+public interface IConsentPrompt
+{
+    /// <summary>Returns true only on an affirmative action. Cancelling must return false.</summary>
+    Task<bool> ConfirmAsync();
+}
+
+/// <summary>
 /// Observes the recorder and issues commands to it.
 ///
 /// <para>
 /// It holds no capture truth of its own. Every state it shows — recording, paused, degraded,
 /// elapsed time, levels — is read from <see cref="RecordingController"/> on a timer, which is why
-/// the window and the tray icon cannot disagree with what is actually being captured.
+/// the window and the tray icon cannot disagree with what is actually being captured. Totals come
+/// from the controller's cumulative session figures, so they do not reset on Pause and Resume.
 /// </para>
 /// </summary>
 public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly RecordingController _controller;
-    private readonly AudioDeviceCatalog _catalog;
+    private readonly IAudioDeviceCatalog _catalog;
     private readonly ISettingsStore _settings;
+    private readonly IConsentPrompt _consent;
+    private readonly OperationGate _gate = new();
     private readonly DispatcherTimer _timer;
 
     private AudioEndpointInfo? _selectedRender;
     private AudioEndpointInfo? _selectedCapture;
     private string _statusHeadline = "Ready";
     private string? _notice;
-    private bool _consentAcknowledged;
     private bool _disposed;
 
     public MainViewModel(
         RecordingController controller,
-        AudioDeviceCatalog catalog,
+        IAudioDeviceCatalog catalog,
         ISettingsStore settings,
-        IReadOnlyList<string> recoveryNotices)
+        IConsentPrompt consent,
+        string? recoverySummary = null)
     {
         ArgumentNullException.ThrowIfNull(controller);
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(consent);
 
         _controller = controller;
         _catalog = catalog;
         _settings = settings;
+        _consent = consent;
 
-        StartCommand = new RelayCommand(Start, () => CanStart);
-        PauseCommand = new RelayCommand(Pause, () => IsRecording);
-        ResumeCommand = new RelayCommand(Resume, () => IsPaused);
-        StopCommand = new RelayCommand(Stop, () => IsRecording || IsPaused);
-        RefreshDevicesCommand = new RelayCommand(LoadDevices, () => !IsRecording && !IsPaused);
+        StartCommand = new AsyncRelayCommand(StartAsync, _gate, () => CanStart, m => Notice = m);
+        PauseCommand = new AsyncRelayCommand(PauseAsync, _gate, () => IsRecording, m => Notice = m);
+        ResumeCommand = new AsyncRelayCommand(ResumeAsync, _gate, () => IsPaused, m => Notice = m);
+        StopCommand = new AsyncRelayCommand(StopAsync, _gate, () => IsRecording || IsPaused, m => Notice = m);
+        RefreshDevicesCommand = new AsyncRelayCommand(
+            () => Task.Run(RefreshDevices), _gate, () => DevicesEditable, m => Notice = m);
 
-        AppSettings loaded = settings.Load();
-        _consentAcknowledged = loaded.ConsentAcknowledged;
+        _gate.Changed += (_, _) => Dispatch(RaiseCommands);
 
         LoadDevices();
-        RestoreSelection(loaded);
+        RestoreSelection(_settings.Load());
 
-        if (recoveryNotices.Count > 0)
-        {
-            Notice = recoveryNotices.Count == 1
-                ? recoveryNotices[0]
-                : $"{recoveryNotices.Count} interrupted sessions were recovered on startup.";
-        }
+        Notice = recoverySummary;
 
         _controller.StateChanged += OnControllerStateChanged;
+        _controller.Notice += OnControllerNotice;
 
         _timer = new DispatcherTimer(DispatcherPriority.Background)
         {
@@ -87,15 +97,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public ObservableCollection<AudioEndpointInfo> CaptureDevices { get; } = [];
 
-    public RelayCommand StartCommand { get; }
+    public AsyncRelayCommand StartCommand { get; }
 
-    public RelayCommand PauseCommand { get; }
+    public AsyncRelayCommand PauseCommand { get; }
 
-    public RelayCommand ResumeCommand { get; }
+    public AsyncRelayCommand ResumeCommand { get; }
 
-    public RelayCommand StopCommand { get; }
+    public AsyncRelayCommand StopCommand { get; }
 
-    public RelayCommand RefreshDevicesCommand { get; }
+    public AsyncRelayCommand RefreshDevicesCommand { get; }
 
     public AudioEndpointInfo? SelectedRender
     {
@@ -109,8 +119,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         set { _selectedCapture = value; OnChanged(); OnChanged(nameof(CanStart)); RaiseCommands(); }
     }
 
-    /// <summary>Devices cannot be changed while recording; the endpoints are pinned for the session.</summary>
-    public bool DevicesEditable => !IsRecording && !IsPaused;
+    /// <summary>True while a lifecycle operation is running. Conflicting commands disable.</summary>
+    public bool IsBusy => _gate.IsBusy;
+
+    public bool DevicesEditable => !IsRecording && !IsPaused && !IsBusy;
 
     public bool IsRecording => _controller.State is SessionState.Recording or SessionState.Degraded;
 
@@ -118,22 +130,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public bool IsDegraded => _controller.State is SessionState.Degraded;
 
-    /// <summary>True whenever capture is live. The red indicator is bound to this and nothing else.</summary>
+    /// <summary>
+    /// The red indicator. Bound to authoritative capture state, so it keeps showing the truth
+    /// while a stop is finalizing rather than blanking the moment the button is pressed.
+    /// </summary>
     public bool IndicatorVisible => IsRecording;
 
     public bool CanStart =>
         !IsRecording && !IsPaused && SelectedRender is not null && SelectedCapture is not null;
-
-    public bool ConsentAcknowledged
-    {
-        get => _consentAcknowledged;
-        set
-        {
-            _consentAcknowledged = value;
-            _settings.Save(_settings.Load() with { ConsentAcknowledged = value });
-            OnChanged();
-        }
-    }
 
     public string StatusHeadline
     {
@@ -163,14 +167,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public string FreeSpace { get; private set; } = "—";
 
-    public string StorageRate { get; private set; } = "1.04 GB/hr";
+    public string StorageRate { get; private set; } = "—";
 
     public string QueueSummary { get; private set; } = "—";
 
-    /// <summary>What the tray tooltip shows. Derived from the same state as the window.</summary>
     public string TrayText => IsRecording
         ? $"EchoForge — recording {Elapsed}"
         : IsPaused ? "EchoForge — paused" : "EchoForge";
+
+    /// <summary>Shows the startup recovery result, once the background scan has finished.</summary>
+    public void ShowRecoverySummary(string summary) => Dispatch(() => Notice = summary);
 
     private void LoadDevices()
     {
@@ -192,106 +198,167 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     /// <summary>
-    /// Restores the previously chosen endpoints by stable ID. A device that is gone is reported
-    /// rather than quietly replaced with whatever Windows now considers default.
+    /// Re-enumerates while preserving the selection by stable endpoint ID.
+    ///
+    /// <para>
+    /// The selected object must be replaced with the equivalent object from the new collection,
+    /// or the ComboBox holds an instance that is no longer in its item source. If the endpoint is
+    /// gone the selection is cleared and the user is told, never quietly moved to another device.
+    /// </para>
     /// </summary>
+    public void RefreshDevices()
+    {
+        if (IsRecording || IsPaused)
+        {
+            Dispatch(() => Notice = "Devices cannot be changed while a recording is in progress.");
+            return;
+        }
+
+        string? renderId = SelectedRender?.Id;
+        string? captureId = SelectedCapture?.Id;
+
+        IReadOnlyList<AudioEndpointInfo> render = _catalog.GetRenderEndpoints();
+        IReadOnlyList<AudioEndpointInfo> capture = _catalog.GetCaptureEndpoints();
+
+        Dispatch(() =>
+        {
+            RenderDevices.Clear();
+            foreach (AudioEndpointInfo endpoint in render)
+            {
+                RenderDevices.Add(endpoint);
+            }
+
+            CaptureDevices.Clear();
+            foreach (AudioEndpointInfo endpoint in capture)
+            {
+                CaptureDevices.Add(endpoint);
+            }
+
+            List<string> missing = [];
+
+            SelectedRender = Reselect(RenderDevices, renderId, "playback device", missing);
+            SelectedCapture = Reselect(CaptureDevices, captureId, "microphone", missing);
+
+            Notice = missing.Count == 0
+                ? null
+                : $"The {string.Join(" and ", missing)} you had selected is no longer available. Choose another before recording.";
+        });
+    }
+
+    private static AudioEndpointInfo? Reselect(
+        ObservableCollection<AudioEndpointInfo> devices, string? previousId, string label, List<string> missing)
+    {
+        if (previousId is null)
+        {
+            return devices.FirstOrDefault(d => d.IsDefault) ?? devices.FirstOrDefault();
+        }
+
+        AudioEndpointInfo? match = devices.FirstOrDefault(d => d.Id == previousId);
+        if (match is not null)
+        {
+            return match;
+        }
+
+        missing.Add(label);
+        return null;
+    }
+
     private void RestoreSelection(AppSettings settings)
     {
+        List<string> missing = [];
+
         if (settings.RenderEndpointId is { } renderId)
         {
-            AudioEndpointInfo? match = RenderDevices.FirstOrDefault(d => d.Id == renderId);
-            if (match is not null)
-            {
-                SelectedRender = match;
-            }
-            else
-            {
-                Notice = "The playback device from last time is not available. Choose one before recording.";
-            }
+            SelectedRender = Reselect(RenderDevices, renderId, "playback device", missing);
         }
 
         if (settings.CaptureEndpointId is { } captureId)
         {
-            AudioEndpointInfo? match = CaptureDevices.FirstOrDefault(d => d.Id == captureId);
-            if (match is not null)
-            {
-                SelectedCapture = match;
-            }
-            else
-            {
-                Notice = "The microphone from last time is not available. Choose one before recording.";
-            }
+            SelectedCapture = Reselect(CaptureDevices, captureId, "microphone", missing);
+        }
+
+        if (missing.Count > 0)
+        {
+            Notice = $"The {string.Join(" and ", missing)} from last time is not available. Choose another before recording.";
         }
     }
 
-    private void Start()
+    /// <summary>
+    /// Confirms consent, then starts. Clicking Start is not itself consent: the reminder is shown
+    /// before every recording and requires an affirmative answer.
+    /// </summary>
+    private async Task StartAsync()
     {
         if (SelectedRender is null || SelectedCapture is null)
         {
+            Notice = "Choose a playback device and a microphone first.";
             return;
         }
 
-        (bool allowed, string? reason) = _controller.CanStart(Environment.GetFolderPath(
-            Environment.SpecialFolder.LocalApplicationData));
-
-        if (!allowed)
+        if (!await _consent.ConfirmAsync().ConfigureAwait(true))
         {
-            Notice = reason;
+            Notice = "Recording cancelled.";
             return;
         }
 
+        AudioEndpointInfo render = SelectedRender;
+        AudioEndpointInfo capture = SelectedCapture;
+
+        // Remember the devices, and that the user has seen the responsibility notice. This is
+        // never a stored claim that meeting participants consented.
         _settings.Save(_settings.Load() with
         {
-            RenderEndpointId = SelectedRender.Id,
-            CaptureEndpointId = SelectedCapture.Id,
+            RenderEndpointId = render.Id,
+            CaptureEndpointId = capture.Id,
             ConsentAcknowledged = true,
         });
 
-        try
-        {
-            Notice = null;
-            _controller.Start(new RecordingRequest(
-                SelectedRender.Id, SelectedRender.FriendlyName,
-                SelectedCapture.Id, SelectedCapture.FriendlyName));
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or IOException)
-        {
-            Notice = $"Recording could not start: {ex.Message}";
-        }
+        Notice = null;
+
+        await Task.Run(() => _controller.Start(new RecordingRequest(
+            render.Id, render.FriendlyName, capture.Id, capture.FriendlyName))).ConfigureAwait(true);
     }
 
-    private void Pause() => _controller.Pause();
+    private Task PauseAsync() => Task.Run(_controller.Pause);
 
-    private void Resume() => _controller.Resume();
+    private Task ResumeAsync() => Task.Run(_controller.Resume);
 
-    private void Stop() => _controller.Stop();
+    private Task StopAsync() => Task.Run(_controller.Stop);
 
-    private void OnControllerStateChanged(object? sender, RecordingStateChangedEventArgs e)
-    {
-        if (e.Reason is not null)
+    private void OnControllerStateChanged(object? sender, RecordingStateChangedEventArgs e) =>
+        Dispatch(() =>
         {
-            Notice = e.Reason;
-        }
+            if (e.Reason is not null)
+            {
+                Notice = e.Reason;
+            }
 
-        Refresh();
-    }
+            Refresh();
+        });
+
+    private void OnControllerNotice(object? sender, string message) => Dispatch(() => Notice = message);
 
     /// <summary>Pulls the authoritative state. Runs on the UI cadence, never on a capture thread.</summary>
     private void Refresh()
     {
         RecorderStatus status = _controller.Poll();
+        SessionTotals totals = _controller.Totals();
 
-        Elapsed = status.Elapsed.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
+        // Cumulative across epochs: pausing and resuming does not restart the clock.
+        Elapsed = totals.ActiveDuration.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
 
         TrackLiveStatus? you = status.Tracks.FirstOrDefault(t => t.Track == SourceTrack.Microphone);
         TrackLiveStatus? remote = status.Tracks.FirstOrDefault(t => t.Track == SourceTrack.System);
 
         YouLevel = you?.PeakLevel ?? 0;
         RemoteLevel = remote?.PeakLevel ?? 0;
-        YouCaption = you is { IsHealthy: false } ? "You — no signal" : "You";
-        RemoteCaption = remote is { IsHealthy: false } ? "Remote — no signal" : "Remote";
+        YouCaption = you is { IsHealthy: false } ? "You — not capturing" : "You";
+        RemoteCaption = remote is { IsHealthy: false } ? "Remote — not capturing" : "Remote";
 
-        ChunkSummary = $"{you?.CompletedChunks ?? 0} + {remote?.CompletedChunks ?? 0}";
+        int youChunks = totals.ChunksPerTrack.GetValueOrDefault(SourceTrack.Microphone);
+        int remoteChunks = totals.ChunksPerTrack.GetValueOrDefault(SourceTrack.System);
+        ChunkSummary = $"{youChunks} + {remoteChunks}";
+
         QueueSummary = status.Tracks.Count == 0
             ? "—"
             : $"queue {status.Tracks.Max(t => t.QueuedFrames)} · dropped {status.Tracks.Sum(t => t.DroppedFrames)}";
@@ -299,33 +366,49 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         DiskStatus disk = _controller.Disk();
         FreeSpace = $"{disk.AvailableGigabytes:0.0} GB free";
 
+        // Rate from the formats actually being captured, not a constant.
+        double gigabytesPerHour = _controller.EstimatedBytesPerSecond() * 3600.0 / 1_000_000_000.0;
+        StorageRate = $"{gigabytesPerHour:0.00} GB/hr";
+
         StatusHeadline = _controller.State switch
         {
             SessionState.Recording => "Recording",
             SessionState.Degraded => "Recording · degraded",
-            SessionState.Paused => "Paused",
-            SessionState.Finalizing => "Finalizing",
+            SessionState.Paused => _controller.AwaitingResumeAfterSuspend ? "Paused · computer slept" : "Paused",
+            SessionState.Finalizing => "Saving",
             SessionState.Recorded => "Saved",
             SessionState.Failed => "Failed",
             _ => "Ready",
         };
 
-        OnChanged(nameof(Elapsed));
-        OnChanged(nameof(YouLevel));
-        OnChanged(nameof(RemoteLevel));
-        OnChanged(nameof(YouCaption));
-        OnChanged(nameof(RemoteCaption));
-        OnChanged(nameof(ChunkSummary));
-        OnChanged(nameof(QueueSummary));
-        OnChanged(nameof(FreeSpace));
-        OnChanged(nameof(IsRecording));
-        OnChanged(nameof(IsPaused));
-        OnChanged(nameof(IsDegraded));
-        OnChanged(nameof(IndicatorVisible));
-        OnChanged(nameof(DevicesEditable));
-        OnChanged(nameof(CanStart));
-        OnChanged(nameof(TrayText));
+        foreach (string name in RefreshedProperties)
+        {
+            OnChanged(name);
+        }
+
         RaiseCommands();
+    }
+
+    private static readonly string[] RefreshedProperties =
+    [
+        nameof(Elapsed), nameof(YouLevel), nameof(RemoteLevel), nameof(YouCaption), nameof(RemoteCaption),
+        nameof(ChunkSummary), nameof(QueueSummary), nameof(FreeSpace), nameof(StorageRate),
+        nameof(IsRecording), nameof(IsPaused), nameof(IsDegraded), nameof(IndicatorVisible),
+        nameof(DevicesEditable), nameof(CanStart), nameof(IsBusy), nameof(TrayText), nameof(StatusHeadline),
+    ];
+
+    /// <summary>Marshals UI state changes onto the dispatcher when raised from a worker thread.</summary>
+    private static void Dispatch(Action action)
+    {
+        Dispatcher? dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            action();
+        }
+        else
+        {
+            dispatcher.BeginInvoke(action);
+        }
     }
 
     private void RaiseCommands()
@@ -350,5 +433,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _disposed = true;
         _timer.Stop();
         _controller.StateChanged -= OnControllerStateChanged;
+        _controller.Notice -= OnControllerNotice;
     }
 }

@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
@@ -19,6 +19,7 @@
     <ProjectReference Include="..\..\src\EchoForge.Audio.Windows\EchoForge.Audio.Windows.csproj" />
     <ProjectReference Include="..\..\src\EchoForge.Core\EchoForge.Core.csproj" />
     <ProjectReference Include="..\..\src\EchoForge.Infrastructure\EchoForge.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\EchoForge.App\EchoForge.App.csproj" />
   </ItemGroup>
 
   <ItemGroup>

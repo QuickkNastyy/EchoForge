@@ -89,6 +89,18 @@ chunk writers.
 
 Latest one-minute run: both tracks 00:01:00, two chunks each, all valid, zero dropped frames.
 
+### Chunk durability (added after Phase 1 review)
+
+A finalized chunk is now discoverable without the journal. `PcmChunkWriter` writes a
+`ChunkRecord` beside the audio — track, index, epoch, format, frames, start offset within the
+epoch, and the epoch's QPC origin — for the active chunk on every flush and for a finalized chunk
+immediately after the atomic rename. Recovery reconciles the chunk directories against the
+journal and adds a record for anything the journal is missing.
+
+This closes a real gap: chunks finalize every 60 seconds, but the journal previously learned about
+them only when the epoch closed at Pause or Stop. A crash in between left valid WAVs that recovery
+ignored, so a long meeting could rebuild as an empty session.
+
 ### Stop and Dispose are idempotent
 
 A reviewed defect: `TrackPipeline.Dispose()` called `Stop()` unconditionally, so disposing after

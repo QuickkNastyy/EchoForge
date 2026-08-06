@@ -45,7 +45,7 @@ regardless of how many automated tests are green.
 | **Equipment / manual action** | Live capture, then `Stop-Process -Force` after at least two finalized chunks per track. |
 | **Procedure** | Start a recording. Wait for ≥ 2 chunks per track. Kill the process. Restart, run recovery, then `validate <session-dir>`. |
 | **Evidence to capture** | Chunk inventory before and after, repair output, trimmed byte count, validator result. |
-| **Note** | The recovery *logic* is implemented and covered by automated tests using synthetic abandoned files and injected failures. This item is the physical cycle only. |
+| **Note** | The recovery *logic* is implemented and covered by automated tests using synthetic abandoned files and injected failures, including the crash window between a WAV finalizing and its journal line being written. This item is the physical cycle only. |
 | **Phase** | Phase 0 hardening / Phase 1 sign-off. |
 | **Status** | `DEFERRED` |
 
@@ -55,6 +55,7 @@ regardless of how many automated tests are green.
 |---|---|
 | **Threshold** | The affected active chunk is finalized; the healthy track keeps recording; a persistent degraded state is visible; **no silent default-device switch**; completed chunks preserved. |
 | **Equipment / manual action** | Physically disconnect the USB or wireless endpoint mid-recording, then reconnect. |
+| **Already automated** | `IMMNotificationClient` registration, degraded transition, track naming, both-endpoints-lost stop, and default-device changes being reported but never followed are covered by synthetic tests driving a fake endpoint monitor. This item is the physical unplug only. |
 | **Procedure** | Record both tracks. Unplug the microphone. Confirm the system track continues and the UI shows degraded. Reconnect explicitly and confirm a new epoch. Repeat for the render endpoint. |
 | **Evidence to capture** | Session journal, epoch boundaries, screenshots of the degraded indicator, validator result. |
 | **Phase** | Phase 1 sign-off. |
@@ -66,6 +67,7 @@ regardless of how many automated tests are green.
 |---|---|
 | **Threshold** | Active chunks finalized on suspend where possible; resume opens a **new epoch with an explicit gap**; audio during sleep is not fabricated. |
 | **Equipment / manual action** | Suspend the machine mid-recording and wake it. |
+| **Already automated** | Suspend finalizing both tracks, closing the epoch with `Suspended`, persisting the snapshot, and refusing to auto-restart on wake are covered by synthetic tests driving a fake power monitor. This item is the physical sleep only. |
 | **Procedure** | Record both tracks. Sleep the machine for ≥ 60 s. Wake. Confirm the gap and new epoch, then stop and validate. |
 | **Evidence to capture** | Journal entries for suspend/resume, epoch list, gap duration, validator result. |
 | **Phase** | Phase 1 sign-off. |

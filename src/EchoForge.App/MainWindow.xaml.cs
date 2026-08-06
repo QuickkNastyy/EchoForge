@@ -8,16 +8,21 @@ public partial class MainWindow : Window
     public MainWindow() => InitializeComponent();
 
     /// <summary>
-    /// Closing the window while capture is live would either lose the recording or hide the fact
-    /// that it is still running. Neither is acceptable, so the user is asked.
+    /// Closing while a session is live or paused would either lose audio or hide the fact that a
+    /// recording is still open. Both need an explicit choice.
     /// </summary>
     protected override void OnClosing(CancelEventArgs e)
     {
-        if (DataContext is MainViewModel { IsRecording: true } viewModel)
+        if (DataContext is MainViewModel viewModel && (viewModel.IsRecording || viewModel.IsPaused))
         {
+            string message = viewModel.IsRecording
+                ? "A recording is still running. Stop it and save, or keep recording?"
+                : "This recording is paused and has not been saved. Stop it and save, or leave it open?";
+
+            string caption = viewModel.IsRecording ? "EchoForge is recording" : "EchoForge is paused";
+
             MessageBoxResult answer = System.Windows.MessageBox.Show(
-                "A recording is still running. Stop it and save, or keep recording?",
-                "EchoForge is recording",
+                this, message, caption,
                 MessageBoxButton.OKCancel,
                 MessageBoxImage.Warning,
                 MessageBoxResult.Cancel);
