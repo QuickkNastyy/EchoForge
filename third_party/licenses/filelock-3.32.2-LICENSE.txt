@@ -1,7 +1,7 @@
-﻿===== faster_whisper-1.2.1.dist-info/LICENSE =====
+﻿===== filelock-3.32.2.dist-info/licenses/LICENSE =====
 MIT License
 
-Copyright (c) 2023 SYSTRAN
+Copyright (c) 2025 Bernát Gábor and contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

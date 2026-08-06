@@ -1,0 +1,4 @@
+﻿# The production speech-recognition stack, resolved into artifacts/manifest.json by
+# scripts/lock-worker-runtime.ps1. This file names what EchoForge asks for; the resolver
+# decides the closure and the script pins every wheel by digest.
+faster-whisper==1.2.1
