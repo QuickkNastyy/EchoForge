@@ -6,6 +6,7 @@ using System.Windows.Threading;
 using EchoForge.Contracts.Artifacts;
 using EchoForge.Contracts.Processing;
 using EchoForge.Contracts.Transcripts;
+using EchoForge.Contracts.Workers;
 using EchoForge.Core.Exports;
 using EchoForge.Infrastructure.Processing;
 
@@ -28,6 +29,15 @@ public sealed record TranscriptRevisionOption(int Revision, string Label, bool R
 
 /// <summary>One export format, with the name a person would recognise.</summary>
 public sealed record ExportFormatOption(TranscriptExportFormat Format, string Label);
+
+/// <summary>A selectable backend. The label always says whether it recognises speech.</summary>
+public sealed record BackendOption(string Id, string Label, bool RecognizesSpeech);
+
+/// <summary>A selectable compute profile. The worker may climb down from it, and says so.</summary>
+public sealed record ComputeProfileOption(string Id, string Label);
+
+/// <summary>A language, or automatic detection when the code is null.</summary>
+public sealed record LanguageOption(string? Code, string Label);
 
 /// <summary>
 /// The transcription surface: ask for a transcript, watch it happen, choose which revision is
@@ -285,8 +295,91 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
 
     public bool HasProductionStatus => !string.IsNullOrWhiteSpace(ProductionStatus);
 
-    /// <summary>Set once preparation has produced a plan. Speech recognition is still not implemented.</summary>
+    /// <summary>Set once preparation has produced a plan.</summary>
     public string ProductionPlanSummary { get; private set; } = string.Empty;
+
+    // -- what to run, and how ------------------------------------------------------------------
+
+    /// <summary>
+    /// The backends this build can offer. The placeholder is always present and always says
+    /// what it is; production appears only where its artifacts and runtime exist.
+    /// </summary>
+    public ObservableCollection<BackendOption> Backends { get; } =
+    [
+        new(WorkerProtocol.MockBackend, "Deterministic placeholder (no speech recognition)", RecognizesSpeech: false),
+        new("faster-whisper", "faster-whisper (real speech recognition)", RecognizesSpeech: true),
+    ];
+
+    private BackendOption? _selectedBackend;
+
+    public BackendOption SelectedBackend
+    {
+        get => _selectedBackend ??= Backends[0];
+        set { _selectedBackend = value; OnChanged(); OnChanged(nameof(IsProductionSelected)); RaiseCommands(); }
+    }
+
+    public bool IsProductionSelected => SelectedBackend.RecognizesSpeech;
+
+    public ObservableCollection<ComputeProfileOption> ComputeProfiles { get; } =
+    [
+        new(ProcessingProfile.CpuInt8, "CPU INT8 — works everywhere, slowest"),
+        new(ProcessingProfile.CudaInt8Float16, "GPU INT8/FP16 — lower memory"),
+        new(ProcessingProfile.CudaFp16, "GPU FP16 — highest quality"),
+    ];
+
+    private ComputeProfileOption? _selectedComputeProfile;
+
+    public ComputeProfileOption SelectedComputeProfile
+    {
+        get => _selectedComputeProfile ??= ComputeProfiles[0];
+        set { _selectedComputeProfile = value; OnChanged(); }
+    }
+
+    /// <summary>
+    /// Automatic detection, or a language chosen outright. Automatic is the default because a
+    /// wrong forced language is far worse than a detection that occasionally hesitates.
+    /// </summary>
+    public ObservableCollection<LanguageOption> Languages { get; } =
+    [
+        new(null, "Detect automatically"),
+        new("en", "English"),
+        new("de", "German"),
+        new("es", "Spanish"),
+        new("fr", "French"),
+        new("it", "Italian"),
+        new("nl", "Dutch"),
+        new("pt", "Portuguese"),
+        new("ja", "Japanese"),
+        new("zh", "Chinese"),
+    ];
+
+    private LanguageOption? _selectedLanguage;
+
+    public LanguageOption SelectedLanguage
+    {
+        get => _selectedLanguage ??= Languages[0];
+        set { _selectedLanguage = value; OnChanged(); }
+    }
+
+    private string _glossary = string.Empty;
+
+    /// <summary>
+    /// Names, jargon and acronyms, comma separated. Seeded as an initial prompt, which biases
+    /// the recogniser rather than guaranteeing anything - and the label says so.
+    /// </summary>
+    public string Glossary
+    {
+        get => _glossary;
+        set { _glossary = value ?? string.Empty; OnChanged(); }
+    }
+
+    /// <summary>
+    /// Set when a run did not use the profile it was asked for. Shown prominently: a job that
+    /// asked for the GPU and finished on the CPU took far longer for a reason worth knowing.
+    /// </summary>
+    public string? FallbackNotice { get; private set; }
+
+    public bool HasFallbackNotice => !string.IsNullOrWhiteSpace(FallbackNotice);
 
     /// <summary>
     /// Pushed by the main view model on every refresh, so this view model never has to observe
@@ -338,10 +431,21 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
 
         Error = null;
         Notice = null;
+        FallbackNotice = null;
+        OnChanged(nameof(FallbackNotice));
+        OnChanged(nameof(HasFallbackNotice));
+
+        TranscriptionOptions options = new()
+        {
+            Backend = SelectedBackend.Id,
+            ComputeProfile = SelectedComputeProfile.Id,
+            Language = SelectedLanguage.Code,
+            Glossary = [.. Glossary.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+        };
 
         // Request verifies every source chunk against its recorded digest, which means hashing
         // the audio. That is not something the UI thread may do.
-        TranscriptionTicket ticket = await Task.Run(() => _coordinator.Request(sessionId)).ConfigureAwait(true);
+        TranscriptionTicket ticket = await Task.Run(() => _coordinator.Request(sessionId, options)).ConfigureAwait(true);
 
         if (!ticket.Accepted)
         {
@@ -576,6 +680,7 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         nameof(CanTranscribe), nameof(CanTranscribeAgain), nameof(CanCancel), nameof(CanExport),
         nameof(CanPrepare), nameof(SupportsProduction), nameof(IsPreparing),
         nameof(ProductionStatus), nameof(HasProductionStatus), nameof(ProductionPlanSummary),
+        nameof(FallbackNotice), nameof(HasFallbackNotice), nameof(IsProductionSelected),
     ];
 
     private void RaiseCommands()

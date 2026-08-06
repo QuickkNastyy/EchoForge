@@ -191,4 +191,22 @@ public sealed record TranscriptionOptions
     public string? TestMode { get; init; }
 
     public double? TestDelaySeconds { get; init; }
+
+    /// <summary>
+    /// Which compute profile to ask for. The worker may climb down from it — and records that
+    /// it did — but never changes it silently.
+    /// </summary>
+    public string ComputeProfile { get; init; } = "cpu-int8";
+
+    /// <summary>Words the recogniser would otherwise mis-hear: names, jargon, acronyms.</summary>
+    public IReadOnlyList<string> Glossary { get; init; } = [];
+
+    public string? InitialPrompt { get; init; }
+
+    /// <summary>Conservative voice-activity filtering, from the model inside the pinned wheel.</summary>
+    public bool VadFilter { get; init; } = true;
+
+    public bool WordTimestamps { get; init; } = true;
+
+    public int? BeamSize { get; init; }
 }

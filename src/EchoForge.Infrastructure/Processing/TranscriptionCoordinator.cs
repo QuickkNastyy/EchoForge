@@ -596,6 +596,24 @@ public sealed class TranscriptionCoordinator : IDisposable
         }
 
         TranscriptionRequest request = built.Request!;
+
+        // A production run needs prepared audio, a plan, and a verified model directory before
+        // the worker is any use. The placeholder needs none of it and is left alone.
+        if (!string.Equals(pending.Options.Backend, WorkerProtocol.MockBackend, StringComparison.Ordinal))
+        {
+            (TranscriptionRequest? enriched, string? code, string? message) =
+                await PrepareForProductionAsync(request, pending.Options, running.Cancellation.Token)
+                    .ConfigureAwait(false);
+
+            if (enriched is null)
+            {
+                _transcripts.MarkFailed(attempt, code!, message!, Now);
+                return new TranscriptionRunResult(ProcessingStageState.Failed, null, code, message!);
+            }
+
+            request = enriched with { OutputPath = attempt.StagingPath };
+        }
+
         _transcripts.MarkStarted(attempt, pending.Options, Now);
         RaiseStateChanged();
 
@@ -628,6 +646,79 @@ public sealed class TranscriptionCoordinator : IDisposable
         }
 
         return Settle(attempt, request, worker);
+    }
+
+    /// <summary>
+    /// Prepares everything a production run needs, and hangs it off the request.
+    ///
+    /// <para>
+    /// Artifacts are never downloaded here. Transcribing is not the moment to start a 1.6 GB
+    /// fetch the user did not ask for, so a profile whose models are missing is refused with a
+    /// message that says to install them first.
+    /// </para>
+    /// </summary>
+    private async Task<(TranscriptionRequest? Request, string? Code, string? Message)> PrepareForProductionAsync(
+        TranscriptionRequest request,
+        TranscriptionOptions options,
+        CancellationToken cancellationToken)
+    {
+        if (_preparation is null)
+        {
+            return (null, "preparation_unavailable", "This installation cannot run production transcription.");
+        }
+
+        PreparationResult prepared = await _preparation
+            .PrepareAsync(request, options.ComputeProfile, installMissing: false, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!prepared.IsReady || prepared.Plan is null || prepared.Derivatives is null)
+        {
+            return (null, prepared.FailureCode ?? "preparation_failed", prepared.Message);
+        }
+
+        string? modelDirectory = _preparation.Registry.TryStageModelDirectory(options.ComputeProfile);
+        if (modelDirectory is null)
+        {
+            return (null, "artifacts_missing",
+                "The speech model for that profile is not installed yet. Download it first, then transcribe.");
+        }
+
+        // Only the windows that have not already succeeded. A resumed job re-runs what it must
+        // and nothing else; the worker refuses any checkpoint whose fingerprint has moved.
+        IReadOnlyList<TranscriptionWindow> outstanding = prepared.Plan.Windows;
+
+        return (request with
+        {
+            Derivatives = [.. prepared.Derivatives.Derivatives.Select(d => new RequestDerivative
+            {
+                SourceTrack = d.SourceTrack,
+                RelativePath = d.RelativePath,
+                TimingMapRelativePath = d.TimingMapRelativePath,
+                SampleRate = d.SampleRate,
+                Channels = d.Channels,
+                TotalFrames = d.TotalFrames,
+                Sha256 = d.Sha256,
+            })],
+            Windows = [.. outstanding.Select(w => new RequestWindow
+            {
+                Id = w.Id,
+                SourceTrack = w.SourceTrack,
+                Epoch = w.Epoch,
+                StartFrame = w.StartFrame,
+                EndFrame = w.EndFrame,
+                SessionStartSeconds = w.SessionStartSeconds,
+                SessionEndSeconds = w.SessionEndSeconds,
+                OverlapBeforeSeconds = w.OverlapBeforeSeconds,
+                OverlapAfterSeconds = w.OverlapAfterSeconds,
+                InputFingerprint = w.InputFingerprint,
+            })],
+            Options = request.Options with
+            {
+                ModelPath = modelDirectory,
+                ComputeProfile = options.ComputeProfile,
+                Profile = prepared.Plan.PlanningVersion,
+            },
+        }, null, null);
     }
 
     /// <summary>Turns a worker outcome into a durable result. Every path leaves prior work intact.</summary>
@@ -776,6 +867,12 @@ public sealed class TranscriptionCoordinator : IDisposable
                 SegmentSeconds = options.SegmentSeconds,
                 TestMode = options.TestMode,
                 TestDelaySeconds = options.TestDelaySeconds,
+                ComputeProfile = options.ComputeProfile,
+                Glossary = options.Glossary,
+                InitialPrompt = options.InitialPrompt,
+                VadFilter = options.VadFilter,
+                WordTimestamps = options.WordTimestamps,
+                BeamSize = options.BeamSize,
             });
 
     private void Settle(PendingRequest pending, TranscriptionRunResult result)

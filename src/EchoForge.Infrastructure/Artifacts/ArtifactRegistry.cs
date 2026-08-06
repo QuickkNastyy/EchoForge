@@ -254,6 +254,70 @@ public sealed class ArtifactRegistry : IDisposable
         return new ArtifactState(entry, ArtifactStatus.Installed, null, length);
     }
 
+    /// <summary>
+    /// Assembles a profile's verified speech-model files into one directory a recogniser can
+    /// load, and returns its path.
+    ///
+    /// <para>
+    /// CTranslate2 wants <c>model.bin</c>, the tokenizer, and the configs side by side, while
+    /// the artifact store keeps every file under its own artifact and revision so each can be
+    /// verified independently. This bridges the two by copying verified bytes into one place —
+    /// never by pointing the recogniser at an unverified directory, and never by downloading.
+    /// </para>
+    ///
+    /// <para>
+    /// Returns null when any required file is not installed, because a partially assembled
+    /// model directory is worse than none: the library would load it and fail obscurely.
+    /// </para>
+    /// </summary>
+    public string? TryStageModelDirectory(string profileId)
+    {
+        ProcessingProfile? profile = Profile(profileId);
+        if (profile is null)
+        {
+            return null;
+        }
+
+        List<ArtifactEntry> model =
+            [.. profile.Artifacts.Where(a => string.Equals(a.Kind, "speech-model", StringComparison.Ordinal))];
+
+        if (model.Count == 0 || model.Any(a => !Status(a).IsUsable))
+        {
+            return null;
+        }
+
+        // One directory per model revision. Two revisions never share a directory, so a
+        // re-pin cannot leave a mixed set of files that individually verify.
+        string revision = model[0].Revision;
+        string staged = Path.Combine(ModelRoot, "staged", revision);
+
+        try
+        {
+            Directory.CreateDirectory(staged);
+
+            foreach (ArtifactEntry entry in model)
+            {
+                string destination = Path.Combine(staged, entry.FileName);
+                string source = InstallPath(entry);
+
+                // Re-copy only when the staged copy is not already the right length. The model
+                // weight file is 1.6 GB; copying it on every job would be an absurd tax.
+                if (File.Exists(destination) && new FileInfo(destination).Length == entry.SizeBytes)
+                {
+                    continue;
+                }
+
+                File.Copy(source, destination, overwrite: true);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+
+        return staged;
+    }
+
     // -- installing -----------------------------------------------------------------------------
 
     /// <summary>

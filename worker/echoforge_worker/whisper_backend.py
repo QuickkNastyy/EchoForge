@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Final, Sequence
 
-from . import compute
+from . import checkpoints, compute
 from .audio import PcmAudio, read_pcm16, resolve_inside
 from .models import (
     RequestDerivative,
@@ -136,7 +136,14 @@ class FasterWhisperBackend:
 
         audio = self._open(context.session_root, derivative)
         timing = self._timing(context.session_root, derivative)
-        recogniser = self._recogniser(options)
+
+        results = checkpoints.directory_for(
+            context.session_root, options.profile or "windows-v1"
+        )
+
+        # The model is loaded only if some window actually needs running. A fully
+        # checkpointed track costs nothing on a resume, which is the point of checkpoints.
+        recogniser: Recogniser | None = None
 
         placed: list[Segment] = []
         detected: tuple[str, float | None] | None = None
@@ -145,17 +152,27 @@ class FasterWhisperBackend:
             context.check_cancelled()
             context.window_started(window)
 
-            samples = read_window(audio, window)
-            result = recogniser(samples, window, options)
+            segments = checkpoints.load(results, window)
 
-            if detected is None and result.language:
-                detected = (result.language, result.language_probability)
+            if segments is None:
+                if recogniser is None:
+                    recogniser = self._recogniser(options)
 
-            placed.extend(
-                rebase(window, result.segments, timing, context.session_duration_seconds)
-            )
+                result = recogniser(read_window(audio, window), window, options)
+                segments = result.segments
 
-            context.window_completed(window, len(result.segments))
+                if detected is None and result.language:
+                    detected = (result.language, result.language_probability)
+
+                # Written the moment it succeeds: window seventeen failing must not cost
+                # the sixteen that already worked.
+                checkpoints.save(results, window, segments, result.language)
+            else:
+                context.warn("window_reused", f"{window.id} reused a completed checkpoint")
+
+            placed.extend(rebase(window, segments, timing, context.session_duration_seconds))
+
+            context.window_completed(window, len(segments))
 
         self._languages[source_track] = detected or (options.language or "und", None)
 

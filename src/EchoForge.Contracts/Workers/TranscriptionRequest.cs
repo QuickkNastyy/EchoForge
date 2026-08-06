@@ -51,6 +51,85 @@ public sealed record TranscriptionRequest
 
     [JsonPropertyName("options")]
     public required RequestOptions Options { get; init; }
+
+    /// <summary>
+    /// The prepared 16 kHz mono audio, when this is a production run. Absent for the
+    /// placeholder, which works from the source chunks and so stays usable before anything has
+    /// been prepared.
+    /// </summary>
+    [JsonPropertyName("derivatives")]
+    public IReadOnlyList<RequestDerivative> Derivatives { get; init; } = [];
+
+    /// <summary>The units of work, already placed on the session timeline by the host.</summary>
+    [JsonPropertyName("windows")]
+    public IReadOnlyList<RequestWindow> Windows { get; init; } = [];
+}
+
+/// <summary>One track's prepared audio and the map back to the immutable source.</summary>
+public sealed record RequestDerivative
+{
+    [JsonPropertyName("source_track")]
+    public required string SourceTrack { get; init; }
+
+    [JsonPropertyName("relative_path")]
+    public required string RelativePath { get; init; }
+
+    [JsonPropertyName("timing_map_relative_path")]
+    public required string TimingMapRelativePath { get; init; }
+
+    [JsonPropertyName("sample_rate")]
+    public required int SampleRate { get; init; }
+
+    [JsonPropertyName("channels")]
+    public required int Channels { get; init; }
+
+    [JsonPropertyName("total_frames")]
+    public required long TotalFrames { get; init; }
+
+    [JsonPropertyName("sha256")]
+    public required string Sha256 { get; init; }
+}
+
+/// <summary>
+/// One transcription window as the worker receives it.
+///
+/// <para>
+/// The fingerprint travels with the window because the worker owns the per-window checkpoints:
+/// it is what lets a resumed job reuse a finished window and refuse one whose audio has since
+/// changed.
+/// </para>
+/// </summary>
+public sealed record RequestWindow
+{
+    [JsonPropertyName("id")]
+    public required string Id { get; init; }
+
+    [JsonPropertyName("source_track")]
+    public required string SourceTrack { get; init; }
+
+    [JsonPropertyName("epoch")]
+    public required int Epoch { get; init; }
+
+    [JsonPropertyName("start_frame")]
+    public required long StartFrame { get; init; }
+
+    [JsonPropertyName("end_frame")]
+    public required long EndFrame { get; init; }
+
+    [JsonPropertyName("session_start_seconds")]
+    public required double SessionStartSeconds { get; init; }
+
+    [JsonPropertyName("session_end_seconds")]
+    public required double SessionEndSeconds { get; init; }
+
+    [JsonPropertyName("overlap_before_seconds")]
+    public double OverlapBeforeSeconds { get; init; }
+
+    [JsonPropertyName("overlap_after_seconds")]
+    public double OverlapAfterSeconds { get; init; }
+
+    [JsonPropertyName("input_fingerprint")]
+    public required string InputFingerprint { get; init; }
 }
 
 /// <summary>A session-relative capture epoch. Ordered and non-overlapping.</summary>
@@ -132,6 +211,33 @@ public sealed record RequestOptions
 
     [JsonPropertyName("test_delay_seconds")]
     public double? TestDelaySeconds { get; init; }
+
+    /// <summary>
+    /// The verified model directory, resolved by the registry. Never a repository id and never
+    /// an alias: the worker must not go looking, and the pinning only means something if the
+    /// path it is handed is the one that was checked.
+    /// </summary>
+    [JsonPropertyName("model_path")]
+    public string? ModelPath { get; init; }
+
+    [JsonPropertyName("compute_profile")]
+    public string? ComputeProfile { get; init; }
+
+    [JsonPropertyName("beam_size")]
+    public int? BeamSize { get; init; }
+
+    [JsonPropertyName("vad_filter")]
+    public bool VadFilter { get; init; } = true;
+
+    [JsonPropertyName("word_timestamps")]
+    public bool WordTimestamps { get; init; } = true;
+
+    /// <summary>Seeded into the recogniser. Biases towards names and jargon; guarantees nothing.</summary>
+    [JsonPropertyName("initial_prompt")]
+    public string? InitialPrompt { get; init; }
+
+    [JsonPropertyName("glossary")]
+    public IReadOnlyList<string> Glossary { get; init; } = [];
 }
 
 /// <summary>The fault-injection modes the worker understands, named once.</summary>

@@ -91,8 +91,10 @@ def window(
     overlap_before: float = 0.0,
     overlap_after: float = 0.0,
     epoch: int = 1,
+    fingerprint: str = "",
 ) -> RequestWindow:
     return RequestWindow(
+        input_fingerprint=fingerprint,
         id=f"w-microphone-e{epoch:03d}-{ordinal:04d}",
         source_track="microphone",
         epoch=epoch,
@@ -126,7 +128,11 @@ class Context:
         self.session_duration_seconds = duration
         self.started: list[str] = []
         self.completed: list[tuple[str, int]] = []
+        self.warnings: list[tuple[str, str]] = []
         self.cancel_after: int | None = None
+
+    def warn(self, code: str, detail: str) -> None:
+        self.warnings.append((code, detail))
 
     def check_cancelled(self) -> None:
         if self.cancel_after is not None and len(self.started) > self.cancel_after:
@@ -520,6 +526,99 @@ def test_cancellation_stops_between_windows(tmp_path) -> None:
     # The windows that did finish still finished: cancelling costs the rest, not the lot.
     assert [c[0] for c in context.completed] == [windows[0].id, windows[1].id]
     assert windows[2].id not in context.started
+
+
+def test_a_finished_window_is_checkpointed_and_reused_on_the_next_run(tmp_path) -> None:
+    write_derivative(tmp_path)
+    write_timing_map(tmp_path, [source_span(0.0, 30.0)])
+
+    windows = [window(0, 0.0, 10.0, fingerprint="fp-0"), window(1, 10.0, 20.0, fingerprint="fp-1")]
+
+    calls: list[str] = []
+
+    def factory(opts, plan):
+        def recognise(samples, w, o):
+            calls.append(w.id)
+            return WindowResult(w.id, (WindowSegment(1.0, 2.0, f"line {w.ordinal}"),), "en", 0.9)
+
+        return recognise
+
+    first = FasterWhisperBackend(recogniser_factory=factory)
+    first.transcribe_windows("microphone", windows, derivative(), options(), Context(tmp_path))
+
+    assert calls == [windows[0].id, windows[1].id]
+
+    # A second run over identical inputs recognises nothing again.
+    second = FasterWhisperBackend(recogniser_factory=factory)
+    segments = second.transcribe_windows("microphone", windows, derivative(), options(), Context(tmp_path))
+
+    assert calls == [windows[0].id, windows[1].id]
+    assert [s.text for s in segments] == ["line 0", "line 1"]
+
+
+def test_a_checkpoint_from_different_audio_is_not_reused(tmp_path) -> None:
+    write_derivative(tmp_path)
+    write_timing_map(tmp_path, [source_span(0.0, 30.0)])
+
+    original = window(0, 0.0, 10.0, fingerprint="fp-old")
+    calls: list[str] = []
+
+    def factory(opts, plan):
+        def recognise(samples, w, o):
+            calls.append(w.input_fingerprint)
+            return WindowResult(w.id, (WindowSegment(1.0, 2.0, "hello"),), "en", 0.9)
+
+        return recognise
+
+    FasterWhisperBackend(recogniser_factory=factory).transcribe_windows(
+        "microphone", [original], derivative(), options(), Context(tmp_path)
+    )
+
+    # Same window ID, different fingerprint: the audio behind it changed.
+    changed = window(0, 0.0, 10.0, fingerprint="fp-new")
+    FasterWhisperBackend(recogniser_factory=factory).transcribe_windows(
+        "microphone", [changed], derivative(), options(), Context(tmp_path)
+    )
+
+    assert calls == ["fp-old", "fp-new"]
+
+
+def test_a_window_that_failed_does_not_lose_the_ones_that_succeeded(tmp_path) -> None:
+    write_derivative(tmp_path)
+    write_timing_map(tmp_path, [source_span(0.0, 30.0)])
+
+    windows = [window(i, i * 10.0, (i + 1) * 10.0, fingerprint=f"fp-{i}") for i in range(3)]
+
+    attempts: list[str] = []
+
+    def failing(opts, plan):
+        def recognise(samples, w, o):
+            attempts.append(w.id)
+            if w.ordinal == 2:
+                raise RuntimeError("the third window fell over")
+            return WindowResult(w.id, (WindowSegment(1.0, 2.0, f"line {w.ordinal}"),), "en", 0.9)
+
+        return recognise
+
+    with pytest.raises(RuntimeError):
+        FasterWhisperBackend(recogniser_factory=failing).transcribe_windows(
+            "microphone", windows, derivative(), options(), Context(tmp_path)
+        )
+
+    def succeeding(opts, plan):
+        def recognise(samples, w, o):
+            attempts.append(w.id)
+            return WindowResult(w.id, (WindowSegment(1.0, 2.0, f"line {w.ordinal}"),), "en", 0.9)
+
+        return recognise
+
+    segments = FasterWhisperBackend(recogniser_factory=succeeding).transcribe_windows(
+        "microphone", windows, derivative(), options(), Context(tmp_path)
+    )
+
+    # The retry only re-ran the window that failed.
+    assert attempts == [windows[0].id, windows[1].id, windows[2].id, windows[2].id]
+    assert len(segments) == 3
 
 
 def test_the_model_is_described_from_what_actually_ran(tmp_path) -> None:
