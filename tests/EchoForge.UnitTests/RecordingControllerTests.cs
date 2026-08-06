@@ -224,7 +224,7 @@ public sealed class RecordingControllerTests : IDisposable
 
         JournalReadResult journal = _store.ReadJournal(controller.SessionId!);
         Assert.Contains(journal.Events, e => e.Type == JournalEventTypes.DiskControlledStop);
-        Assert.Contains(journal.Events, e => e.Type == JournalEventTypes.SessionStopped);
+        Assert.Contains(journal.Events, e => e.Type == JournalEventTypes.SessionEnded);
     }
 
     [Fact]
@@ -253,7 +253,7 @@ public sealed class RecordingControllerTests : IDisposable
 
         Assert.Equal(2, types.Count(t => t == JournalEventTypes.EpochStarted));
         Assert.Equal(2, types.Count(t => t == JournalEventTypes.EpochEnded));
-        Assert.Single(types, t => t == JournalEventTypes.SessionStopped);
+        Assert.Single(types, t => t == JournalEventTypes.SessionEnded);
     }
 
     [Fact]

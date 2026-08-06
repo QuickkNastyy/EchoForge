@@ -170,8 +170,7 @@ public sealed class RecordingController : IDisposable
             if (bothLost)
             {
                 CloseEpoch(EpochEndReason.DeviceLost);
-                FinishSession("both endpoints were lost");
-                SetState(SessionState.Failed, "both endpoints were lost");
+                FinalizeSession(SessionState.Failed, "both endpoints were lost");
                 return;
             }
 
@@ -351,7 +350,7 @@ public sealed class RecordingController : IDisposable
 
             SetState(SessionState.Finalizing, null);
             CloseEpoch(EpochEndReason.Stopped);
-            FinishSession("session stopped");
+            FinalizeSession(SessionState.Recorded, "session stopped");
         }
     }
 
@@ -381,8 +380,7 @@ public sealed class RecordingController : IDisposable
                 }
 
                 CloseEpoch(EpochEndReason.Failed);
-                FinishSession("every track stopped capturing");
-                SetState(SessionState.Failed, "every track stopped capturing");
+                FinalizeSession(SessionState.Failed, "every track stopped capturing");
                 return status;
             }
 
@@ -725,22 +723,50 @@ public sealed class RecordingController : IDisposable
             ("reason", reason.ToString())));
     }
 
-    /// <summary>Writes the terminal session events exactly once and freezes the end timestamp.</summary>
-    private void FinishSession(string reason)
+    /// <summary>
+    /// The one way a session ends.
+    ///
+    /// <para>
+    /// Atomic and idempotent: it freezes <see cref="EndedUtc"/>, writes a single terminal journal
+    /// event carrying the outcome, sets the in-memory state, and persists the snapshot — in that
+    /// order, exactly once. Previously the failure paths wrote <c>Recorded</c> to disk and then
+    /// changed only memory to <c>Failed</c>, so the snapshot and the recovered state disagreed
+    /// with what the user had been told.
+    /// </para>
+    /// </summary>
+    /// <param name="outcome">
+    /// One of <see cref="SessionState.Recorded"/>, <see cref="SessionState.Failed"/>, or
+    /// <see cref="SessionState.NeedsAttention"/>. A session whose journal fell behind is
+    /// downgraded to <c>NeedsAttention</c>, because its ledger no longer describes its audio.
+    /// </param>
+    private void FinalizeSession(SessionState outcome, string reason)
     {
         if (_endedUtc is not null)
         {
             return;
         }
 
+        if (outcome is not (SessionState.Recorded or SessionState.Failed or SessionState.NeedsAttention))
+        {
+            throw new ArgumentOutOfRangeException(nameof(outcome), outcome, "Not a terminal outcome.");
+        }
+
+        // A failure stays a failure; otherwise a lagging journal downgrades the outcome.
+        SessionState effective = outcome == SessionState.Failed
+            ? SessionState.Failed
+            : NeedsReconciliation ? SessionState.NeedsAttention : outcome;
+
         _endedUtc = _clock.UtcNow();
 
+        // Written synchronously, not through the queue: the terminal record must be durable
+        // before the snapshot that claims it.
         _store.Append(SessionId!, JournalEvent.Create(
-            JournalEventTypes.SessionStopped, _endedUtc.Value,
+            JournalEventTypes.SessionEnded, _endedUtc.Value,
             ("session_id", SessionId!),
+            ("outcome", effective.ToString()),
             ("reason", reason)));
 
-        SetState(SessionState.Recorded, reason);
+        SetState(effective, reason);
         WriteSnapshot();
     }
 
@@ -759,21 +785,23 @@ public sealed class RecordingController : IDisposable
             _engine = null;
         }
 
-        _endedUtc = _clock.UtcNow();
-
         if (journalSession && SessionId is not null)
         {
+            // Marks the session as one that never captured anything, so recovery can tell it
+            // apart from an interrupted recording before it looks for audio.
             _store.Append(SessionId, JournalEvent.Create(
-                JournalEventTypes.SessionStartFailed, _endedUtc.Value,
+                JournalEventTypes.SessionStartFailed, _clock.UtcNow(),
                 ("session_id", SessionId),
                 ("reason", reason)));
         }
 
-        SetState(SessionState.Failed, reason);
-
         if (SessionId is not null)
         {
-            _store.WriteSnapshot(Snapshot());
+            FinalizeSession(SessionState.Failed, reason);
+        }
+        else
+        {
+            SetState(SessionState.Failed, reason);
         }
     }
 
@@ -790,7 +818,7 @@ public sealed class RecordingController : IDisposable
 
                 SetState(SessionState.Finalizing, "free space fell below the safe minimum");
                 CloseEpoch(EpochEndReason.Stopped);
-                FinishSession("stopped to protect the recording");
+                FinalizeSession(SessionState.Recorded, "stopped to protect the recording");
                 break;
 
             case DiskAction.Warn when !_diskWarned:
@@ -878,7 +906,7 @@ public sealed class RecordingController : IDisposable
             {
                 SetState(SessionState.Finalizing, null);
                 CloseEpoch(EpochEndReason.Stopped);
-                FinishSession("application closing");
+                FinalizeSession(SessionState.Recorded, "application closing");
             }
 
             _engine?.Dispose();

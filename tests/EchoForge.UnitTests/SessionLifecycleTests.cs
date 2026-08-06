@@ -267,7 +267,7 @@ public sealed class SnapshotComparisonTests : IDisposable
         _store.Append(Id, JournalEvent.Create(JournalEventTypes.ChunkCompleted, t,
             ("track", "Microphone"), ("index", "1"), ("epoch", "1"), ("frames", "48000"),
             ("start_seconds", "0"), ("sample_rate", "48000"), ("channels", "2"), ("sha256", "correcthash")));
-        _store.Append(Id, JournalEvent.Create(JournalEventTypes.SessionStopped, t, ("session_id", Id)));
+        _store.Append(Id, JournalEvent.Create(JournalEventTypes.SessionEnded, t, ("session_id", Id)));
 
         // Same chunk count, wrong index, hash, epoch, start time, and device name.
         _store.WriteSnapshot(new SessionSnapshot(
@@ -298,7 +298,7 @@ public sealed class SnapshotComparisonTests : IDisposable
         DateTimeOffset t = DateTimeOffset.UnixEpoch;
 
         _store.Append(Id, JournalEvent.Create(JournalEventTypes.SessionCreated, t, ("session_id", Id)));
-        _store.Append(Id, JournalEvent.Create(JournalEventTypes.SessionStopped, t, ("session_id", Id)));
+        _store.Append(Id, JournalEvent.Create(JournalEventTypes.SessionEnded, t, ("session_id", Id)));
 
         SessionRecoveryService recovery = new(_store, new FakeChunkRepairer());
         recovery.Recover(Id);

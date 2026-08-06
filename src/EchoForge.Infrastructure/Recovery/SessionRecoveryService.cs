@@ -150,12 +150,18 @@ public sealed class SessionRecoveryService
             return SessionState.NeedsAttention;
         }
 
-        bool stopped = journal.Events.Any(e => e.Type == JournalEventTypes.SessionStopped);
-        if (stopped)
+        // A terminal event is authoritative: recovery reconstructs the same outcome the recorder
+        // wrote, rather than re-deciding it from what happens to be on disk.
+        JournalEvent? terminal = journal.Events.LastOrDefault(e => e.Type == JournalEventTypes.SessionEnded);
+        if (terminal is not null)
         {
-            return SessionState.Recorded;
+            return Enum.TryParse(terminal.Field("outcome"), out SessionState outcome)
+                && outcome is SessionState.Recorded or SessionState.Failed or SessionState.NeedsAttention
+                ? outcome
+                : SessionState.NeedsAttention;
         }
 
+        // No terminal event: the session was interrupted. Audio that survived is still usable.
         return snapshot.HasAudio ? SessionState.Recorded : SessionState.NeedsAttention;
     }
 

@@ -131,7 +131,8 @@ public sealed class SessionRecoveryTests : IDisposable
 
         if (stopped)
         {
-            _store.Append(id, JournalEvent.Create(JournalEventTypes.SessionStopped, t, ("session_id", id)));
+            _store.Append(id, JournalEvent.Create(JournalEventTypes.SessionEnded, t,
+                ("session_id", id), ("outcome", nameof(SessionState.Recorded))));
         }
 
         string active = Path.Combine(paths.TrackRoot(SourceTrack.Microphone), "active");

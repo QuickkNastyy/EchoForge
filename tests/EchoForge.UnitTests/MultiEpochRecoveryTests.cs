@@ -50,7 +50,7 @@ public sealed class MultiEpochRecoveryTests : IDisposable
         Chunk(Id, t1.AddSeconds(120), "System", 4, 2, 48_000 * 60, 0, 48_000, 2, "sys-4");
         Append(Id, JournalEventTypes.EpochEnded, t1.AddMinutes(2), ("epoch", "2"), ("end_qpc", "4000"), ("reason", "Stopped"));
 
-        Append(Id, JournalEventTypes.SessionStopped, t1.AddMinutes(2), ("session_id", Id));
+        Append(Id, JournalEventTypes.SessionEnded, t1.AddMinutes(2), ("session_id", Id));
         return Id;
     }
 

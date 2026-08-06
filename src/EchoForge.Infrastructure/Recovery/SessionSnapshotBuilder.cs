@@ -35,6 +35,7 @@ public static class SessionSnapshotBuilder
         DateTimeOffset? started = null;
         DateTimeOffset? ended = null;
         bool startFailed = false;
+        SessionState? terminalOutcome = null;
 
         Dictionary<int, EpochBuilder> epochs = [];
         Dictionary<SourceTrack, TrackBuilder> tracks = [];
@@ -150,13 +151,15 @@ public static class SessionSnapshotBuilder
                     break;
                 }
 
-                case JournalEventTypes.SessionStopped:
+                case JournalEventTypes.SessionEnded:
                     ended = journalEvent.TimestampUtc;
+                    terminalOutcome = Enum.TryParse(journalEvent.Field("outcome"), out SessionState parsed)
+                        ? parsed
+                        : SessionState.Recorded;
                     break;
 
                 case JournalEventTypes.SessionStartFailed:
                     startFailed = true;
-                    ended = journalEvent.TimestampUtc;
                     break;
 
                 default:
@@ -177,9 +180,11 @@ public static class SessionSnapshotBuilder
                 t.LatestFormat,
                 [.. t.Chunks.Values.OrderBy(c => c.Index)]))];
 
+        // The terminal event is authoritative about how the session ended. Without one the
+        // session was interrupted, and the caller decides what that means.
         return new SessionSnapshot(
             sessionId,
-            startFailed ? SessionState.Failed : SessionState.Recovering,
+            startFailed ? SessionState.Failed : terminalOutcome ?? SessionState.Recovering,
             created,
             started,
             ended,
