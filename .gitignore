@@ -5,12 +5,11 @@
 [Rr]elease/
 publish/
 
-# A build output directory called "artifacts" anywhere below the root is ignored, but the
-# pinned artifact manifest at the root is the gate's own authority and must be committed.
-# Without the re-inclusion below it was silently untracked, so a fresh clone had no manifest
-# at all and nothing to verify downloads against.
-**/artifacts/
-!/artifacts/
+# The root artifacts directory holds downloaded output, except for the pinned manifest, which
+# is the gate's own authority and must be committed. Anchored to the root with a leading
+# slash: an unanchored "artifacts/" also matches source folders such as
+# src/EchoForge.Contracts/Artifacts, because Git matches ignore patterns case-insensitively on
+# Windows, and it silently swallowed them.
 /artifacts/*
 !/artifacts/manifest.json
 *.user

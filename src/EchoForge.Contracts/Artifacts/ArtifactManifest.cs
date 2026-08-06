@@ -1,0 +1,159 @@
+using System.Text.Json.Serialization;
+
+namespace EchoForge.Contracts.Artifacts;
+
+/// <summary>
+/// One pinned file EchoForge is allowed to download.
+///
+/// <para>
+/// Mirrors <c>schemas/artifact-manifest.schema.json</c>, which stays authoritative. Every field
+/// here exists so that a download can be refused rather than trusted: an artifact is identified
+/// by an immutable revision, fetched from one exact URL, and accepted only when its length and
+/// digest are the ones recorded when it was pinned.
+/// </para>
+/// </summary>
+public sealed record ArtifactEntry
+{
+    [JsonPropertyName("artifact_id")]
+    public required string ArtifactId { get; init; }
+
+    [JsonPropertyName("kind")]
+    public required string Kind { get; init; }
+
+    /// <summary>The project this came from. Identity, not a fetch location.</summary>
+    [JsonPropertyName("repository")]
+    public required string Repository { get; init; }
+
+    /// <summary>The one exact URL this file is fetched from.</summary>
+    [JsonPropertyName("url")]
+    public required string Url { get; init; }
+
+    /// <summary>Full immutable commit SHA or release tag. Never a branch or a moving alias.</summary>
+    [JsonPropertyName("revision")]
+    public required string Revision { get; init; }
+
+    [JsonPropertyName("filename")]
+    public required string FileName { get; init; }
+
+    [JsonPropertyName("size_bytes")]
+    public required long SizeBytes { get; init; }
+
+    [JsonPropertyName("sha256")]
+    public required string Sha256 { get; init; }
+
+    [JsonPropertyName("license")]
+    public required string License { get; init; }
+
+    [JsonPropertyName("license_file")]
+    public required string LicenseFile { get; init; }
+
+    [JsonPropertyName("provenance")]
+    public string? Provenance { get; init; }
+
+    [JsonPropertyName("runtime_version")]
+    public required string RuntimeVersion { get; init; }
+
+    /// <summary>Processing profiles this artifact belongs to. <c>any</c> means every profile.</summary>
+    [JsonPropertyName("profiles")]
+    public IReadOnlyList<string> Profiles { get; init; } = [];
+
+    [JsonPropertyName("verified_utc")]
+    public required DateTimeOffset VerifiedUtc { get; init; }
+
+    public bool BelongsTo(string profile) =>
+        Profiles.Contains("any", StringComparer.Ordinal) ||
+        Profiles.Contains(profile, StringComparer.Ordinal);
+}
+
+/// <summary>Every file EchoForge may download. Nothing outside it may be fetched.</summary>
+public sealed record ArtifactManifest
+{
+    [JsonPropertyName("schema_version")]
+    public int SchemaVersion { get; init; } = 1;
+
+    [JsonPropertyName("notes")]
+    public string? Notes { get; init; }
+
+    [JsonPropertyName("artifacts")]
+    public IReadOnlyList<ArtifactEntry> Artifacts { get; init; } = [];
+}
+
+/// <summary>Where an artifact has got to. Only <see cref="Installed"/> may be used.</summary>
+public enum ArtifactStatus
+{
+    /// <summary>Nothing on disk.</summary>
+    NotInstalled,
+
+    /// <summary>Bytes are arriving. A partial file exists.</summary>
+    Downloading,
+
+    /// <summary>Bytes are all here and are being checked.</summary>
+    Verifying,
+
+    /// <summary>Present, the right length, and matching the pinned digest.</summary>
+    Installed,
+
+    /// <summary>Present but wrong. Never used, never silently replaced.</summary>
+    Invalid,
+
+    /// <summary>The attempt did not finish. Says why.</summary>
+    Failed,
+}
+
+/// <summary>What is known about one artifact on this machine.</summary>
+public sealed record ArtifactState(
+    ArtifactEntry Entry,
+    ArtifactStatus Status,
+    string? Detail = null,
+    long BytesOnDisk = 0)
+{
+    public long TotalBytes => Entry.SizeBytes;
+
+    public double Fraction => Entry.SizeBytes <= 0
+        ? 0
+        : Math.Clamp((double)BytesOnDisk / Entry.SizeBytes, 0, 1);
+
+    /// <summary>True only for an artifact that has been proven, never merely present.</summary>
+    public bool IsUsable => Status == ArtifactStatus.Installed;
+}
+
+/// <summary>Progress while bytes move. Carries no path and no meeting content.</summary>
+public sealed class ArtifactProgressEventArgs(
+    string artifactId,
+    ArtifactStatus status,
+    long bytesCompleted,
+    long totalBytes) : EventArgs
+{
+    public string ArtifactId { get; } = artifactId;
+
+    public ArtifactStatus Status { get; } = status;
+
+    public long BytesCompleted { get; } = bytesCompleted;
+
+    public long TotalBytes { get; } = totalBytes;
+
+    public double Fraction => TotalBytes <= 0 ? 0 : Math.Clamp((double)BytesCompleted / TotalBytes, 0, 1);
+}
+
+/// <summary>
+/// A named set of artifacts that must all be installed before that kind of processing can run.
+///
+/// <para>
+/// Derived from the manifest rather than listed separately: an artifact declares the profiles it
+/// belongs to, so there is no second place that can disagree about what a profile needs.
+/// </para>
+/// </summary>
+public sealed record ProcessingProfile(
+    string Id,
+    string Description,
+    IReadOnlyList<ArtifactEntry> Artifacts)
+{
+    public long TotalBytes => Artifacts.Sum(a => a.SizeBytes);
+
+    /// <summary>The placeholder profile, which needs nothing downloaded and recognises no speech.</summary>
+    public const string Mock = "mock";
+
+    public const string CpuInt8 = "cpu-int8";
+    public const string CudaFp16 = "cuda-fp16";
+    public const string CudaInt8Float16 = "cuda-int8-float16";
+}
