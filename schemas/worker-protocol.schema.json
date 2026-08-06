@@ -1,0 +1,382 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://echoforge.local/schemas/worker-protocol.schema.json",
+  "title": "EchoForge worker protocol, version 1",
+  "description": "Newline-delimited JSON spoken between the EchoForge host process (parent) and a short-lived worker process (child) over stdin/stdout. Exactly one JSON object per line; a line is never split across writes and two objects never share a line. Blank and whitespace-only lines carry no meaning and are ignored by both sides. Every message names its protocol version explicitly, and a version the receiver does not support is a clean, reported failure rather than a best-effort parse. Messages never carry transcript text, audio bytes, or meeting content: bulk data is an immutable file referenced by path.",
+
+  "$defs": {
+    "protocol_version": {
+      "description": "The only version defined by this file. A receiver that reads a different value must fail with unsupported_protocol_version rather than guess.",
+      "type": "integer",
+      "const": 1
+    },
+
+    "job_id": {
+      "description": "Host-assigned identity for the single job a worker runs in its lifetime.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+
+    "source_track": {
+      "description": "Which physical source a track was captured from. Microphone content is always the local user; system content is always everyone else.",
+      "enum": ["microphone", "system"]
+    },
+
+    "stage": {
+      "description": "Where a job had reached. Transcription stage state is deliberately separate from recording session state; the two are never one enum.",
+      "enum": [
+        "handshake",
+        "accepting",
+        "preparing",
+        "reading_audio",
+        "transcribing_microphone",
+        "transcribing_system",
+        "merging",
+        "validating",
+        "writing_output",
+        "finished"
+      ]
+    },
+
+    "error_code": {
+      "description": "The class of failure. Protocol faults, request validation faults, worker faults, cancellation, and timeout are distinguishable by construction, because they call for different host behaviour. Timeout is not in this list: a timeout is observed by the host, never reported by a worker.",
+      "enum": [
+        "unsupported_protocol_version",
+        "protocol_error",
+        "invalid_request",
+        "input_missing",
+        "input_invalid",
+        "audio_unreadable",
+        "backend_unavailable",
+        "backend_failed",
+        "output_write_failed",
+        "internal_error"
+      ]
+    },
+
+    "envelope": {
+      "type": "object",
+      "required": ["protocol_version", "type"],
+      "properties": {
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "type": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "hello": {
+      "description": "Parent to child, sent first. The child must not read a job, touch the filesystem, or start a backend before it has seen this.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "host_version", "supported_protocol_versions"],
+      "properties": {
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "type": { "const": "hello" },
+        "host_version": { "type": "string", "minLength": 1 },
+        "supported_protocol_versions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+
+    "ready": {
+      "description": "Child to parent, the only permitted reply to hello other than error. The parent checks the child's version before sending any job.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "worker_version", "supported_protocol_versions", "backends"],
+      "properties": {
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "type": { "const": "ready" },
+        "worker_version": { "type": "string", "minLength": 1 },
+        "python_version": { "type": "string" },
+        "supported_protocol_versions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "integer", "minimum": 1 }
+        },
+        "backends": {
+          "description": "Transcription backends this build can run. 'mock' produces deterministic placeholder text and performs no speech recognition whatsoever.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+
+    "start_job": {
+      "description": "Parent to child, sent exactly once. A second start_job is a protocol error.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "job_id", "job_kind", "request"],
+      "properties": {
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "type": { "const": "start_job" },
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "job_kind": { "const": "transcribe" },
+        "request": { "$ref": "#/$defs/transcription_request" }
+      }
+    },
+
+    "cancel": {
+      "description": "Parent to child. Idempotent, and valid at any point after start_job. The child stops at its next safe boundary and answers with cancelled.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "job_id"],
+      "properties": {
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "type": { "const": "cancel" },
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "reason": { "type": "string" }
+      }
+    },
+
+    "started": {
+      "description": "Child to parent, acknowledging that the request validated and work has begun.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "job_id", "backend", "recognizes_speech"],
+      "properties": {
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "type": { "const": "started" },
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "backend": { "type": "string", "minLength": 1 },
+        "recognizes_speech": {
+          "description": "False for any placeholder backend. The host must never present placeholder output as recognised speech.",
+          "type": "boolean"
+        }
+      }
+    },
+
+    "progress": {
+      "description": "Child to parent, advisory. completed_units never exceeds total_units and never moves backwards within a stage.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "job_id", "stage", "completed_units", "total_units"],
+      "properties": {
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "type": { "const": "progress" },
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "stage": { "$ref": "#/$defs/stage" },
+        "completed_units": { "type": "integer", "minimum": 0 },
+        "total_units": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "warning": {
+      "description": "Child to parent, non-terminal. A job that emits warnings can still succeed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "job_id", "code"],
+      "properties": {
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "type": { "const": "warning" },
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "code": { "type": "string", "minLength": 1 },
+        "detail": { "type": "string" }
+      }
+    },
+
+    "result": {
+      "description": "Child to parent, terminal on success. Exactly one terminal message is permitted per worker lifetime; the output itself is a file, never an inline body.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "job_id", "output_path", "sha256", "segment_count", "duration_seconds"],
+      "properties": {
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "type": { "const": "result" },
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "output_path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "segment_count": { "type": "integer", "minimum": 0 },
+        "duration_seconds": { "type": "number", "minimum": 0 }
+      }
+    },
+
+    "error": {
+      "description": "Child to parent, terminal on failure. job_id is absent when the failure happened before a job was accepted. detail is a technical diagnostic for logs and is never shown to the user verbatim.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "code", "stage"],
+      "properties": {
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "type": { "const": "error" },
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "code": { "$ref": "#/$defs/error_code" },
+        "stage": { "$ref": "#/$defs/stage" },
+        "detail": { "type": "string" },
+        "retryable": { "type": "boolean" }
+      }
+    },
+
+    "cancelled": {
+      "description": "Child to parent, terminal after a cancel. Sources and any previously activated output are untouched.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "job_id", "stage"],
+      "properties": {
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "type": { "const": "cancelled" },
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "stage": { "$ref": "#/$defs/stage" }
+      }
+    },
+
+    "transcription_request": {
+      "description": "Everything the worker needs to transcribe one session. All times are session-relative seconds on the single merged timeline; the host converts epoch-relative chunk offsets before sending. Speaker attribution is not a parameter: it follows from source_track and cannot be overridden.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "transcript_revision",
+        "created_at_utc",
+        "session_root",
+        "output_path",
+        "duration_seconds",
+        "epochs",
+        "tracks",
+        "options"
+      ],
+      "properties": {
+        "session_id": { "type": "string", "minLength": 1 },
+        "transcript_revision": { "type": "integer", "minimum": 1 },
+        "created_at_utc": {
+          "description": "Supplied by the host so the worker owns no clock and identical inputs produce byte-identical output.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "session_root": { "type": "string", "minLength": 1 },
+        "output_path": { "type": "string", "minLength": 1 },
+        "duration_seconds": { "type": "number", "minimum": 0 },
+        "epochs": {
+          "description": "Non-overlapping, ordered, session-relative capture epochs. No transcript time may fall outside one of them.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/request_epoch" }
+        },
+        "tracks": {
+          "type": "array",
+          "maxItems": 2,
+          "items": { "$ref": "#/$defs/request_track" }
+        },
+        "options": { "$ref": "#/$defs/request_options" }
+      }
+    },
+
+    "request_epoch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "start_seconds", "end_seconds"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 1 },
+        "start_seconds": { "type": "number", "minimum": 0 },
+        "end_seconds": { "type": "number", "minimum": 0 }
+      }
+    },
+
+    "request_track": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_track", "chunks"],
+      "properties": {
+        "source_track": { "$ref": "#/$defs/source_track" },
+        "chunks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/request_chunk" }
+        }
+      }
+    },
+
+    "request_chunk": {
+      "description": "One finalized, immutable source chunk. The worker opens it read-only and never rewrites it or its metadata.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "epoch",
+        "relative_path",
+        "start_seconds",
+        "end_seconds",
+        "sample_rate",
+        "channels",
+        "frames"
+      ],
+      "properties": {
+        "index": { "type": "integer", "minimum": 1 },
+        "epoch": { "type": "integer", "minimum": 1 },
+        "relative_path": {
+          "description": "Resolved against session_root. Must stay inside it.",
+          "type": "string",
+          "minLength": 1
+        },
+        "start_seconds": {
+          "description": "Session-relative start of this chunk's first frame.",
+          "type": "number",
+          "minimum": 0
+        },
+        "end_seconds": { "type": "number", "minimum": 0 },
+        "sample_rate": { "type": "integer", "exclusiveMinimum": 0 },
+        "channels": { "type": "integer", "exclusiveMinimum": 0 },
+        "frames": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+
+    "request_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend"],
+      "properties": {
+        "backend": {
+          "description": "'mock' is a deterministic placeholder that performs no speech recognition. Production backends are added without changing this protocol.",
+          "type": "string",
+          "minLength": 1
+        },
+        "profile": { "type": ["string", "null"] },
+        "language": {
+          "description": "Null means the backend decides. The mock backend always reports 'und'.",
+          "type": ["string", "null"]
+        },
+        "segment_seconds": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "test_mode": {
+          "description": "Fault injection for the supervisor's own tests. Ignored unless ECHOFORGE_WORKER_ALLOW_TEST_MODES=1 is set in the child environment, so a production run cannot reach any of it.",
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "normal",
+            "delay",
+            "crash",
+            "nonzero_exit",
+            "invalid_json",
+            "unknown_message",
+            "malformed_progress",
+            "malformed_result",
+            "duplicate_result",
+            "output_after_completion",
+            "stderr",
+            "hang"
+          ]
+        },
+        "test_delay_seconds": { "type": ["number", "null"], "minimum": 0 }
+      }
+    }
+  },
+
+  "oneOf": [
+    { "$ref": "#/$defs/hello" },
+    { "$ref": "#/$defs/ready" },
+    { "$ref": "#/$defs/start_job" },
+    { "$ref": "#/$defs/cancel" },
+    { "$ref": "#/$defs/started" },
+    { "$ref": "#/$defs/progress" },
+    { "$ref": "#/$defs/warning" },
+    { "$ref": "#/$defs/result" },
+    { "$ref": "#/$defs/error" },
+    { "$ref": "#/$defs/cancelled" }
+  ]
+}

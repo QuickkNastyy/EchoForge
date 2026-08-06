@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://echoforge.local/schemas/transcript.schema.json",
+  "title": "EchoForge canonical transcript, version 1",
+  "description": "One immutable transcript revision for one session. This file is the authority for transcript content; anything derived from it (search index, exports, summary evidence) is rebuildable. Every time is session-relative seconds on the single merged timeline, so a transcript can be checked against the session's epochs without consulting the audio. Segment IDs are stable only inside this revision: a durable reference is the pair transcript_revision + segment id.",
+
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "session_id",
+    "transcript_revision",
+    "created_at_utc",
+    "duration_seconds",
+    "model",
+    "epochs",
+    "speakers",
+    "languages",
+    "segments"
+  ],
+
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "transcript_revision": { "type": "integer", "minimum": 1 },
+    "created_at_utc": { "type": "string", "format": "date-time" },
+
+    "source_manifest_sha256": {
+      "description": "Digest over the ordered source chunk identities this revision was produced from. It is what makes 'the audio changed underneath this transcript' detectable.",
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+
+    "duration_seconds": { "type": "number", "minimum": 0 },
+
+    "model": { "$ref": "#/$defs/model" },
+
+    "epochs": {
+      "description": "The session's capture epochs, copied in so segment bounds are independently checkable. Ordered and non-overlapping.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/epoch" }
+    },
+
+    "speakers": {
+      "description": "Fixed for the MVP: the microphone track is You, the system track is Remote. No identity is claimed for anyone on the system track.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/speaker" }
+    },
+
+    "languages": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/language" }
+    },
+
+    "segments": {
+      "description": "Ordered by start_seconds, then end_seconds, then source_track (microphone before system), then id. The ordering is total, so identical input yields an identical file.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/segment" }
+    }
+  },
+
+  "$defs": {
+    "source_track": { "enum": ["microphone", "system"] },
+
+    "model": {
+      "description": "What produced this transcript. recognizes_speech is false for any placeholder backend, and a false value must be surfaced rather than hidden.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime", "backend", "model_id", "revision", "compute_type", "recognizes_speech", "worker_version"],
+      "properties": {
+        "runtime": { "type": "string", "minLength": 1 },
+        "backend": { "type": "string", "minLength": 1 },
+        "model_id": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 },
+        "compute_type": { "type": "string", "minLength": 1 },
+        "recognizes_speech": { "type": "boolean" },
+        "worker_version": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "epoch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "start_seconds", "end_seconds"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 1 },
+        "start_seconds": { "type": "number", "minimum": 0 },
+        "end_seconds": { "type": "number", "minimum": 0 }
+      }
+    },
+
+    "speaker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "source_track"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^speaker-[a-z0-9-]+$" },
+        "name": { "type": "string", "minLength": 1 },
+        "source_track": { "$ref": "#/$defs/source_track" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "source_track": { "const": "microphone" } }, "required": ["source_track"] },
+          "then": { "properties": { "id": { "const": "speaker-you" }, "name": { "const": "You" } } }
+        },
+        {
+          "if": { "properties": { "source_track": { "const": "system" } }, "required": ["source_track"] },
+          "then": { "properties": { "id": { "const": "speaker-remote" }, "name": { "const": "Remote" } } }
+        }
+      ]
+    },
+
+    "language": {
+      "description": "Per track. 'und' means undetermined and is what a placeholder backend always reports; it is not a detection result.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_track", "code"],
+      "properties": {
+        "source_track": { "$ref": "#/$defs/source_track" },
+        "code": { "type": "string", "minLength": 2, "maxLength": 16 },
+        "probability": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+      }
+    },
+
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "epoch",
+        "start_seconds",
+        "end_seconds",
+        "speaker_id",
+        "speaker_name",
+        "source_track",
+        "text",
+        "confidence",
+        "language",
+        "words",
+        "overlaps_segment_ids"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^segment-[0-9]{6}$" },
+        "epoch": { "type": "integer", "minimum": 1 },
+        "start_seconds": { "type": "number", "minimum": 0 },
+        "end_seconds": { "type": "number", "minimum": 0 },
+        "speaker_id": { "type": "string", "pattern": "^speaker-[a-z0-9-]+$" },
+        "speaker_name": { "type": "string", "minLength": 1 },
+        "source_track": { "$ref": "#/$defs/source_track" },
+        "text": { "type": "string" },
+        "confidence": {
+          "description": "Null unless the runtime exposes a defined score. An average log probability is not a calibrated confidence and must not be written here.",
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "language": { "type": "string", "minLength": 2, "maxLength": 16 },
+        "words": {
+          "description": "Ordered by start_seconds. Every word is contained by its segment.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/word" }
+        },
+        "overlaps_segment_ids": {
+          "description": "IDs of segments on the other track whose time range intersects this one. Cross-track overlap is information, not a de-duplication decision.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^segment-[0-9]{6}$" },
+          "uniqueItems": true
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "source_track": { "const": "microphone" } }, "required": ["source_track"] },
+          "then": {
+            "properties": {
+              "speaker_id": { "const": "speaker-you" },
+              "speaker_name": { "const": "You" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "source_track": { "const": "system" } }, "required": ["source_track"] },
+          "then": {
+            "properties": {
+              "speaker_id": { "const": "speaker-remote" },
+              "speaker_name": { "const": "Remote" }
+            }
+          }
+        }
+      ]
+    },
+
+    "word": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "start_seconds", "end_seconds", "probability"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1 },
+        "start_seconds": { "type": "number", "minimum": 0 },
+        "end_seconds": { "type": "number", "minimum": 0 },
+        "probability": {
+          "description": "Uncalibrated, backend-supplied, and null when the backend has none.",
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    }
+  }
+}
