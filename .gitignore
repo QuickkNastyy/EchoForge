@@ -1,0 +1,53 @@
+# ---- Build output ----
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+publish/
+*.user
+*.suo
+*.userprefs
+
+# ---- IDE ----
+.vs/
+.vscode/
+.idea/
+*.swp
+
+# ---- Python worker ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ---- Runtime data (must NEVER live in the repo) ----
+# Recordings, transcripts, summaries, models, logs all belong under
+# %LOCALAPPDATA%\EchoForge. These entries are a backstop, not the mechanism.
+sessions/
+models/
+logs/
+runtime/
+*.wav
+*.part.wav
+*.gguf
+*.bin
+*.ct2
+
+# ---- Private test corpus ----
+# Consented real meeting audio and its transcripts are never committed.
+tests/corpus/
+tests/fixtures/private/
+
+# ---- Secrets ----
+*.pfx
+*.snk
+.env
+.env.*
+!.env.example
+
+# ---- Packaging output ----
+packaging/inno/Output/
