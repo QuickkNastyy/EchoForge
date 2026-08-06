@@ -58,6 +58,7 @@ public sealed class TrayIndicator : IDisposable
     private void OnViewModelChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName is nameof(MainViewModel.TrayText)
+            or nameof(MainViewModel.IndicatorVisible)
             or nameof(MainViewModel.IsRecording)
             or nameof(MainViewModel.IsPaused))
         {
@@ -71,7 +72,8 @@ public sealed class TrayIndicator : IDisposable
         string text = _viewModel.TrayText;
         _icon.Text = text.Length > 63 ? text[..63] : text;
 
-        bool recording = _viewModel.IsRecording;
+        // Matches the window indicator: lit while any capture source may still be live.
+        bool recording = _viewModel.IndicatorVisible;
         if (!force && _lastRecording == recording)
         {
             return;

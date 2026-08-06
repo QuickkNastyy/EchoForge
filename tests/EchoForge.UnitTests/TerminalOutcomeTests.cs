@@ -123,7 +123,10 @@ public sealed class TerminalOutcomeTests : IDisposable
         _engines.Latest.EmitChunk(SourceTrack.Microphone);
 
         _devices.Lose("capture-id");
+
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
         _devices.Lose("render-id");
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
 
         // This is the case that used to persist Recorded while reporting Failed.
         AssertEveryoneAgrees(controller, SessionState.Failed);

@@ -131,10 +131,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public bool IsDegraded => _controller.State is SessionState.Degraded;
 
     /// <summary>
-    /// The red indicator. Bound to authoritative capture state, so it keeps showing the truth
-    /// while a stop is finalizing rather than blanking the moment the button is pressed.
+    /// The red indicator. Bound to whether a capture source may still be live, not to whether
+    /// Stop has been requested — so it stays lit while the capture threads are winding down and
+    /// only clears once they have genuinely stopped.
     /// </summary>
-    public bool IndicatorVisible => IsRecording;
+    public bool IndicatorVisible => _controller.CaptureMayBeLive;
 
     /// <summary>
     /// False until the startup recovery scan has finished.
@@ -207,9 +208,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public string QueueSummary { get; private set; } = "—";
 
-    public string TrayText => IsRecording
-        ? $"EchoForge — recording {Elapsed}"
-        : IsPaused ? "EchoForge — paused" : "EchoForge";
+    /// <summary>The tray tooltip. Derived from the same phase the indicator uses, so they agree.</summary>
+    public string TrayText => _controller.Phase switch
+    {
+        CapturePhase.Capturing => $"EchoForge — recording {Elapsed}",
+        CapturePhase.StoppingCapture => "EchoForge — stopping",
+        CapturePhase.Saving => "EchoForge — saving",
+        _ => IsPaused ? "EchoForge — paused" : "EchoForge",
+    };
 
 
     private void LoadDevices()
@@ -404,7 +410,23 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         double gigabytesPerHour = _controller.EstimatedBytesPerSecond() * 3600.0 / 1_000_000_000.0;
         StorageRate = $"{gigabytesPerHour:0.00} GB/hr";
 
-        StatusHeadline = _controller.State switch
+        StatusHeadline = _controller.Phase switch
+        {
+            CapturePhase.StoppingCapture => "Stopping…",
+            CapturePhase.Saving => "Saving…",
+            _ => DescribeSessionState(),
+        };
+
+        foreach (string name in RefreshedProperties)
+        {
+            OnChanged(name);
+        }
+
+        RaiseCommands();
+    }
+
+    private string DescribeSessionState() =>
+        _controller.State switch
         {
             SessionState.Recording => "Recording",
             SessionState.Degraded => "Recording · degraded",
@@ -415,14 +437,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             SessionState.NeedsAttention => "Needs attention",
             _ => IsReady ? "Ready" : "Checking interrupted recordings…",
         };
-
-        foreach (string name in RefreshedProperties)
-        {
-            OnChanged(name);
-        }
-
-        RaiseCommands();
-    }
 
     private static readonly string[] RefreshedProperties =
     [

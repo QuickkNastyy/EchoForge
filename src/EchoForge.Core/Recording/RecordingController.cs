@@ -13,6 +13,34 @@ public sealed record RecordingRequest(
     string CaptureEndpointId,
     string CaptureDeviceName);
 
+/// <summary>
+/// What the capture hardware is doing, as distinct from what the session is.
+///
+/// <para>
+/// Stop is not instantaneous: the capture threads have to be joined, the final chunks finalized
+/// and hashed, and the snapshot written. The red indicator is bound to this, so it keeps telling
+/// the truth for as long as a capture source may still be live rather than vanishing the moment
+/// the button is pressed.
+/// </para>
+/// </summary>
+public enum CapturePhase
+{
+    /// <summary>Nothing is open.</summary>
+    Idle,
+
+    /// <summary>Audio is being captured right now.</summary>
+    Capturing,
+
+    /// <summary>Stop has been asked for; capture threads are still being wound down.</summary>
+    StoppingCapture,
+
+    /// <summary>Capture has stopped; chunks and the snapshot are still being written.</summary>
+    Saving,
+
+    /// <summary>Everything is durable.</summary>
+    Stopped,
+}
+
 /// <summary>Raised whenever the authoritative recording state changes.</summary>
 public sealed class RecordingStateChangedEventArgs(SessionState state, string? reason) : EventArgs
 {
@@ -88,6 +116,7 @@ public sealed class RecordingController : IDisposable
     private readonly IEndpointMonitor? _endpoints;
     private readonly IPowerMonitor? _power;
     private readonly ISessionLeaseProvider? _leases;
+    private readonly LifecycleSignalQueue _signals;
     private readonly HashSet<string> _lostEndpoints = new(StringComparer.OrdinalIgnoreCase);
     private ISessionLease? _lease;
 
@@ -102,6 +131,7 @@ public sealed class RecordingController : IDisposable
         ISessionLeaseProvider? leases = null)
     {
         _leases = leases;
+        _signals = new LifecycleSignalQueue(detail => Notice?.Invoke(this, detail));
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(engineFactory);
         ArgumentNullException.ThrowIfNull(clock);
@@ -144,7 +174,14 @@ public sealed class RecordingController : IDisposable
     /// Windows reported an endpoint gone. Only the two pinned for this session matter; an
     /// unrelated device change must not disturb a running recording.
     /// </summary>
-    private void OnEndpointLost(object? sender, EndpointChangedEventArgs e)
+    /// <summary>
+    /// Runs on a COM callback thread. Posts and returns; it must never join a thread, hash a
+    /// file, fsync the journal, write a snapshot, or wait on the lifecycle lock.
+    /// </summary>
+    private void OnEndpointLost(object? sender, EndpointChangedEventArgs e) =>
+        _signals.Post(() => HandleEndpointLost(e));
+
+    private void HandleEndpointLost(EndpointChangedEventArgs e)
     {
         lock (_gate)
         {
@@ -202,7 +239,9 @@ public sealed class RecordingController : IDisposable
     /// sleep is unrecoverable, so the missing period becomes an explicit gap rather than a
     /// pretence of continuity.
     /// </summary>
-    private void OnSuspending(object? sender, EventArgs e)
+    private void OnSuspending(object? sender, EventArgs e) => _signals.Post(HandleSuspending);
+
+    private void HandleSuspending()
     {
         lock (_gate)
         {
@@ -218,13 +257,16 @@ public sealed class RecordingController : IDisposable
         }
     }
 
-    private void OnResumed(object? sender, EventArgs e)
+    private void OnResumed(object? sender, EventArgs e) => _signals.Post(() =>
     {
         if (AwaitingResumeAfterSuspend)
         {
             Notice?.Invoke(this, "The computer woke up. Recording is paused — choose Resume to continue into a new segment.");
         }
-    }
+    });
+
+    /// <summary>Waits for queued OS signals to be processed. Used at boundaries and by tests.</summary>
+    public bool WaitForSignals(TimeSpan timeout) => _signals.Drain(timeout);
 
     /// <summary>An advisory message for the user that does not change the recording state.</summary>
     public event EventHandler<string>? Notice;
@@ -248,6 +290,15 @@ public sealed class RecordingController : IDisposable
     public IReadOnlyList<SessionEpoch> Epochs => _epochs;
 
     public bool IsCapturing => State is SessionState.Recording or SessionState.Degraded;
+
+    /// <summary>What the hardware is doing. Drives the red indicator and the tray icon.</summary>
+    public CapturePhase Phase { get; private set; } = CapturePhase.Idle;
+
+    /// <summary>
+    /// True while any capture source may still be live, including the window between asking to
+    /// stop and the capture threads actually stopping.
+    /// </summary>
+    public bool CaptureMayBeLive => Phase is CapturePhase.Capturing or CapturePhase.StoppingCapture;
 
     /// <summary>The moment the session finished. Assigned exactly once, then never changes.</summary>
     public DateTimeOffset? EndedUtc => _endedUtc;
@@ -347,10 +398,10 @@ public sealed class RecordingController : IDisposable
                 return;
             }
 
-            // Resuming after a device loss or a suspend re-opens the pinned endpoints. If one is
-            // still gone, OpenEpoch throws and the session stays paused rather than silently
-            // recording a single track or switching to a different device.
-            AwaitingResumeAfterSuspend = false;
+            // Resuming re-opens the pinned endpoints. If one is still gone, OpenEpoch throws and
+            // the session stays paused with its reason intact, rather than silently recording a
+            // single track or switching to a different device. AwaitingResumeAfterSuspend is
+            // cleared inside OpenEpoch, only once the new epoch is actually running.
             OpenEpoch();
         }
     }
@@ -577,6 +628,7 @@ public sealed class RecordingController : IDisposable
         }
 
         _engine = engine;
+        Phase = CapturePhase.Capturing;
         _currentEpochStartedUtc = now;
         _epochs.Add(new SessionEpoch(_epochIndex, now, null, epochQpc, null, EpochEndReason.Running));
 
@@ -597,8 +649,25 @@ public sealed class RecordingController : IDisposable
                 ("sample_rate", Text(track.Format.SampleRate)),
                 ("channels", Text(track.Format.Channels)),
                 ("epoch", Text(_epochIndex))));
+
+            // A loss that this epoch has just reopened is resolved. Only that one is cleared,
+            // so an endpoint still missing keeps its recorded loss.
+            if (_lostEndpoints.Remove(track.DeviceId))
+            {
+                _store.Append(SessionId!, JournalEvent.Create(
+                    JournalEventTypes.TrackRestored, now,
+                    ("track", track.Track.ToString()),
+                    ("device_id", track.DeviceId),
+                    ("epoch", Text(_epochIndex))));
+            }
         }
 
+        // Faults are per epoch: a track that failed in an earlier epoch and has now reopened must
+        // be able to report a fresh failure later.
+        _journalledFaults.RemoveWhere(f => f.Epoch != _epochIndex);
+
+        // Only now that capture is genuinely running is the wake-up prompt satisfied.
+        AwaitingResumeAfterSuspend = false;
         SetState(SessionState.Recording, null);
     }
 
@@ -704,7 +773,10 @@ public sealed class RecordingController : IDisposable
         long endQpc = _clock.NowQpc();
         DateTimeOffset now = _clock.UtcNow();
 
+        // The threads are still running until Stop returns, so the indicator must stay lit.
+        Phase = CapturePhase.StoppingCapture;
         _engine.Stop(endQpc);
+        Phase = CapturePhase.Saving;
 
         // Stop has joined the writer threads, so every chunk this epoch will ever produce has
         // now been enqueued. Fold them in before the epoch is closed and the snapshot is built.
@@ -785,6 +857,7 @@ public sealed class RecordingController : IDisposable
 
         SetState(effective, reason);
         WriteSnapshot();
+        Phase = CapturePhase.Stopped;
 
         // The session is finished, so recovery may have it back.
         _lease?.Dispose();
@@ -945,6 +1018,9 @@ public sealed class RecordingController : IDisposable
             _power.Suspending -= OnSuspending;
             _power.Resumed -= OnResumed;
         }
+
+        _signals.Drain(TimeSpan.FromSeconds(5));
+        _signals.Dispose();
 
         _persistence.Drain(TimeSpan.FromSeconds(5));
         _persistence.Dispose();

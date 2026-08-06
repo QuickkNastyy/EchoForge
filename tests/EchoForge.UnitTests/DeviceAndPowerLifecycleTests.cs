@@ -90,6 +90,8 @@ public sealed class DeviceAndPowerLifecycleTests : IDisposable
 
         _devices.Lose(CaptureId, EndpointChange.Unplugged);
 
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
+
         Assert.Equal(SessionState.Degraded, controller.State);
         Assert.True(controller.IsCapturing);
         Assert.Contains("microphone", reason, StringComparison.OrdinalIgnoreCase);
@@ -107,6 +109,8 @@ public sealed class DeviceAndPowerLifecycleTests : IDisposable
 
         _devices.Lose(RenderId, EndpointChange.Disabled);
 
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
+
         Assert.Equal(SessionState.Degraded, controller.State);
         Assert.Contains("system audio", reason, StringComparison.OrdinalIgnoreCase);
     }
@@ -118,7 +122,10 @@ public sealed class DeviceAndPowerLifecycleTests : IDisposable
         controller.Start(Request);
 
         _devices.Lose("some-other-device");
+
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
         _devices.Lose("yet-another");
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
 
         Assert.Equal(SessionState.Recording, controller.State);
         Assert.Empty(controller.LostEndpoints);
@@ -131,6 +138,8 @@ public sealed class DeviceAndPowerLifecycleTests : IDisposable
         controller.Start(Request);
 
         _devices.ChangeDefault("a-completely-different-endpoint", isRender: true);
+
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
 
         Assert.Equal(SessionState.Recording, controller.State);
 
@@ -148,7 +157,10 @@ public sealed class DeviceAndPowerLifecycleTests : IDisposable
         _engines.Latest.EmitChunk(SourceTrack.System);
 
         _devices.Lose(CaptureId);
+
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
         _devices.Lose(RenderId);
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
 
         Assert.Equal(SessionState.Failed, controller.State);
         Assert.True(_engines.Latest.Stopped);
@@ -163,6 +175,8 @@ public sealed class DeviceAndPowerLifecycleTests : IDisposable
         controller.Start(Request);
 
         _devices.Lose(CaptureId, EndpointChange.NotPresent);
+
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
 
         controller.FlushPendingWrites(TimeSpan.FromSeconds(5));
 
@@ -180,6 +194,7 @@ public sealed class DeviceAndPowerLifecycleTests : IDisposable
 
         _clock.Advance(TimeSpan.FromMinutes(4));
         _power.Suspend();
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
 
         Assert.Equal(SessionState.Paused, controller.State);
         Assert.True(_engines.Latest.Stopped);
@@ -200,12 +215,14 @@ public sealed class DeviceAndPowerLifecycleTests : IDisposable
         using RecordingController controller = NewController();
         controller.Start(Request);
         _power.Suspend();
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
 
         string? notice = null;
         controller.Notice += (_, message) => notice = message;
 
         _clock.Advance(TimeSpan.FromMinutes(30));
         _power.Resume();
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
 
         // Still paused. The user has to choose.
         Assert.Equal(SessionState.Paused, controller.State);
@@ -221,7 +238,9 @@ public sealed class DeviceAndPowerLifecycleTests : IDisposable
         controller.Start(Request);
         _engines.Latest.EmitChunk(SourceTrack.Microphone);
         _power.Suspend();
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
         _power.Resume();
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
 
         _clock.Advance(TimeSpan.FromMinutes(10));
         controller.Resume();
@@ -246,6 +265,7 @@ public sealed class DeviceAndPowerLifecycleTests : IDisposable
 
         int epochs = controller.Epochs.Count;
         _power.Suspend();
+        controller.WaitForSignals(TimeSpan.FromSeconds(5));
 
         Assert.Equal(SessionState.Paused, controller.State);
         Assert.Equal(epochs, controller.Epochs.Count);
