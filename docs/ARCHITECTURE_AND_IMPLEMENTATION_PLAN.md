@@ -15,9 +15,9 @@ The exact GPU, CPU, and system RAM are not known. That does not block the archit
 | Area | Exact recommendation |
 |---|---|
 | GUI and orchestration | **C# 14, .NET 10 LTS, WPF**, MVVM, modular monolith. .NET 10 is an LTS release and WPF remains a supported Windows desktop framework ([.NET support policy](https://dotnet.microsoft.com/en-us/platform/support/policy/dotnet-core), [WPF overview](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/overview/)). |
-| Windows audio | **Windows Core Audio/WASAPI shared mode through NAudio 2.3.x**: one loopback client for the selected render endpoint and one capture client for the selected microphone. Pin the exact NuGet patch version. NAudio is MIT-licensed and exposes WASAPI on Windows ([NAudio repository](https://github.com/naudio/NAudio), [NuGet package](https://www.nuget.org/packages/NAudio)). |
+| Windows audio | **Windows Core Audio/WASAPI shared mode through NAudio 2.3.x**: one loopback client for the selected render endpoint and one capture client for the selected microphone. Pin the exact NuGet patch version. NAudio is MIT-licensed and exposes WASAPI on Windows ([NAudio repository](https://github.com/naudio/NAudio), [NuGet package](https://www.nuget.org/packages/NAudio)). **EchoForge owns its own capture loop over `AudioClient`/`AudioCaptureClient` and does not use the high-level `WasapiCapture.DataAvailable` event as a timestamp source** — see “Packet timestamping” below. |
 | Recording | Immutable **RIFF/WAVE PCM16**, 60-second chunks, separate `system` and `microphone` tracks. Aim for 48 kHz, system stereo and microphone mono; if an endpoint will not provide that shared-mode format, record its native sample rate/channel layout and record that fact in metadata. Normalize only processing derivatives to 16 kHz mono. |
-| Timeline and drift | One monotonic session timeline based on QueryPerformanceCounter (QPC), frame counts, and WASAPI audio-clock samples. Preserve source chunks; insert silence and correct drift only in derivatives. |
+| Timeline and drift | One monotonic session timeline built from **per-packet device and QPC positions reported by `AudioCaptureClient.GetBuffer`**, plus frame counts. Preserve source chunks; insert silence and correct drift only in derivatives. |
 | Transcription runtime | A short-lived **Python 3.12 worker** using **faster-whisper/CTranslate2**, CUDA 12 + cuDNN 9 when supported, otherwise CPU INT8. Pin Python wheels, model revisions, and SHA-256 hashes ([faster-whisper](https://github.com/SYSTRAN/faster-whisper)). |
 | Default STT | **Whisper large-v3-turbo**, FP16 on CUDA; retry with `int8_float16` after an out-of-memory error. It is multilingual, has timestamps, and has materially lower compute than full large-v3 ([OpenAI model card](https://huggingface.co/openai/whisper-large-v3-turbo)). |
 | Maximum-accuracy STT | **Whisper large-v3**, FP16 or `int8_float16`, selectable per re-run. It must beat turbo on EchoForge's meeting benchmark before being presented as “more accurate” for this hardware. |
@@ -220,13 +220,23 @@ flowchart TD
 
 ### Audio decisions and edge cases
 
-**Simultaneous clients.** Create the loopback and microphone clients during preflight, start them against the same QPC epoch, and place callback payloads into separate bounded queues capped at five seconds per track. Dedicated writer tasks perform conversion to PCM16 and chunk writes. Audio callbacks must never block on disk, hashing, UI, or logging. Queue overflow is a recorded discontinuity plus an immediate visible error, never a silent drop.
+**Simultaneous clients.** Create the loopback and microphone clients during preflight, start them against the same QPC epoch, and place packet payloads into separate bounded queues capped at five seconds per track. Dedicated writer tasks perform conversion to PCM16 and chunk writes. Capture threads must never block on disk, hashing, UI, or logging. Queue overflow is a recorded discontinuity plus an immediate visible error, never a silent drop.
+
+**Packet timestamping.** EchoForge does **not** use `WasapiCapture`/`WasapiLoopbackCapture` and their `DataAvailable` event as the production timestamp source. That event delivers bytes without the per-packet positions the timeline depends on, and callback arrival time is not the clock. Instead EchoForge drives its own capture loop:
+
+- Initialize `AudioClient` in shared mode (loopback flag for the render endpoint), request event-driven notification with `SetEventHandle`, and wait on that handle from a dedicated capture thread.
+- Drain with NAudio's lower-level public `AudioCaptureClient.GetBuffer` overload that returns the frame count, `AudioClientBufferFlags`, **device position**, and **QPC position** for each packet, then release exactly the frames read.
+- Treat the returned device position and QPC position as the **clock anchors** for that packet. Every chunk, gap, and derivative time map is derived from them, never from when managed code happened to observe the packet.
+- Record `DataDiscontinuity`, `Silent`, and `TimestampError` flags per packet. A discontinuity is data, not an error to be smoothed over.
+- Convert to PCM16 and enqueue; the capture thread does nothing else.
+
+A separate native Core Audio COM shim is introduced **only if** a measurement required by the Phase 0 gates cannot be reached through NAudio's lower-level wrappers. Phase 0's first task is to confirm on the pinned NAudio version that this overload and `SetEventHandle` are reachable; if they are not, the shim becomes Phase 0 work rather than a later contingency.
 
 **Endpoint-wide capture.** WASAPI loopback captures the selected endpoint's shared audio-engine mix. It includes meeting audio, media, browser tabs, and Windows notification sounds. It can also omit protected DRM audio; this is acceptable because EchoForge is a meeting recorder, not a protection bypass ([Microsoft loopback documentation](https://learn.microsoft.com/en-us/windows/win32/coreaudio/loopback-recording)).
 
-**Silence.** NAudio notes that loopback `DataAvailable` is not raised when no audio is playing ([NAudio loopback guide](https://github.com/naudio/NAudio/blob/release/2.x/Docs/WasapiLoopbackCapture.md)). The writer must therefore build chunks against the session clock and insert explicit silence for missing frames. Callback arrival time is not the timeline.
+**Silence.** A render endpoint that is playing nothing produces no loopback packets ([NAudio loopback guide](https://github.com/naudio/NAudio/blob/release/2.x/Docs/WasapiLoopbackCapture.md)). The writer must therefore build chunks against the session clock and insert explicit silence for the frames the device position says are missing. Packet arrival time is not the timeline; the device position is.
 
-**Clocking and drift.** Each endpoint owns a clock; nominally identical 48 kHz devices can drift. Sample `IAudioClock::GetPosition` with its correlated performance-counter position, retain frame counts, and record discontinuity/timestamp-error flags ([IAudioClock](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclock-getposition), [buffer flags](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/ne-audioclient-_audclnt_bufferflags)). Never time-stretch immutable source chunks. Create a corrected derivative by inserting gaps and applying a bounded resampling ratio between clock anchors. Store the derivative-to-session/source time map so transcript timestamps seek the immutable audio rather than an assumed sample offset.
+**Clocking and drift.** Each endpoint owns a clock; nominally identical 48 kHz devices can drift. Anchor on the per-packet device position and QPC position returned by `GetBuffer`, retain frame counts, and record discontinuity/timestamp-error flags ([buffer flags](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/ne-audioclient-_audclnt_bufferflags)). `IAudioClock::GetPosition` remains available as a corroborating sample but is not the primary anchor, because it is polled rather than tied to a specific packet ([IAudioClock](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclock-getposition)). Never time-stretch immutable source chunks. Create a corrected derivative by inserting gaps and applying a bounded resampling ratio between clock anchors. Store the derivative-to-session/source time map so transcript timestamps seek the immutable audio rather than an assumed sample offset.
 
 **Format.** The preferred acquisition encoding is 48,000 Hz PCM16: stereo for system audio and mono for microphone. Reliability takes precedence over forcing a format. If the shared-mode client exposes 44.1 kHz, float input, or a Bluetooth 16 kHz mono microphone, convert the sample representation to PCM16 but retain the endpoint's native rate/channel layout in source chunks and metadata; normalize later.
 
@@ -323,10 +333,13 @@ C:\EchoForge\
 ├─ README.md
 ├─ docs\
 │  └─ ARCHITECTURE_AND_IMPLEMENTATION_PLAN.md
+├─ artifacts\
+│  └─ manifest.json                   # pinned models/runtimes; no mutable refs
 ├─ schemas\
 │  ├─ session.schema.json
 │  ├─ transcript.schema.json
 │  ├─ summary.schema.json
+│  ├─ artifact-manifest.schema.json
 │  └─ worker-protocol.schema.json
 ├─ src\
 │  ├─ EchoForge.App\                 # WPF views, view models, tray
@@ -403,6 +416,32 @@ Project references point inward: App → Core/Contracts; Infrastructure and Audi
 ~~~
 
 Session titles are metadata, not folder names. IDs are random UUID/ULID values, so unusual titles cannot break paths and diagnostic paths do not reveal meeting text.
+
+### Pinned artifact manifest
+
+**No production inference artifact is downloaded before it exists in the manifest.** This is a gate on Phase 2, not a cleanup task. The manifest is version-controlled at `artifacts/manifest.json`, validated by `schemas/artifact-manifest.schema.json`, and is the only list the downloader reads.
+
+Every entry records:
+
+| Field | Meaning |
+|---|---|
+| `artifact_id` | EchoForge's stable internal name, e.g. `stt.large-v3-turbo`. |
+| `repository` | Exact source repository or release URL. |
+| `revision` | **Full immutable commit SHA or release tag.** Never `main`, `latest`, or a convenience alias. |
+| `filename` | Exact file to fetch, not a directory or a glob. |
+| `size_bytes` | Expected byte length, checked before hashing. |
+| `sha256` | Expected digest of the complete file. |
+| `license` | SPDX identifier or named license, plus the path of the retained license/NOTICE text. |
+| `runtime_version` | The runtime build this artifact was verified against — llama.cpp release, CTranslate2/faster-whisper version, CUDA/cuDNN pairing. |
+| `verified_utc` | Date the entry was last checked against its source. |
+
+Rules:
+
+- **A mutable reference is a build failure, not a warning.** `verify-models.ps1` rejects any entry whose `revision` is a branch name or whose `filename` is absent, and the packaging script runs it.
+- Download to `.partial`, verify length then SHA-256, and only then atomically activate. A mismatch keeps the previously activated artifact in place and reports the expected and actual digests.
+- faster-whisper's convenience aliases resolve to third-party conversions that can move. The manifest records the **resolved repository and commit**, and the alias is never used at runtime.
+- Changing a model or runtime version is a manifest edit with a new `verified_utc` and a fresh smoke test, reviewed like any other change.
+- The manifest is also the input to the third-party notice inventory, so license text is collected at pin time rather than reconstructed at release.
 
 ### Process boundaries and worker protocol
 
@@ -526,8 +565,16 @@ All factual list items use an evidence envelope: stable ID, concise text, `certa
   "due_date": "2026-08-07",
   "due_date_status": "explicit",
   "confidence": 0.91,
-  "source_segment_ids": ["segment-000431"],
-  "source_timestamps": ["00:42:18"]
+  "evidence": [
+    {
+      "transcript_revision": 2,
+      "segment_id": "segment-000431",
+      "source_track": "system",
+      "start_seconds": 2538.12,
+      "end_seconds": 2544.9,
+      "display_timestamp": "00:42:18"
+    }
+  ]
 }
 ~~~
 
@@ -544,6 +591,24 @@ Post-validation enforces:
 - `explicit` requires direct supporting text. `inferred` is visually marked and never converted to explicit by final synthesis.
 
 - A model confidence number is not statistically calibrated. EchoForge labels it heuristic and derives final certainty chiefly from evidence validity and explicitness.
+
+### Evidence identity and revision behaviour
+
+This is settled **before** `transcript.schema.json` and `summary.schema.json` are frozen, because it determines their shape. Segment IDs are stable only inside one transcript revision, so a bare segment ID is not a durable reference.
+
+- **Evidence identity is the pair `transcript_revision` + `segment_id`.** Neither half identifies a segment on its own. Every evidence entry carries both, and the summary's top-level `transcript_revision` records the revision the summary as a whole was generated from.
+
+- **A historical summary always opens its exact source transcript revision.** Transcript revisions are immutable and are retained as long as any summary references them. Opening summary r1 shows the transcript it was actually written from, not the newest one. Retention is therefore a function of references, and deleting a transcript revision that still has dependents requires explicit confirmation.
+
+- **Selecting a new transcript revision marks dependent summaries stale.** Stale is a visible state on the summary, not a silent condition. The stale summary remains fully readable and its evidence still resolves, because it continues to point at its own revision.
+
+- **Regeneration creates a new summary revision.** Bringing a summary up to date is a new revision generated against the newly selected transcript, never an in-place edit of the old one. The previous summary revision survives until explicitly deleted.
+
+- **Derived source times are preserved as audio-navigation fallback.** Each evidence entry stores `start_seconds`/`end_seconds` on the session timeline alongside the ID pair. If a segment ID cannot be resolved — a missing revision, a partially recovered session — the UI can still seek the immutable audio at the recorded time and say plainly that the transcript segment is unavailable. These times are derived by EchoForge from the cited segment; they are never taken from model output.
+
+- **Historical evidence links are never silently rebased or rewritten.** EchoForge does not remap old summaries onto new segment IDs, and does not repair a broken link by guessing a nearby segment. A link either resolves against its own revision, or the UI shows it as unresolved with the audio fallback. Re-running the summary is the supported way to move to a newer transcript.
+
+The practical consequence for Phase 5: optional diarization produces a **new transcript revision**, which marks derived summaries stale and offers regeneration. It does not migrate existing evidence.
 
 ### Long-meeting algorithm
 
@@ -588,15 +653,17 @@ Each phase is a gate. Claude Code should finish its tests and completion criteri
 |---|---|
 | Goal | Prove that the selected Windows playback endpoint and headset microphone can be recorded simultaneously into separate, valid, timeline-aligned files for at least ten minutes. Prove recovery from a killed process. |
 | User-visible result | A console tool lists devices, accepts two IDs, displays levels/elapsed time/discontinuities, records 60-second chunks, and prints a machine-readable validation report. No production GUI. |
-| Technical tasks | Create the solution/core contracts needed by the POC; enumerate stable endpoint IDs; start `WasapiLoopbackCapture` and `WasapiCapture` together; implement bounded queues, PCM16 chunk writer, QPC/audio-clock sampling, silence insertion, chunk finalization, SHA-256, manifest/journal, and active-WAV repair; generate an aligned stereo/mono diagnostic mix without altering sources; record actual device formats and memory/queue metrics. Add a test-signal method: play timed chirps through the selected endpoint and speak/tap near the microphone to measure offset/drift. |
-| Main files/modules | `poc/EchoForge.AudioCapture.Poc/*`; `src/EchoForge.Contracts/Audio/*`; `src/EchoForge.Audio.Windows/{AudioDeviceCatalog,DualTrackRecorder,CaptureClock,BoundedAudioQueue,PcmChunkWriter,WavRepair}.cs`; `schemas/session.schema.json`; hardware-test scripts. |
+| Technical tasks | Create the solution/core contracts needed by the POC; enumerate stable endpoint IDs; **confirm on the pinned NAudio version that the lower-level `AudioCaptureClient.GetBuffer` overload exposing frame count, buffer flags, device position, and QPC position is reachable, along with `AudioClient.SetEventHandle`**; implement the event-driven dual capture loop over `AudioClient`/`AudioCaptureClient` for the render endpoint (loopback) and the microphone; implement bounded queues, PCM16 chunk writer, packet-timestamp clock anchoring, silence insertion from device position, chunk finalization, SHA-256, manifest/journal, and active-WAV repair; generate an aligned stereo/mono diagnostic mix without altering sources; record actual device formats and memory/queue metrics. Add a test-signal method: play timed chirps through the selected endpoint and speak/tap near the microphone to measure offset and drift rate. |
+| Main files/modules | `poc/EchoForge.AudioCapture.Poc/*`; `src/EchoForge.Contracts/Audio/*`; `src/EchoForge.Audio.Windows/{AudioDeviceCatalog,WasapiPacketCapture,DualTrackRecorder,CaptureClock,BoundedAudioQueue,PcmChunkWriter,WavRepair}.cs`; `schemas/session.schema.json`; hardware-test scripts. |
 | Dependencies | .NET 10 SDK; NAudio 2.3.x; `System.Text.Json`. No Python, model, SQLite, FFmpeg, installer, or WPF dependency. |
-| Tests | Unit-test chunk boundaries, frame math, native-to-PCM16 conversion, silence insertion, bounded-queue overflow reporting, atomic manifest updates, and WAV repair. Hardware-test ten minutes of alternating/simultaneous playback and microphone; loopback silence; Windows notification inclusion; 44.1/48 kHz mismatch if available; process kill after at least two chunks; pause-like stop/restart; device unplug; sleep/resume; near-full-disk test on a quota-limited test volume where practical. Validate every finalized WAV with an independent reader. |
-| Completion criteria | Ten continuous minutes produce separate listenable tracks and at least nine finalized chunks each; no missing/duplicated chunk index; source duration follows QPC duration within 100 ms after derivative alignment; end-to-end chirp offset stays within 100 ms over ten minutes; callback queue stays bounded; working memory is stable; killing the process preserves 100% of completed chunks and startup repairs or explicitly quarantines the active part; no callback performs blocking disk I/O. Results and raw metrics are saved under a POC report. |
-| Main risks | Endpoint-specific formats, NAudio access to audio-clock details, no loopback callbacks during silence, independent-clock drift, Bluetooth profile switching, vendor drivers. Directly add the smallest Core Audio COM wrapper only if NAudio cannot expose a measurement required to pass the clock test. |
+| Tests | Unit-test chunk boundaries, frame math, native-to-PCM16 conversion, silence insertion from device-position deltas, bounded-queue overflow reporting, drift-rate estimation, atomic manifest updates, and WAV repair. Hardware-test ten minutes of alternating/simultaneous playback and microphone; **at least one continuous 60-minute qualification run**; loopback silence; Windows notification inclusion; 44.1/48 kHz mismatch if available; process kill after at least two chunks; pause-like stop/restart; device unplug; sleep/resume; near-full-disk test on a quota-limited test volume where practical. Validate every finalized WAV with an independent reader. |
+| Completion criteria | Ten continuous minutes produce separate listenable tracks and at least nine finalized chunks each; no missing/duplicated chunk index; **post-correction alignment error is at most 100 ms after ten minutes**; **residual corrected drift is at most 50 ms per hour, demonstrated by at least one continuous 60-minute run**; every packet carries a device and QPC position, and no timeline value is derived from packet arrival time; capture queue stays bounded; working memory is stable; killing the process preserves 100% of completed chunks and startup repairs or explicitly quarantines the active part; no capture thread performs blocking disk I/O. Results and raw metrics are saved under a POC report. |
+| Main risks | Endpoint-specific formats, reachability of the lower-level NAudio timestamp overload, no loopback packets during silence, independent-clock drift, Bluetooth profile switching, vendor drivers. Add the smallest Core Audio COM shim only if a gate measurement cannot be reached through NAudio's lower-level wrappers. |
 | Explicitly excluded | WPF/product GUI, transcription, models, diarization, summarization, library, cloud, per-process capture, installer, video, live transcription. |
 
 **Phase 0 is blocking.** If it cannot meet alignment and recovery criteria on the target headset after reasonable driver/device troubleshooting, do not compensate with frontend work. Resolve the capture/timeline design first.
+
+**Why the gates are expressed as a rate.** An absolute ten-minute offset alone does not predict a three-hour run. A device drifting at the old 100 ms-per-ten-minutes reading would accumulate roughly 1.8 s over three hours and fail the MVP limit sevenfold, while still passing Phase 0. The gates are therefore split: a **100 ms absolute ceiling at ten minutes** catches gross start-up and alignment faults, and a **50 ms per hour residual drift ceiling**, proven over a continuous 60-minute run, catches slow clock divergence. At 50 ms/hr a three-hour session lands near 150 ms, inside the 250 ms acceptance limit in Section G with margin for device variation. Both are measured **after** derivative correction; uncorrected drift may be larger and is reported separately as a diagnostic.
 
 ### Phase 1 — Recording application
 
@@ -620,7 +687,7 @@ Each phase is a gate. Claude Code should finish its tests and completion criteri
 | User-visible result | “Transcribe” and “Transcribe again” actions, model/profile selector, progress by track/chunk, cancel, actionable errors, hardware summary, and basic JSON/TXT/SRT/VTT outputs. Microphone text is labeled You and system text Remote. |
 | Technical tasks | Define NDJSON worker protocol and supervisor/Job Object; create app-local Python worker and locked environment; stream-decode/normalize chunks to aligned 16 kHz mono derivatives; form ten-minute per-epoch STT windows with five-second overlap so 60-second source chunks never cut recognition context; implement conservative Silero VAD, faster-whisper word timestamps, language selection/detection, optional glossary/initial prompt, per-window/track checkpoints and overlap dedupe, timeline merge, cross-track overlap IDs, transcript schema validation, atomic revision activation, SRT/VTT cue construction, model registry/download/hash verification, CUDA preflight, adaptive batch sizing, `int8_float16` retry, CPU INT8 fallback, progress and cancellation. Unload/exit at job end. |
 | Main files/modules | `schemas/{transcript,worker-protocol}.schema.json`; `EchoForge.Contracts/Workers/*` and `Transcripts/*`; `EchoForge.Infrastructure/Workers/{WorkerSupervisor,WindowsJobObject}.cs`; `worker/echoforge_worker/{main,protocol,audio,transcribe,models}.py`; `tests/worker_tests`. |
-| Dependencies | Phases 0–1; Python 3.12 app-local distribution; uv for development lock; faster-whisper, CTranslate2, PyAV and Silero VAD dependencies; pinned model snapshots. NVIDIA runtime components only for the CUDA profile. NVIDIA documents Windows pip installation for CUDA 12 cuDNN packages ([cuDNN Windows guide](https://docs.nvidia.com/deeplearning/cudnn/installation/latest/windows.html)); exact redistribution/download terms must be reviewed in Phase 6. |
+| Dependencies | Phases 0–1; **`artifacts/manifest.json` populated and passing `verify-models.ps1` before any production download**; Python 3.12 app-local distribution; uv for development lock; faster-whisper, CTranslate2, PyAV and Silero VAD dependencies; pinned model snapshots referenced by full commit SHA. NVIDIA runtime components only for the CUDA profile. NVIDIA documents Windows pip installation for CUDA 12 cuDNN packages ([cuDNN Windows guide](https://docs.nvidia.com/deeplearning/cudnn/installation/latest/windows.html)); exact redistribution/download terms must be reviewed in Phase 6. |
 | Tests | Protocol framing/unknown version; child crash/cancel/timeout; path with spaces/non-ASCII; golden transcript schema; segment ordering/overlap; You attribution; SRT/VTT validity; silent chunks; invalid WAV; language and technical-acronym samples; CUDA absent; injected CUDA error/OOM; model hash/download interruption; repeated transcription creates a new revision and leaves old/audio data intact. Benchmark turbo, large-v3, and CPU fallback on the same held-out meeting clips. |
 | Completion criteria | A one-hour representative session produces a valid local transcript with navigable timestamps; 100% of microphone segments are labeled You; all segment times fall within session epochs; re-run needs no recording; cancel/failure preserves sources and previous outputs; simulated GPU failure reaches a documented CPU result; network-disabled transcription succeeds after installation. |
 | Main risks | Windows CUDA/cuDNN wheel compatibility, model alias drift, Whisper hallucinations on silence/music, names/acronyms, time mapping across chunks. Pin revisions and treat transcript correction/re-run as normal. |
@@ -635,12 +702,28 @@ Each phase is a gate. Claude Code should finish its tests and completion criteri
 | Technical tasks | Pin a compatible llama.cpp Windows release and the official Gemma 4 12B QAT Q4 GGUF/revision/hash; launch ephemeral text-only server with one slot, 32K context, Q8 KV cache initially, thinking off, fixed seed, offline mode; implement transcript tokenization/chunking, per-chunk extraction prompt, simple generation schema, full JSON Schema validation, evidence allow-list/resolution, owner/date invariants, conservative dedupe, recursive synthesis, prompt versioning, checkpointing, one malformed-JSON repair, cancellation, OOM re-chunk/context fallback, and atomic summary revisions. Render inferences separately and default owner/date inference to off. |
 | Main files/modules | `schemas/summary.schema.json`; `EchoForge.Core/Summaries/*`; `worker/echoforge_worker/{summarize,chunking,evidence,models}.py`; `worker/prompts/{extract-v1,synthesize-v1,repair-v1}.txt`; `tests/fixtures/summary-benchmark/*`. |
 | Dependencies | Phase 2 canonical transcript; pinned llama.cpp binary; Gemma model. Keep tokenizer/template coupled to the model revision. No Ollama service. |
-| Tests | Schema fuzz/property tests; nonexistent evidence IDs; null/status conditionals; relative-date resolution from known meeting date; ambiguous Friday/no known date; model JSON truncation; duplicate actions at chunk overlap; contradictory chunks; very long synthetic transcript; cancelled/failed synthesis; GPU OOM and reduced-context retry; network blocked. Human-evaluate 10–20 real, consented meetings against a gold set. Compare Gemma 4 12B Q4 with Ministral 3 14B Instruct Q4_K_M using identical transcript, schema, evidence rules, and token budget. |
+| Tests | Schema fuzz/property tests; nonexistent evidence IDs; null/status conditionals; relative-date resolution from known meeting date; ambiguous Friday/no known date; model JSON truncation; duplicate actions at chunk overlap; contradictory chunks; very long synthetic transcript; cancelled/failed synthesis; GPU OOM and reduced-context retry; network blocked. Iterate the pipeline and prompts against the **3–5 meeting development corpus**; run the **10–20 meeting release corpus** only as the acceptance gate. Compare Gemma 4 12B Q4 with Ministral 3 14B Instruct Q4_K_M using identical transcript, schema, evidence rules, and token budget. |
 | Completion criteria | Every activated decision/action has at least one resolvable segment ID and generated timestamp; unknown owners/dates remain null/unknown; explicit facts have direct evidence; malformed output never activates; a three-hour transcript completes without silent truncation; the default model fits the actual GPU at 32K or falls back through a documented, non-silent path. The model bake-off is recorded with quality, latency, peak VRAM, and failure rates. |
 | Main risks | Hallucinated commitments, excessive deduplication, long-context degradation, quantized-model JSON quirks, new Gemma/llama.cpp integration maturity, VRAM estimates. Evidence verification and the real-meeting gate are release blockers. |
 | Explicitly excluded | Remote diarization, cloud/API calls, autonomous follow-ups, emails/tasks, calendar updates, reasoning mode, model fine-tuning, retrieval databases, vector search, live summaries. |
 
 **Summary quality gate.** Score action/decision factual precision and recall, exact owner/date precision, evidence validity, key-point coverage, contradiction handling, readability, latency, and peak VRAM. The recommended release target is at least 95% precision for emitted actions/decisions, at least 85% recall on the annotated set, 100% valid evidence references, and no unsupported explicit owner/date. These are product acceptance targets, not claimed model benchmarks. Change the default to Ministral only if it improves the preregistered composite by at least five percentage points with no material memory/failure regression.
+
+**Two corpora, kept apart.** Annotating meetings is the most expensive work in Phase 3 and it sits on the critical path, so it is split by purpose:
+
+| Corpus | Size | Purpose | Rules |
+|---|---|---|---|
+| **Development** | 3–5 meetings | Day-to-day pipeline, chunking, and prompt iteration. Fast enough to re-run constantly. | May be inspected freely. Prompts may be tuned against it. Never quoted as an acceptance result. |
+| **Release** | 10–20 meetings | The Phase 3 acceptance gate and the Gemma-versus-Ministral decision. | Held out. Run only when a candidate is believed ready, with the scoring criteria preregistered before the run. No prompt tuning against its contents. |
+
+Corpora do not overlap. If a release meeting has to be moved into development to debug a failure, it leaves the release set permanently and is replaced.
+
+**Two measurements, kept separately reportable.** Speech-recognition quality and summary quality fail for different reasons and must not be averaged into one number:
+
+- **STT / audio evaluation** runs on recorded audio and scores word and name accuracy, timestamp accuracy, You/Remote attribution, and hallucination on silence and music. It is what decides turbo versus large-v3 versus the CPU profile.
+- **Summary evaluation** runs on a **fixed, human-corrected transcript**, so a summarizer is never penalised for upstream recognition errors. It scores factual precision and recall, owner/date precision, evidence validity, coverage, and readability. It is what decides Gemma versus Ministral.
+
+Both are recorded per meeting so an end-to-end regression can be attributed to the stage that caused it.
 
 **Estimate:** Gemma 4 12B Q4 should synthesize a one-hour meeting in roughly 1–10 minutes on a modern 16 GB GPU, depending on prompt count, transcript density, and GPU generation. This is not a published guarantee. Record time-to-first-token, prompt/decode tokens per second, total stage time, and peak dedicated/shared GPU memory.
 
@@ -650,7 +733,7 @@ Each phase is a gate. Claude Code should finish its tests and completion criteri
 |---|---|
 | Goal | Make recordings, transcripts, and summaries easy to review, search, correct at the speaker-label level, copy, export, delete, and reprocess. |
 | User-visible result | Previous-meeting library; transcript/summary tabs; full-text search; selection/copy; evidence links; synchronized playback from timestamps; remote speaker rename; Markdown, text, JSON, SRT, and VTT exports; explicit deletion and re-run controls. |
-| Technical tasks | Build library projection and rebuildable SQLite/FTS index; paginate/virtualize transcript view; implement search highlights; map evidence click to transcript and audio; build aligned two-track playback/mix derivative; speaker alias overlay without rewriting original transcript; export service with revision/model metadata; safe filename sanitization; explicit delete confirmation and Recycle Bin where supported; rebuild index; stale-summary marker when transcript revision changes. |
+| Technical tasks | Build library projection and rebuildable SQLite/FTS index; paginate/virtualize transcript view; implement search highlights; map evidence click to transcript and audio; build aligned two-track playback/mix derivative; speaker alias overlay without rewriting original transcript; export service with revision/model metadata; safe filename sanitization; explicit delete confirmation and Recycle Bin where supported; rebuild index; resolve evidence through the `transcript_revision` + `segment_id` pair, opening each summary against its own source revision; stale-summary marker and regenerate action when a different transcript revision is selected; unresolved-evidence presentation using the stored time fallback. |
 | Main files/modules | `EchoForge.App/Views/{Library,Transcript,Summary,Playback}*`; `EchoForge.Core/{Library,Search,Exports,Playback}/*`; `EchoForge.Infrastructure/Index/*`; `EchoForge.Audio.Windows/Playback/*`. |
 | Dependencies | Phases 1–3; Microsoft.Data.Sqlite or another pinned small SQLite provider; NAudio playback. JSON remains canonical. |
 | Tests | Index rebuild from folders; corrupt/missing DB; large virtualized transcript; phrase search; evidence seek within 250 ms; pause/seek across chunk boundary; speaker alias persistence; every export parses; Markdown escaping; Unicode titles; deleting active/running session prohibited; Recycle Bin/cancel behavior; reprocess maintains revision history and source hash. |
@@ -668,7 +751,7 @@ Each phase is a gate. Claude Code should finish its tests and completion criteri
 | Main files/modules | `worker/echoforge_worker/diarize.py`; `EchoForge.Core/Speakers/*`; model manifest; diarization fixtures/tests. |
 | Dependencies | Phases 2–4; pyannote.audio and `speaker-diarization-community-1` model; compatible PyTorch/CUDA stack isolated from faster-whisper conflicts. |
 | Tests | Two/three-speaker clean meeting, crosstalk, short turns, same-gender similar voices, music/noise, one-speaker case, GPU absent, model-access failure, repeat label stability. Human diarization-error review; no test treats a label as a person's identity. |
-| Completion criteria | Feature is wholly optional; failure leaves the You/Remote transcript selected and intact; You is never relabeled; anonymous labels and uncertainty are clear; summary evidence survives transcript revision mapping or is regenerated. |
+| Completion criteria | Feature is wholly optional; failure leaves the You/Remote transcript selected and intact; You is never relabeled; anonymous labels and uncertainty are clear; diarization produces a **new transcript revision** that marks dependent summaries stale and offers regeneration, and **no existing evidence link is rebased onto the new revision**. |
 | Main risks | Diarization error and overlap, gated model setup, PyTorch dependency/VRAM conflict, user interpreting anonymous clusters as identity. This phase can be omitted without weakening the MVP. |
 | Explicitly excluded | Biometric voiceprints, cross-meeting speaker recognition, auto-naming people, meeting participant roster matching, real-time diarization. |
 
@@ -704,6 +787,8 @@ Each phase is a gate. Claude Code should finish its tests and completion criteri
 
 Use synthetic audio for repeatability and consented real meeting audio for quality. Never check private raw meetings or their transcripts into source control. Store benchmark manifests with anonymous IDs and hashes; keep the actual corpus under an ignored local directory with access controls. Gold annotations distinguish explicit facts, acceptable inferences, and unknowns. At least one test meeting should include accents, jargon, names, overlapping speech, notification sounds, silence, a relative date, a deliberately ambiguous owner, and a statement that is discussed but not decided.
 
+The Phase 3 corpus is split into a 3–5 meeting **development** set for iteration and a held-out 10–20 meeting **release** set for the acceptance gate; the two never overlap, and a meeting promoted out of the release set is replaced rather than reused. Each meeting carries two independent annotation layers — a corrected transcript for scoring speech recognition, and gold facts with evidence for scoring summarization against that corrected transcript — so the two stages stay separately measurable.
+
 ## F. Claude Code handoff
 
 The following block is ready to paste into Claude Code:
@@ -725,8 +810,13 @@ Approved stack
 - NAudio 2.3.x over WASAPI shared mode.
 - Selected playback endpoint via loopback plus selected microphone, simultaneously,
   into separate immutable 60-second PCM16 WAV chunks.
-- Common QPC/audio-clock timeline. 48 kHz system stereo + microphone mono when the
-  device supports it; otherwise record native rate/layout and normalize derivatives.
+- Own the capture loop over AudioClient/AudioCaptureClient. Do NOT use
+  WasapiCapture.DataAvailable as a timestamp source. Drain with the lower-level
+  NAudio GetBuffer overload exposing frame count, buffer flags, device position, and
+  QPC position, and use those packet positions as the clock anchors. Add a native COM
+  shim only if a gate measurement is unreachable through NAudio's lower-level wrappers.
+- 48 kHz system stereo + microphone mono when the device supports it; otherwise
+  record native rate/layout and normalize derivatives.
 - Canonical versioned JSON + append-only JSONL journal. SQLite is a rebuildable index.
 - Short-lived Python 3.12 worker; NDJSON on stdin/stdout, artifact paths in messages.
 - faster-whisper/CTranslate2: large-v3-turbo CUDA FP16 default, large-v3 accuracy
@@ -781,15 +871,28 @@ Important interfaces
 
 Schema invariants
 - Implement schemas\session.schema.json, transcript.schema.json, summary.schema.json,
-  and worker-protocol.schema.json before their producers.
+  artifact-manifest.schema.json, and worker-protocol.schema.json before their producers.
 - A microphone segment has source_track=microphone and speaker_name=You.
-- Transcript segment IDs are stable inside a transcript revision.
+- Transcript segment IDs are stable inside a transcript revision, and ONLY inside it.
+- Evidence identity is transcript_revision + segment_id. Neither half alone is a
+  durable reference. Each evidence entry also stores derived start/end seconds as an
+  audio-navigation fallback.
+- A summary always opens its own source transcript revision. Selecting a different
+  transcript revision marks dependent summaries stale; regeneration creates a NEW
+  summary revision. Never silently rebase or rewrite historical evidence links.
 - owner_status/due_date_status are explicit, inferred, or unknown.
 - Unknown owner/date means the corresponding value is null.
-- Every decision/action has existing source_segment_ids; EchoForge derives timestamps
-  from those IDs. Never trust model-generated timestamps.
+- Every decision/action cites existing evidence; EchoForge derives timestamps from it.
+  Never trust model-generated timestamps.
 - Never promote inferred to explicit during synthesis.
 - Activate output only after schema and semantic validation, fsync, and atomic rename.
+
+Artifact pinning
+- artifacts\manifest.json lists every model and inference runtime with repository,
+  full revision SHA, exact filename, size, SHA-256, license, runtime version, and
+  verification date. Nothing is downloaded that is not in it.
+- Never fetch from an unpinned main branch or a mutable model alias. verify-models.ps1
+  fails the build on a branch name or a missing filename.
 
 Development commands after scaffolding
   dotnet restore EchoForge.sln
@@ -816,11 +919,15 @@ First files to create
 
 First proof of concept
 No production GUI. List endpoints, explicitly select one render endpoint and one
-microphone, capture both for >=10 minutes, display levels, write separate 60-second
-PCM16 WAV chunks, record QPC/audio-clock/frame metadata, insert loopback silence,
-and produce an aligned diagnostic mix. Kill the process after multiple completed
-chunks, restart, recover the .part chunk, and independently validate every WAV.
-Measure offset/drift with timed chirps. Do not begin WPF work unless Phase 0 passes.
+microphone, capture both concurrently through the owned AudioClient loop, display
+levels, write separate 60-second PCM16 WAV chunks, record per-packet device/QPC
+positions, buffer flags, and frame counts, insert loopback silence derived from
+device position, and produce an aligned diagnostic mix. Kill the process after
+multiple completed chunks, restart, recover the .part chunk, and independently
+validate every WAV. Measure offset and drift RATE with timed chirps.
+Gates: <=100 ms post-correction alignment error at ten minutes, <=50 ms/hour
+residual corrected drift proven by at least one continuous 60-minute run, 100% of
+finalized chunks preserved across a kill. Do not begin WPF work unless Phase 0 passes.
 
 Coding conventions
 - Nullable reference types and warnings-as-errors; analyzers enabled.
@@ -859,6 +966,9 @@ cloud APIs before the local workflow is complete. Remote diarization is Phase 5 
 
 Architectural mistakes to avoid
 - Merging tracks by callback arrival time or assumed equal sample clocks.
+- Using WasapiCapture.DataAvailable, or any packet arrival time, as a clock.
+- Referencing a transcript segment by segment_id without its transcript_revision.
+- Downloading a model or runtime that is not pinned in artifacts\manifest.json.
 - Mixing tracks before transcription or overwriting source audio with resampled data.
 - Writing one multi-hour WAV or accumulating a meeting in memory.
 - Silently switching endpoints, truncating context, or swallowing dropped audio.
@@ -881,7 +991,7 @@ The MVP is accepted only when all applicable rows pass on a clean Windows 11 mac
 | Three-hour recording | Capture both selected devices for three hours. After the first ten minutes, app private working-set growth attributable to capture is no more than 200 MB; per-track queues remain bounded to at most five seconds; no unreported drops; the UI remains responsive. OS file cache is reported separately. |
 | Separate sources | Session contains distinct system and microphone chunk series; both are independently playable/decodable; no mixed file is treated as source. |
 | Chunk durability | Killing the app after at least two finalized chunks preserves 100% of finalized chunks. Recovery either repairs the active part with no more than the configured flush interval (target ≤3 seconds) of lost tail or retains it with an explicit gap/error. No later-stage failure deletes audio. |
-| Timeline quality | After derivative correction, known chirps/checkpoints on the two tracks remain within 250 ms over a three-hour run; Phase 0's ten-minute target is 100 ms. Discontinuities and sleep/device gaps are represented, not hidden. |
+| Timeline quality | After derivative correction, known chirps/checkpoints on the two tracks remain within **250 ms over a three-hour run**. The Phase 0 gates that predict this are a **100 ms absolute ceiling at ten minutes** and **at most 50 ms per hour residual drift** proven over a continuous 60-minute run. Every timeline value derives from per-packet device/QPC positions, never packet arrival time. Discontinuities and sleep/device gaps are represented, not hidden. |
 | Controls/indicator | Start, Pause, Resume, and Stop are idempotent where appropriate. A persistent red window/tray indicator and duration remain visible while recording; a degraded track is unmistakable. |
 | Devices/disk | Selected stable device IDs and actual formats are stored. Disconnect/sleep/disk-threshold tests produce a controlled state and preserve completed chunks. Free space and estimated usage are visible. |
 | Local transcript | With networking disabled, a recorded representative meeting yields schema-valid, ordered, timestamped JSON. Microphone segments are You; system segments are Remote. SRT/VTT cues are monotonic and in range. |
@@ -889,7 +999,7 @@ The MVP is accepted only when all applicable rows pass on a clean Windows 11 mac
 | Local summary | With networking disabled, a valid transcript yields overview, key points, decisions, action items, open questions, risks, and blockers in schema-valid JSON. |
 | Evidence | 100% of activated decisions/action items have at least one existing source segment ID; displayed timestamps are derived from it and seek to the matching transcript/audio. |
 | Unknowns | In the gold corpus, 100% of deliberately unknown/ambiguous owners and dates remain `null`/`unknown` by default. No unsupported value is labeled `explicit`. |
-| Summary quality gate | On 10–20 consented representative meetings: target ≥95% precision and ≥85% recall for emitted actions/decisions, 100% evidence-reference validity, and no unsupported explicit owner/date. Human readability/coverage and model comparison are recorded. |
+| Summary quality gate | On the held-out **10–20 meeting release corpus**, scored against human-corrected transcripts: target ≥95% precision and ≥85% recall for emitted actions/decisions, 100% evidence-reference validity, and no unsupported explicit owner/date. The 3–5 meeting development corpus is excluded from this measurement. STT accuracy and summary accuracy are reported separately, never as one combined score. |
 | Long meetings | A three-hour transcript completes via hierarchy without silent truncation, missing terminal sections, lost evidence, or unbounded memory. |
 | Reprocessing | Users can create new transcript and summary revisions without rerecording; all source hashes remain unchanged and earlier successful revisions remain available until explicit deletion. |
 | Library/results | Sessions survive restart; search returns expected text; evidence playback seeks within 250 ms of the segment; Markdown, text, JSON, SRT, and VTT exports pass parsers/golden tests. |
@@ -906,7 +1016,7 @@ Probability reflects this product/hardware, not a universal statistic.
 |---|---|---|---|---|---|
 | Windows endpoint/driver edge cases | Medium | High | Shared-mode endpoint capture; stable IDs; enumerate actual formats; real-device matrix; narrow native COM shim only when measured. | **Phase 0 blocker** | 0, 1, 6 |
 | Bluetooth profile behavior | High if headset mic is Bluetooth Classic | High quality impact | Detect/report HFP formats/profile change; recommend USB/wired mic; test LE Audio separately; do not promise stereo A2DP plus classic headset mic. | Blocker only if target hardware is unusable | 0, 1, 6 |
-| Independent audio-clock drift | Medium | High | QPC + audio-clock anchors; frame counts; silence/gap metadata; derivative resampling; long soak/chirp tests. | **Phase 0 blocker** | 0, 1, 4 |
+| Independent audio-clock drift | Medium | High | Per-packet device/QPC positions from `GetBuffer` as clock anchors; frame counts; silence/gap metadata; derivative resampling; drift expressed as a rate and proven over a 60-minute run. | **Phase 0 blocker** | 0, 1, 4 |
 | Echo, sidetone, or local voice duplicated on system track | Medium | Medium | Headphones; overlap/text-similarity marker; retain both; allow review; no destructive suppression. | Non-blocking if visible | 2, 4 |
 | Device disconnection/default change | Medium | High | IMM notifications; no silent switch; finalize affected track, continue healthy track, explicit reconnect epoch. | Recording release blocker | 0, 1, 6 |
 | Sleep/hibernate | Medium | High | Power events, close/flush, new epoch/gap on resume, recovery scan. Audio during sleep cannot be recovered. | Recording release blocker | 0, 1, 6 |
@@ -937,7 +1047,7 @@ For the best practical local summaries on a 16 GB GPU, use a pinned **llama.cpp*
 
 ### Exact first proof of concept
 
-Build a console program, not a GUI. Select a real headphone render endpoint and headset microphone; record both concurrently for at least ten minutes into separate 60-second PCM16 WAV chunks; capture frame/QPC/audio-clock/discontinuity metadata; insert silence when loopback callbacks stop; create an aligned diagnostic mix; measure chirp offset/drift; kill the process after multiple chunks; restart and recover the active part. Independently decode every finalized file. Pass the 100 ms ten-minute alignment, bounded-queue/memory, and 100% completed-chunk recovery gates before Phase 1.
+Build a console program, not a GUI. Select a real headphone render endpoint and headset microphone; record both concurrently through EchoForge's own `AudioClient` capture loop for at least ten minutes into separate 60-second PCM16 WAV chunks; capture per-packet frame count, buffer flags, device position, and QPC position; insert silence when loopback packets stop; create an aligned diagnostic mix; measure chirp offset and drift rate; kill the process after multiple chunks; restart and recover the active part. Independently decode every finalized file. Pass the **100 ms post-correction alignment gate at ten minutes**, the **50 ms/hour residual drift gate proven over a continuous 60-minute run**, and the bounded-queue/memory and 100% completed-chunk recovery gates before Phase 1.
 
 ### First five implementation tasks
 
@@ -949,11 +1059,11 @@ Build a console program, not a GUI. Select a real headphone render endpoint and 
 
 ### Most important benchmark using real meeting audio
 
-Create a consented 10–20 meeting corpus representative of actual use, with human-verified transcript segments, decisions, actions, owners, dates, unknowns, and evidence. Run the same recordings through turbo versus large-v3 and the same canonical transcripts through **Gemma 4 12B Q4 versus Ministral 3 14B Q4_K_M**. Score word/name accuracy, factual precision/recall, unsupported explicit claims, evidence validity, owner/date precision, coverage/readability, latency, peak VRAM, and failures. This end-to-end benchmark—not a generic leaderboard—decides whether the defaults deliver the best actual summaries.
+Create a consented corpus representative of actual use, split into a **3–5 meeting development set** for iteration and a held-out **10–20 meeting release set** for the gate, with human-verified transcript segments, decisions, actions, owners, dates, unknowns, and evidence. Run the same recordings through turbo versus large-v3 to score speech recognition, and run the **human-corrected** transcripts through **Gemma 4 12B Q4 versus Ministral 3 14B Q4_K_M** to score summarization, so neither stage is blamed for the other's errors. Score word/name accuracy, factual precision/recall, unsupported explicit claims, evidence validity, owner/date precision, coverage/readability, latency, peak VRAM, and failures. This end-to-end benchmark—not a generic leaderboard—decides whether the defaults deliver the best actual summaries.
 
 ### Most likely architectural failure
 
-The greatest danger is treating two callback streams as if callback arrival or nominal sample rate were a shared clock. That produces slowly drifting transcripts and misleading evidence playback. The common monotonic timeline, explicit silence/gaps, audio-clock anchors, and derivative-only correction are foundational.
+The greatest danger is treating two packet streams as if arrival time or nominal sample rate were a shared clock. That produces slowly drifting transcripts and misleading evidence playback. The remedy is concrete and is why EchoForge owns its capture loop: every timeline value comes from the device and QPC positions each packet reports, drift is measured as a rate rather than a single offset, and correction happens only in derivatives. The common monotonic timeline, explicit silence/gaps, and immutable sources are foundational.
 
 ### Feature most likely to cause overengineering
 
