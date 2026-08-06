@@ -179,6 +179,38 @@ public sealed class TranscriptionCoordinator : IDisposable
     }
 
     /// <summary>
+    /// What the last worker to complete a handshake said about itself, or null before one has.
+    /// Reported by the worker rather than guessed at by the host.
+    /// </summary>
+    public WorkerEnvironment? LastWorkerEnvironment { get; private set; }
+
+    /// <summary>Chooses an existing revision as the active one.</summary>
+    public bool SelectRevision(string sessionId, int revision)
+    {
+        bool selected = _transcripts.SelectRevision(sessionId, revision, Now);
+        if (selected)
+        {
+            RaiseStateChanged();
+        }
+
+        return selected;
+    }
+
+    /// <summary>Reads an activated revision, verified against the digest it was activated under.</summary>
+    public TranscriptDocument? ReadTranscript(string sessionId, int revision) =>
+        _transcripts.ReadTranscript(sessionId, revision);
+
+    /// <summary>The file behind a revision, for an export that copies canonical bytes.</summary>
+    public string RevisionPath(string sessionId, int revision) =>
+        _transcripts.RevisionPath(sessionId, revision);
+
+    /// <summary>
+    /// Settles anything a previous run left staged. Called at startup, beside recovery: a staged
+    /// transcript is the visible remains of an attempt whose process died.
+    /// </summary>
+    public int DiscardOrphanStaging(string sessionId) => _transcripts.DiscardOrphanStaging(sessionId, Now);
+
+    /// <summary>
     /// Asks for a transcript.
     ///
     /// <para>
@@ -469,6 +501,11 @@ public sealed class TranscriptionCoordinator : IDisposable
         WorkerRunResult worker = await _supervisor
             .TranscribeAsync(attempt.JobId, request, progress, running.Cancellation.Token)
             .ConfigureAwait(false);
+
+        if (worker.Environment is not null)
+        {
+            LastWorkerEnvironment = worker.Environment;
+        }
 
         return Settle(attempt, request, worker);
     }

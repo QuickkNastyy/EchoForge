@@ -78,6 +78,7 @@ public sealed class WorkerSupervisor
         private CancellationTokenSource? _graceSource;
         private CancellationTokenRegistration _graceRegistration;
 
+        private WorkerEnvironment? _environment;
         private WorkerMessage? _terminal;
         private WorkerStage _stage = WorkerStage.Handshake;
         private bool _readyReceived;
@@ -336,6 +337,11 @@ public sealed class WorkerSupervisor
 
             _readyReceived = true;
             _stage = WorkerStage.Accepting;
+            _environment = new WorkerEnvironment(
+                ready.WorkerVersion,
+                ready.PythonVersion,
+                ready.ProtocolVersion,
+                ready.Backends);
 
             Send(new StartJobMessage
             {
@@ -377,6 +383,7 @@ public sealed class WorkerSupervisor
                 Error = error,
                 ExitCode = exitCode,
                 StandardErrorTail = stderr,
+                Environment = _environment,
                 Warnings = _warnings,
                 ProtocolViolations = _violations,
             };

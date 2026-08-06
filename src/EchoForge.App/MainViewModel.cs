@@ -97,6 +97,40 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
+    /// <summary>
+    /// The post-recording transcription surface, or null when the app was composed without one.
+    ///
+    /// <para>
+    /// It is fed from this view model's refresh rather than observing the recorder itself, so
+    /// there is exactly one place that reads capture state and the two panels cannot disagree
+    /// about whether recording is live.
+    /// </para>
+    /// </summary>
+    public TranscriptionViewModel? Transcription { get; private set; }
+
+    public bool HasTranscription => Transcription is not null;
+
+    /// <summary>
+    /// Attaches the transcription surface once it exists.
+    ///
+    /// <para>
+    /// It arrives late because finding a Python runtime means starting processes, and doing that
+    /// during startup would stall the window before it had painted. The panel appears when it is
+    /// ready; the recorder never waits for it.
+    /// </para>
+    /// </summary>
+    public void AttachTranscription(TranscriptionViewModel transcription) => Dispatch(() =>
+    {
+        ArgumentNullException.ThrowIfNull(transcription);
+
+        Transcription?.Dispose();
+        Transcription = transcription;
+
+        OnChanged(nameof(Transcription));
+        OnChanged(nameof(HasTranscription));
+        Refresh();
+    });
+
     public ObservableCollection<AudioEndpointInfo> RenderDevices { get; } = [];
 
     public ObservableCollection<AudioEndpointInfo> CaptureDevices { get; } = [];
@@ -470,9 +504,23 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// repainting and can show Stopping then Saving while it runs.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// True once the app has begun closing. Processing actions disable from that moment: a job
+    /// started while the window is going away could not report anything to anyone.
+    /// </summary>
+    public bool IsShuttingDown { get; private set; }
+
     /// <returns>False when the recording could not be made durable, in which case do not close.</returns>
     public async Task<bool> FinalizeForShutdownAsync()
     {
+        IsShuttingDown = true;
+        Transcription?.UpdateHost(
+            _controller.SessionId,
+            sessionSettled: false,
+            recordingActive: _controller.CaptureMayBeLive,
+            hostReady: IsReady,
+            shuttingDown: true);
+
         try
         {
             return await Task.Run(() =>
@@ -550,6 +598,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _ => DescribeSessionState(),
         };
 
+        // A session is offered for transcription only once its audio has genuinely settled.
+        // CaptureMayBeLive rather than IsRecording, so the transcription actions stay disabled
+        // while capture threads are still winding down.
+        Transcription?.UpdateHost(
+            _controller.SessionId,
+            _controller.State is SessionState.Recorded or SessionState.NeedsAttention,
+            _controller.CaptureMayBeLive,
+            IsReady,
+            IsShuttingDown);
+
         foreach (string name in RefreshedProperties)
         {
             OnChanged(name);
@@ -618,5 +676,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _timer.Stop();
         _controller.StateChanged -= OnControllerStateChanged;
         _controller.Notice -= OnControllerNotice;
+        Transcription?.Dispose();
     }
 }

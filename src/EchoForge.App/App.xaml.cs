@@ -3,11 +3,15 @@ using System.Windows;
 using EchoForge.Audio.Windows;
 using EchoForge.Contracts.Recording;
 using EchoForge.Contracts.Settings;
+using EchoForge.Core.Exports;
 using EchoForge.Core.Recording;
+using EchoForge.Core.Transcripts;
+using EchoForge.Infrastructure.Processing;
 using EchoForge.Infrastructure.Recovery;
 using EchoForge.Infrastructure.Sessions;
 using EchoForge.Infrastructure.Settings;
 using EchoForge.Infrastructure.Storage;
+using EchoForge.Infrastructure.Workers;
 
 namespace EchoForge.App;
 
@@ -27,6 +31,8 @@ public partial class App : System.Windows.Application, IDisposable
     private MainViewModel? _viewModel;
     private TrayIndicator? _tray;
     private ShutdownCoordinator? _shutdown;
+    private TranscriptionCoordinator? _coordinator;
+    private FileTranscriptionStore? _transcripts;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -135,10 +141,104 @@ public partial class App : System.Windows.Application, IDisposable
                 warning: $"EchoForge could not finish checking earlier recordings ({ex.GetType().Name}). " +
                          "You can still record, but any interrupted sessions may need attention.");
         }
+
+        // Recording is usable from here. Processing sets itself up afterwards, because finding a
+        // Python runtime means starting processes and the recorder must never wait on that.
+        await InitialiseProcessingAsync(store).ConfigureAwait(true);
+    }
+
+    /// <summary>
+    /// Composes the transcription surface, if this machine can run a worker at all.
+    ///
+    /// <para>
+    /// Transcription is optional composition on purpose. Without a usable Python runtime the
+    /// recorder still works completely and the panel simply does not appear; a missing processing
+    /// dependency must not stop anyone from recording a meeting.
+    /// </para>
+    /// </summary>
+    private async Task InitialiseProcessingAsync(FileSessionStore store)
+    {
+        if (_controller is null || _viewModel is null || MainWindow is not Window window)
+        {
+            return;
+        }
+
+        WorkerLaunchOptions? options = await Task.Run(() =>
+            WorkerLaunchOptions.Discover(Path.Combine(AppContext.BaseDirectory, "worker"))
+            ?? WorkerLaunchOptions.Discover(Path.Combine(RepositoryWorkerRoot(), "worker")))
+            .ConfigureAwait(true);
+
+        if (options is null)
+        {
+            return;
+        }
+
+        _transcripts = new FileTranscriptionStore(store);
+        _coordinator = new TranscriptionCoordinator(
+            store,
+            _transcripts,
+            new WorkerSupervisor(options, new RecordingCaptureGate(_controller)),
+            new RecordingCaptureGate(_controller));
+
+        // Recording always has priority, so the coordinator hears about capture the moment the
+        // recorder does rather than discovering it on a poll.
+        _controller.StateChanged += OnRecordingStateChangedForProcessing;
+
+        _viewModel.AttachTranscription(new TranscriptionViewModel(_coordinator, new SaveFileExportPrompt(window)));
+
+        await Task.Run(() => DiscardOrphanStaging(store)).ConfigureAwait(true);
     }
 
     private static string Plural(int count, string noun) =>
         count == 1 ? $"1 {noun}" : $"{count} {noun}s";
+
+    private void OnRecordingStateChangedForProcessing(object? sender, RecordingStateChangedEventArgs e) =>
+        _coordinator?.CaptureStateChanged();
+
+    /// <summary>
+    /// The worker package during development, where it sits beside the solution rather than in
+    /// the publish output. Phase 6 replaces both lookups with an app-local runtime directory.
+    /// </summary>
+    private static string RepositoryWorkerRoot()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "EchoForge.slnx")))
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        return AppContext.BaseDirectory;
+    }
+
+    /// <summary>
+    /// Clears anything a previous run left staged. A staged transcript is the remains of an
+    /// attempt whose process died; keeping it would eventually make an unverified file look like
+    /// a revision.
+    /// </summary>
+    private void DiscardOrphanStaging(FileSessionStore store)
+    {
+        if (_coordinator is null)
+        {
+            return;
+        }
+
+        foreach (string sessionId in store.EnumerateSessions())
+        {
+            try
+            {
+                _coordinator.DiscardOrphanStaging(sessionId);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // A session whose folder cannot be read is recovery's problem, not processing's.
+            }
+        }
+    }
 
     /// <summary>
     /// Windows is ending the session. There is no opportunity to ask anything, so finalize as
@@ -167,6 +267,17 @@ public partial class App : System.Windows.Application, IDisposable
 
         _viewModel?.Dispose();
         _viewModel = null;
+
+        // Before the controller: the coordinator holds a worker process, and it must be taken
+        // down while the recorder it defers to still exists.
+        if (_controller is not null)
+        {
+            _controller.StateChanged -= OnRecordingStateChangedForProcessing;
+        }
+
+        _coordinator?.Dispose();
+        _coordinator = null;
+        _transcripts = null;
 
         _controller?.Dispose();
         _controller = null;
@@ -223,5 +334,34 @@ public sealed class DialogConsentPrompt(Window owner) : IConsentPrompt
             MessageBoxResult.Cancel);
 
         return Task.FromResult(answer == MessageBoxResult.OK);
+    }
+}
+
+/// <summary>
+/// Asks where to save an export with the standard Windows dialog.
+///
+/// <para>
+/// The dialog's own overwrite prompt is the confirmation. It is not bypassed: if the user picks
+/// an existing file and confirms, that confirmation is what the exporter is told about, and
+/// without it the exporter refuses to replace anything.
+/// </para>
+/// </summary>
+public sealed class SaveFileExportPrompt(Window owner) : IExportDestinationPrompt
+{
+    public ExportDestination? Ask(string suggestedFileName, TranscriptExportFormat format)
+    {
+        Microsoft.Win32.SaveFileDialog dialog = new()
+        {
+            FileName = suggestedFileName,
+            DefaultExt = TranscriptExporter.Extension(format),
+            Filter = $"{TranscriptExporter.Describe(format)}|*{TranscriptExporter.Extension(format)}|All files|*.*",
+            OverwritePrompt = true,
+            AddExtension = true,
+            Title = "Export transcript",
+        };
+
+        return dialog.ShowDialog(owner) == true
+            ? new ExportDestination(dialog.FileName, OverwriteConfirmed: true)
+            : null;
     }
 }

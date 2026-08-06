@@ -53,6 +53,33 @@ public sealed record WorkerError(
     string? Detail = null,
     bool Retryable = false);
 
+/// <summary>
+/// What the worker said about itself during the handshake.
+///
+/// <para>
+/// This is the honest answer to "what actually ran": the worker build, its interpreter, and the
+/// backends it can offer. It is deliberately reported by the worker rather than inferred by the
+/// host, because the host cannot know which Python finally resolved or which backends that build
+/// was compiled with.
+/// </para>
+/// </summary>
+public sealed record WorkerEnvironment(
+    string WorkerVersion,
+    string? PythonVersion,
+    int ProtocolVersion,
+    IReadOnlyList<string> Backends)
+{
+    public string Summary => string.Join(
+        " · ",
+        new[]
+        {
+            $"worker {WorkerVersion}",
+            PythonVersion is null ? null : $"Python {PythonVersion}",
+            $"protocol {ProtocolVersion.ToString(CultureInfo.InvariantCulture)}",
+            Backends.Count == 0 ? null : $"backends: {string.Join(", ", Backends)}",
+        }.Where(part => part is not null));
+}
+
 /// <summary>Where a completed transcription put its output.</summary>
 public sealed record TranscriptionOutput(
     string OutputPath,
@@ -85,6 +112,12 @@ public sealed record WorkerRunResult
     /// the user, and never into a transcript.
     /// </summary>
     public string StandardErrorTail { get; init; } = string.Empty;
+
+    /// <summary>
+    /// What the worker reported about itself, when the handshake got that far. Null means the
+    /// child never identified itself, which is itself worth showing rather than inventing.
+    /// </summary>
+    public WorkerEnvironment? Environment { get; init; }
 
     /// <summary>Non-terminal warnings the worker reported along the way.</summary>
     public IReadOnlyList<WarningMessage> Warnings { get; init; } = [];
