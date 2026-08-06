@@ -1,0 +1,36 @@
+[project]
+name = "echoforge-worker"
+version = "0.1.0"
+description = "Short-lived EchoForge processing worker. Speaks NDJSON on stdin/stdout, runs exactly one job, and exits."
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+
+# Deliberately empty. Pass 1 of Phase 2A runs entirely on the standard library so the
+# protocol, the supervisor, and the transcript contract can be proven before any model,
+# CUDA component, or inference wheel is introduced. faster-whisper and its dependencies
+# arrive with the production backend, pinned through artifacts/manifest.json, and they do
+# not change the protocol when they do.
+dependencies = []
+
+[project.scripts]
+echoforge-worker = "echoforge_worker.main:entry_point"
+
+[dependency-groups]
+dev = [
+  "pytest==8.4.2",
+  # The transcript must be checkable against schemas/transcript.schema.json by something
+  # other than the code that wrote it, otherwise "schema-valid" only means "self-consistent".
+  "jsonschema==4.26.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["echoforge_worker"]
+
+[tool.pytest.ini_options]
+testpaths = ["../tests/worker_tests"]
+pythonpath = ["."]
+addopts = "-q"
