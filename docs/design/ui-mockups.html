@@ -1,0 +1,886 @@
+<meta charset="utf-8">
+<title>EchoForge — interface design</title>
+<style>
+  :root {
+    --ground:#0D1318; --surface:#141C23; --raised:#1D2831; --sunken:#0A1015;
+    --line:rgba(255,255,255,.09); --line-strong:rgba(255,255,255,.16);
+    --ink:#E6EDF3; --ink-dim:#8496A6; --ink-faint:#5B6C7B;
+    --you:#F2A93B; --remote:#3FBFC7; --rec:#E2453D;
+    --you-wash:rgba(242,169,59,.14); --remote-wash:rgba(63,191,199,.14); --rec-wash:rgba(226,69,61,.13);
+    --focus:#9CC4F0;
+    --ui:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
+    --disp:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+    --mono:"Cascadia Mono",Consolas,"SF Mono",ui-monospace,monospace;
+    --r:6px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground:#EDF0F3; --surface:#FFFFFF; --raised:#E7ECF1; --sunken:#F5F7F9;
+      --line:rgba(10,20,30,.11); --line-strong:rgba(10,20,30,.2);
+      --ink:#0E1720; --ink-dim:#54687A; --ink-faint:#7B8B99;
+      --you:#B36C10; --remote:#0B767E; --rec:#C22C25;
+      --you-wash:rgba(179,108,16,.12); --remote-wash:rgba(11,118,126,.12); --rec-wash:rgba(194,44,37,.1);
+      --focus:#1D5FA8;
+    }
+  }
+  :root[data-theme="light"] {
+    --ground:#EDF0F3; --surface:#FFFFFF; --raised:#E7ECF1; --sunken:#F5F7F9;
+    --line:rgba(10,20,30,.11); --line-strong:rgba(10,20,30,.2);
+    --ink:#0E1720; --ink-dim:#54687A; --ink-faint:#7B8B99;
+    --you:#B36C10; --remote:#0B767E; --rec:#C22C25;
+    --you-wash:rgba(179,108,16,.12); --remote-wash:rgba(11,118,126,.12); --rec-wash:rgba(194,44,37,.1);
+    --focus:#1D5FA8;
+  }
+  :root[data-theme="dark"] {
+    --ground:#0D1318; --surface:#141C23; --raised:#1D2831; --sunken:#0A1015;
+    --line:rgba(255,255,255,.09); --line-strong:rgba(255,255,255,.16);
+    --ink:#E6EDF3; --ink-dim:#8496A6; --ink-faint:#5B6C7B;
+    --you:#F2A93B; --remote:#3FBFC7; --rec:#E2453D;
+    --you-wash:rgba(242,169,59,.14); --remote-wash:rgba(63,191,199,.14); --rec-wash:rgba(226,69,61,.13);
+    --focus:#9CC4F0;
+  }
+
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--ground); color:var(--ink); font-family:var(--ui); font-size:15px; line-height:1.55; }
+  .page { max-width:1360px; margin:0 auto; padding:56px 28px 96px; }
+
+  .lede { max-width:66ch; }
+  .eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--ink-faint); margin:0 0 14px; }
+  h1 { font-family:var(--disp); font-size:40px; line-height:1.12; font-weight:600; margin:0 0 16px; letter-spacing:-.02em; text-wrap:balance; }
+  .lede p { color:var(--ink-dim); margin:0 0 12px; }
+  .lede strong { color:var(--ink); font-weight:600; }
+
+  .tokens { display:flex; flex-wrap:wrap; gap:10px; margin:30px 0 0; padding:0; list-style:none; }
+  .tok { display:flex; align-items:center; gap:9px; background:var(--surface); border:1px solid var(--line); border-radius:var(--r); padding:8px 12px 8px 9px; }
+  .tok i { width:16px; height:16px; border-radius:3px; display:block; }
+  .tok b { font-family:var(--mono); font-size:11px; font-weight:400; letter-spacing:.04em; }
+  .tok span { font-size:11px; color:var(--ink-dim); letter-spacing:.06em; text-transform:uppercase; }
+
+  .plate { margin:74px 0 0; }
+  .plate-head { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin:0 0 4px; }
+  .plate-num { font-family:var(--mono); font-size:12px; color:var(--ink-faint); letter-spacing:.1em; }
+  .plate-head h2 { font-family:var(--disp); font-size:22px; font-weight:600; margin:0; letter-spacing:-.01em; }
+  .plate-note { color:var(--ink-dim); font-size:14px; max-width:72ch; margin:0 0 22px; }
+  .plate-note code { font-family:var(--mono); font-size:12.5px; background:var(--surface); border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
+
+  .win { background:var(--surface); border:1px solid var(--line-strong); border-radius:9px; overflow:hidden; box-shadow:0 24px 60px rgba(0,0,0,.34), 0 2px 6px rgba(0,0,0,.2); }
+  .winbar { display:flex; align-items:center; height:38px; padding:0 0 0 14px; background:var(--raised); border-bottom:1px solid var(--line); gap:10px; }
+  .winbar .mark { width:11px; height:11px; border-radius:2px; border:2px solid var(--ink-dim); }
+  .winbar .t { font-size:12.5px; color:var(--ink-dim); }
+  .winbar .t b { color:var(--ink); font-weight:600; }
+  .wbtns { margin-left:auto; display:flex; }
+  .wbtns i { width:44px; height:38px; display:grid; place-items:center; color:var(--ink-dim); font-style:normal; font-size:11px; }
+  .wbody { display:flex; min-height:0; }
+
+  .rail { width:58px; flex:none; background:var(--sunken); border-right:1px solid var(--line); padding:10px 0; display:flex; flex-direction:column; align-items:center; gap:4px; }
+  .rbtn { width:40px; height:40px; border-radius:var(--r); display:grid; place-items:center; color:var(--ink-faint); position:relative; }
+  .rbtn svg { width:19px; height:19px; }
+  .rbtn.on { color:var(--ink); background:var(--raised); }
+  .rbtn.on::before { content:""; position:absolute; left:-2px; top:12px; bottom:12px; width:3px; border-radius:2px; background:var(--ink); }
+  .rail .spacer { flex:1; }
+
+  .main { flex:1; min-width:0; padding:22px 26px 24px; display:flex; flex-direction:column; gap:18px; }
+
+  .lbl { font-family:var(--mono); font-size:10.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--ink-faint); }
+  .mono { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  .hr { height:1px; background:var(--line); border:0; margin:0; }
+  .card { background:var(--sunken); border:1px solid var(--line); border-radius:var(--r); }
+  .pad { padding:16px 18px; }
+
+  .btn { font-family:var(--ui); font-size:13.5px; font-weight:600; color:var(--ink); background:var(--raised); border:1px solid var(--line-strong); border-radius:var(--r); padding:9px 18px; cursor:pointer; }
+  .btn.primary { background:var(--ink); color:var(--ground); border-color:var(--ink); }
+  .btn.danger { background:transparent; border-color:var(--rec); color:var(--rec); }
+  .btn.ghost { background:transparent; border-color:var(--line-strong); color:var(--ink-dim); font-weight:500; }
+  .btn.sm { padding:6px 13px; font-size:12.5px; }
+  .btn:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+
+  .pick { display:flex; align-items:center; gap:12px; background:var(--raised); border:1px solid var(--line); border-radius:var(--r); padding:11px 14px; }
+  .pick .dot { width:8px; height:8px; border-radius:50%; flex:none; }
+  .pick .nm { font-size:13.5px; font-weight:600; }
+  .pick .fm { font-family:var(--mono); font-size:11.5px; color:var(--ink-dim); margin-left:auto; letter-spacing:.02em; }
+  .pick .chev { color:var(--ink-faint); font-size:11px; }
+
+  .meter { display:flex; align-items:center; gap:12px; }
+  .meter .who { width:64px; flex:none; }
+  .meter .bar { flex:1; height:9px; background:var(--sunken); border:1px solid var(--line); border-radius:2px; position:relative; overflow:hidden; }
+  .meter .fill { position:absolute; inset:1px auto 1px 1px; border-radius:1px; }
+  .meter .peak { position:absolute; top:0; bottom:0; width:2px; background:var(--ink); opacity:.55; }
+  .meter .db { width:56px; text-align:right; font-size:11.5px; color:var(--ink-dim); }
+  .meter .ticks { position:absolute; inset:0; display:flex; }
+  .meter .ticks i { flex:1; border-right:1px solid rgba(128,150,170,.16); }
+
+  .ribbon { background:var(--sunken); border:1px solid var(--line); border-radius:var(--r); padding:10px 12px 8px; }
+  .ruler { height:24px; position:relative; margin:0 0 6px; }
+  .ruler .tk { position:absolute; top:16px; bottom:0; width:1px; background:var(--line-strong); }
+  .ruler .tk.maj { top:13px; background:var(--ink-faint); }
+  .ruler .cap { position:absolute; top:0; font-family:var(--mono); font-size:9.5px; line-height:1; color:var(--ink-faint); letter-spacing:.04em; transform:translateX(2px); }
+  .lane { position:relative; height:34px; display:flex; align-items:flex-end; gap:1px; }
+  .lane + .lane { margin-top:5px; }
+  .lane .bx { flex:1; border-radius:1px 1px 0 0; min-height:1px; }
+  .lane.you .bx { background:var(--you); }
+  .lane.remote .bx { background:var(--remote); }
+  .lane .gap { flex:1; align-self:stretch; background:repeating-linear-gradient(135deg,transparent 0 3px,rgba(140,160,175,.25) 3px 4px); border-left:1px solid var(--line-strong); border-right:1px solid var(--line-strong); }
+  .lane .dead { flex:1; align-self:center; height:1px; background:var(--rec); opacity:.55; }
+  .lanetag { position:absolute; left:0; top:-1px; font-family:var(--mono); font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; z-index:2; padding:0 4px 0 0; background:var(--sunken); }
+  .lanetag.you { color:var(--you); }
+  .lanetag.remote { color:var(--remote); }
+  .lanewrap { position:relative; padding-left:56px; }
+  .playhead { position:absolute; top:0; bottom:0; width:1px; background:var(--ink); }
+  .playhead::before { content:""; position:absolute; top:-3px; left:-3px; width:7px; height:7px; background:var(--ink); border-radius:50%; }
+  .evmark { position:absolute; top:-4px; bottom:-4px; width:2px; background:var(--focus); }
+  .evmark::before { content:""; position:absolute; top:-5px; left:-3px; border:4px solid transparent; border-top-color:var(--focus); }
+
+  .strip { display:flex; align-items:center; gap:18px; }
+  .recdot { width:11px; height:11px; border-radius:50%; background:var(--rec); flex:none; box-shadow:0 0 0 4px var(--rec-wash); }
+  .state { font-family:var(--mono); font-size:11px; letter-spacing:.18em; text-transform:uppercase; color:var(--rec); }
+  .clock { font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:46px; font-weight:300; letter-spacing:-.01em; line-height:1; }
+  .clock .ms { font-size:22px; color:var(--ink-faint); }
+  .facts { margin-left:auto; display:flex; gap:26px; text-align:right; }
+  .fact .k { font-family:var(--mono); font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-faint); display:block; margin-bottom:3px; }
+  .fact .v { font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:14px; }
+
+  .banner { display:flex; gap:12px; align-items:flex-start; border:1px solid var(--rec); background:var(--rec-wash); border-radius:var(--r); padding:12px 14px; }
+  .banner .ic { color:var(--rec); font-weight:700; font-family:var(--mono); flex:none; }
+  .banner h4 { margin:0 0 3px; font-size:13.5px; font-weight:600; }
+  .banner p { margin:0; font-size:13px; color:var(--ink-dim); }
+  .banner .act { margin-left:auto; flex:none; }
+
+  .note { display:flex; gap:9px; font-size:12.5px; color:var(--ink-dim); }
+  .note b { color:var(--ink); font-weight:600; }
+
+  /* ---------- all recordings ---------- */
+  .search { display:flex; align-items:center; gap:9px; background:var(--sunken); border:1px solid var(--line); border-radius:var(--r); padding:8px 11px; }
+  .search span { color:var(--ink-faint); font-size:13px; }
+  .grp { display:flex; align-items:center; gap:11px; margin:16px 0 6px; }
+  .grp .g { font-family:var(--mono); font-size:10.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--ink-faint); }
+  .grp .rule2 { flex:1; height:1px; background:var(--line); }
+  .rec { display:grid; grid-template-columns:1fr 190px 132px 118px 74px; gap:16px; align-items:center; padding:11px 12px; border-radius:var(--r); border:1px solid transparent; }
+  .rec.sel { background:var(--raised); border-color:var(--line-strong); }
+  .rec .ttl { font-size:14px; font-weight:600; margin:0 0 2px; }
+  .rec .sub { font-family:var(--mono); font-size:11px; color:var(--ink-faint); }
+  .rec .counts { font-size:12.5px; color:var(--ink-dim); }
+  .rec .counts b { color:var(--ink); font-weight:600; }
+  .rec .open { text-align:right; color:var(--ink-faint); font-size:15px; }
+  .spark { height:18px; display:flex; align-items:flex-end; gap:1px; }
+  .spark i { flex:1; min-height:1px; border-radius:.5px; }
+  .chip { font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; border:1px solid var(--line-strong); border-radius:3px; padding:1.5px 6px; color:var(--ink-dim); white-space:nowrap; }
+  .chip.ok { color:var(--ink); }
+  .chip.warn { color:var(--rec); border-color:var(--rec); }
+
+  /* ---------- one recording ---------- */
+  .shead { display:flex; align-items:center; gap:16px; }
+  .back { display:flex; align-items:center; gap:7px; color:var(--ink-dim); font-size:13px; border:1px solid var(--line); border-radius:var(--r); padding:6px 12px 6px 9px; }
+  .shead .stitle { font-family:var(--disp); font-size:20px; font-weight:600; letter-spacing:-.01em; }
+  .shead .smeta { font-family:var(--mono); font-size:11.5px; color:var(--ink-faint); }
+  .shead .sacts { margin-left:auto; display:flex; gap:8px; align-items:center; }
+
+  .cols { display:grid; grid-template-columns:1.12fr .88fr; border:1px solid var(--line); border-radius:var(--r); overflow:hidden; min-height:0; }
+  .colL { padding:4px 20px 18px; background:var(--surface); overflow:hidden; }
+  .colR { border-left:1px solid var(--line); background:var(--sunken); padding:12px 16px 16px; display:flex; flex-direction:column; gap:10px; overflow:hidden; }
+  .colR .rhead { display:flex; align-items:center; gap:10px; }
+
+  .sec { margin-top:17px; }
+  .sec:first-child { margin-top:12px; }
+  .sec-lbl { display:flex; align-items:center; gap:10px; margin:0 0 8px; }
+  .sec-lbl .l { font-family:var(--mono); font-size:10.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--ink-dim); }
+  .sec-lbl .n { font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); }
+  .sec-lbl .rule { flex:1; height:1px; background:var(--line); }
+  .sec p.body { margin:0; font-size:14px; color:var(--ink-dim); }
+
+  .item { display:block; padding:10px 0; border-top:1px solid var(--line); }
+  .item:first-of-type { border-top:0; padding-top:2px; }
+  .item.active { background:var(--raised); border-radius:var(--r); box-shadow:inset 3px 0 0 var(--focus); padding-left:11px; margin-left:-11px; border-top-color:transparent; }
+  .item .txt { font-size:14px; margin:0 0 6px; }
+  .item .foot { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .ev { font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:11px; border:1px solid var(--line-strong); border-radius:3px; padding:2px 6px; color:var(--ink-dim); background:var(--sunken); }
+  .ev.you { color:var(--you); border-color:var(--you); background:var(--you-wash); }
+  .ev.remote { color:var(--remote); border-color:var(--remote); background:var(--remote-wash); }
+  .ev.on { outline:2px solid var(--focus); outline-offset:1px; }
+  .slot { font-family:var(--mono); font-size:11.5px; color:var(--ink-faint); border:1px dashed var(--line-strong); border-radius:3px; padding:1.5px 9px; }
+  .owner { font-size:12.5px; }
+  .owner b { font-weight:600; }
+  .stat { font-family:var(--mono); font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-faint); }
+
+  .turn { display:flex; gap:12px; padding:7px 0; }
+  .turn .tm { font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:11px; color:var(--ink-faint); width:56px; flex:none; padding-top:2px; }
+  .turn .who2 { width:58px; flex:none; font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase; padding-top:3px; }
+  .turn.y .who2 { color:var(--you); }
+  .turn.r .who2 { color:var(--remote); }
+  .turn .sp { font-size:13.5px; margin:0; }
+  .turn.hit { background:var(--raised); border-radius:4px; box-shadow:inset 2px 0 0 var(--focus); padding-left:9px; margin-left:-9px; }
+  mark { background:var(--you-wash); color:var(--ink); border-radius:2px; padding:0 2px; }
+
+  .stage { display:flex; align-items:center; gap:12px; padding:9px 0; border-top:1px solid var(--line); font-size:13.5px; }
+  .stage:first-child { border-top:0; }
+  .stage .mk { width:15px; flex:none; text-align:center; font-family:var(--mono); font-size:11px; color:var(--ink-faint); }
+  .stage.done .mk { color:var(--ink); }
+  .stage.now { font-weight:600; }
+  .stage .tm2 { margin-left:auto; font-family:var(--mono); font-size:11.5px; color:var(--ink-faint); }
+  .pbar { height:4px; background:var(--sunken); border-radius:2px; overflow:hidden; border:1px solid var(--line); }
+  .pbar i { display:block; height:100%; background:var(--ink); }
+
+  .mini { width:352px; background:var(--surface); border:1px solid var(--line-strong); border-radius:9px; box-shadow:0 18px 44px rgba(0,0,0,.4); padding:12px 14px; display:flex; flex-direction:column; gap:9px; }
+  .mini .r1 { display:flex; align-items:center; gap:11px; }
+  .mini .r1 .c { font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:20px; font-weight:300; }
+  .mini .r1 .sp2 { margin-left:auto; display:flex; gap:6px; }
+  .mini .ib { width:30px; height:30px; border-radius:5px; border:1px solid var(--line-strong); background:var(--raised); display:grid; place-items:center; color:var(--ink); font-size:11px; }
+
+  .pair { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .stack { display:flex; flex-direction:column; gap:14px; }
+  .frames { display:flex; gap:26px; align-items:flex-start; flex-wrap:wrap; }
+  .cap { font-family:var(--mono); font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; color:var(--ink-faint); margin:11px 0 0; }
+
+  @media (max-width:900px) {
+    .page { padding:36px 16px 64px; }
+    .cols { grid-template-columns:1fr; }
+    .rec { grid-template-columns:1fr 90px; }
+    .facts { gap:16px; }
+    .clock { font-size:34px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
+
+  /* Presentation mode: ?only=N isolates one screen and centres it for capture. */
+  body.solo { display:grid; place-content:center; min-height:100vh; }
+  body.solo .page { padding:0 40px; width:100%; }
+  body.solo .lede { display:none; }
+  body.solo .plate { display:none; margin:0; }
+  body.solo .plate.show { display:block; }
+  body.solo .plate-num { display:none; }
+</style>
+
+<div class="page">
+
+  <div class="lede">
+    <p class="eyebrow">EchoForge · interface direction · 2026-08-05</p>
+    <h1>An instrument, not a dashboard</h1>
+    <p>EchoForge records two audio tracks against one monotonic clock and refuses to state anything it can't point back to. So the interface is built around <strong>time and provenance</strong> rather than around a tidy summary card.</p>
+    <p>Colour is information, never decoration. Amber is always <strong>You</strong>, teal is always <strong>Remote</strong>, red means <strong>capture</strong> and appears nowhere else. Every timecode, duration, and byte count is set in <strong>Cascadia Mono</strong> with tabular figures; prose is <strong>Segoe UI Variable</strong>, because a native Windows utility should speak the platform's voice.</p>
+    <ul class="tokens">
+      <li class="tok"><i style="background:#F2A93B"></i><b>#F2A93B</b><span>You</span></li>
+      <li class="tok"><i style="background:#3FBFC7"></i><b>#3FBFC7</b><span>Remote</span></li>
+      <li class="tok"><i style="background:#E2453D"></i><b>#E2453D</b><span>Capture</span></li>
+      <li class="tok"><i style="background:#0D1318;border:1px solid rgba(255,255,255,.2)"></i><b>#0D1318</b><span>Ground</span></li>
+      <li class="tok"><i style="background:#E6EDF3"></i><b>#E6EDF3</b><span>Ink</span></li>
+    </ul>
+  </div>
+
+  <!-- ============ 1 ============ -->
+  <section class="plate">
+    <div class="plate-head"><span class="plate-num">01</span><h2>Ready to record</h2></div>
+    <p class="plate-note">Two device pickers showing the <em>actual negotiated format</em>, not the requested one — the plan insists the real rate and channel layout get recorded, so the UI shows it before you commit. Disk headroom is stated in hours remaining, which is what you actually need to know.</p>
+
+    <div class="win">
+      <div class="winbar"><span class="mark"></span><span class="t"><b>EchoForge</b></span><span class="wbtns"><i>—</i><i>▢</i><i>✕</i></span></div>
+      <div class="wbody">
+        <nav class="rail">
+          <span class="rbtn on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="7"/></svg></span>
+          <span class="rbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>
+          <span class="spacer"></span>
+          <span class="rbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3"/></svg></span>
+        </nav>
+        <div class="main">
+
+          <div class="strip">
+            <span style="width:11px;height:11px;border-radius:50%;border:2px solid var(--ink-faint)"></span>
+            <span class="state" style="color:var(--ink-faint)">Ready</span>
+            <span class="facts">
+              <span class="fact"><span class="k">Free space</span><span class="v">187 GB</span></span>
+              <span class="fact"><span class="k">Headroom</span><span class="v">≈ 180 hr</span></span>
+            </span>
+          </div>
+
+          <hr class="hr">
+
+          <div class="stack">
+            <div>
+              <p class="lbl" style="margin:0 0 8px">Capture from</p>
+              <div class="stack" style="gap:8px">
+                <div class="pick"><span class="dot" style="background:var(--remote)"></span><span class="nm">Headphones — Realtek(R) Audio</span><span class="fm">48 kHz · stereo · 16-bit</span><span class="chev">▾</span></div>
+                <div class="pick"><span class="dot" style="background:var(--you)"></span><span class="nm">Headset Microphone — Yeti Nano</span><span class="fm">48 kHz · mono · 16-bit</span><span class="chev">▾</span></div>
+              </div>
+            </div>
+
+            <div class="ribbon">
+              <div class="lanewrap">
+                <span class="lanetag you">You</span>
+                <div class="lane you" data-seed="0" data-flat="1"></div>
+                <span class="lanetag remote" style="top:38px">Remote</span>
+                <div class="lane remote" data-seed="1" data-flat="1"></div>
+              </div>
+              <p class="lbl" style="margin:9px 0 0; text-align:center">Both devices are open and silent — levels will appear here</p>
+            </div>
+
+            <div class="note"><span style="color:var(--ink-faint)">◆</span><span><b>Everyone in this meeting should know it's being recorded.</b> EchoForge shows a red indicator the whole time and never starts on its own.</span></div>
+
+            <div style="display:flex; align-items:center; gap:12px">
+              <button class="btn primary">Start recording</button>
+              <button class="btn ghost">Test devices</button>
+              <span style="margin-left:auto" class="mono lbl">Chunks · 60 s · PCM16 · separate tracks</span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 2 ============ -->
+  <section class="plate">
+    <div class="plate-head"><span class="plate-num">02</span><h2>Capturing</h2></div>
+    <p class="plate-note">The signature element. Two lanes over a tick ruler, drawn from real speech density, so you can see the shape of the conversation as it happens — who is talking, who has gone quiet, where the silence is. The ruler is deliberately visible: this product is <em>about</em> a monotonic clock, so it shows the clock.</p>
+
+    <div class="win">
+      <div class="winbar"><span class="mark" style="border-color:var(--rec)"></span><span class="t"><b>EchoForge</b> — recording</span><span class="wbtns"><i>—</i><i>▢</i><i>✕</i></span></div>
+      <div class="wbody">
+        <nav class="rail">
+          <span class="rbtn on"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="7"/></svg></span>
+          <span class="rbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>
+          <span class="spacer"></span>
+          <span class="rbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3"/></svg></span>
+        </nav>
+        <div class="main">
+
+          <div class="strip">
+            <span class="recdot"></span>
+            <span class="state">Recording</span>
+            <span class="clock" style="margin-left:6px">00:47<span class="ms">:12</span></span>
+            <span class="facts">
+              <span class="fact"><span class="k">Written</span><span class="v">816 MB</span></span>
+              <span class="fact"><span class="k">Rate</span><span class="v">1.04 GB/hr</span></span>
+              <span class="fact"><span class="k">Free</span><span class="v">186 GB</span></span>
+              <span class="fact"><span class="k">Chunks</span><span class="v">47 + 47</span></span>
+            </span>
+          </div>
+
+          <div class="stack" style="gap:11px">
+            <div class="meter"><span class="who lbl" style="color:var(--you)">You</span>
+              <span class="bar"><span class="fill" style="width:46%;background:var(--you)"></span><span class="peak" style="left:58%"></span><span class="ticks"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></span>
+              <span class="db mono">−14 dB</span></div>
+            <div class="meter"><span class="who lbl" style="color:var(--remote)">Remote</span>
+              <span class="bar"><span class="fill" style="width:71%;background:var(--remote)"></span><span class="peak" style="left:79%"></span><span class="ticks"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></span>
+              <span class="db mono">−6 dB</span></div>
+          </div>
+
+          <div class="ribbon">
+            <div class="ruler" data-ruler="47"></div>
+            <div class="lanewrap">
+              <span class="lanetag you">You</span>
+              <div class="lane you" data-seed="7"></div>
+              <span class="lanetag remote" style="top:38px">Remote</span>
+              <div class="lane remote" data-seed="12"></div>
+              <span class="playhead" style="right:0"></span>
+            </div>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:12px">
+            <button class="btn">Pause</button>
+            <button class="btn danger">Stop recording</button>
+            <span style="margin-left:auto" class="mono lbl">Queue 0.4 s / 5.0 s · drift +11 ms · no drops</span>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 3 ============ -->
+  <section class="plate">
+    <div class="plate-head"><span class="plate-num">03</span><h2>One device dropped</h2></div>
+    <p class="plate-note">The plan requires that a single device failure never kills the session and is never silently patched over. The dead lane flatlines in red and stays that way in the record; the healthy lane keeps drawing. Recovery is an explicit choice, and it starts a new timeline epoch rather than pretending the gap didn't happen.</p>
+
+    <div class="win">
+      <div class="winbar"><span class="mark" style="border-color:var(--rec)"></span><span class="t"><b>EchoForge</b> — recording, microphone lost</span><span class="wbtns"><i>—</i><i>▢</i><i>✕</i></span></div>
+      <div class="wbody">
+        <nav class="rail">
+          <span class="rbtn on"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="7"/></svg></span>
+          <span class="rbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>
+          <span class="spacer"></span>
+        </nav>
+        <div class="main">
+
+          <div class="banner">
+            <span class="ic">!</span>
+            <span>
+              <h4>Microphone disconnected at 00:12:40</h4>
+              <p>The system track is still recording. Everything captured before the disconnection is saved and intact.</p>
+            </span>
+            <span class="act"><button class="btn">Reconnect microphone</button></span>
+          </div>
+
+          <div class="strip">
+            <span class="recdot"></span>
+            <span class="state">Recording · degraded</span>
+            <span class="clock" style="margin-left:6px">00:18<span class="ms">:03</span></span>
+            <span class="facts">
+              <span class="fact"><span class="k">System</span><span class="v" style="color:var(--remote)">capturing</span></span>
+              <span class="fact"><span class="k">Microphone</span><span class="v" style="color:var(--rec)">lost</span></span>
+            </span>
+          </div>
+
+          <div class="stack" style="gap:11px">
+            <div class="meter"><span class="who lbl" style="color:var(--rec)">You</span>
+              <span class="bar"><span class="ticks"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></span>
+              <span class="db mono" style="color:var(--rec)">no signal</span></div>
+            <div class="meter"><span class="who lbl" style="color:var(--remote)">Remote</span>
+              <span class="bar"><span class="fill" style="width:64%;background:var(--remote)"></span><span class="peak" style="left:74%"></span><span class="ticks"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></span>
+              <span class="db mono">−8 dB</span></div>
+          </div>
+
+          <div class="ribbon">
+            <div class="ruler" data-ruler="18"></div>
+            <div class="lanewrap">
+              <span class="lanetag you" style="color:var(--rec)">You</span>
+              <div class="lane you" data-seed="3" data-dead-from="0.68"></div>
+              <span class="lanetag remote" style="top:38px">Remote</span>
+              <div class="lane remote" data-seed="9"></div>
+              <span class="playhead" style="right:0"></span>
+            </div>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:12px">
+            <button class="btn">Pause</button>
+            <button class="btn danger">Stop recording</button>
+            <span style="margin-left:auto" class="mono lbl">Epoch 1 closed at 00:12:40 · gap recorded</span>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 4 ============ -->
+  <section class="plate">
+    <div class="plate-head"><span class="plate-num">04</span><h2>Out of the way</h2></div>
+    <p class="plate-note">During an actual meeting the full window is noise. The compact recorder floats above the call, keeps the red indicator and the clock unmistakable, and still shows both meters so you can see at a glance that your microphone is live. Shown against dark and light grounds.</p>
+
+    <div class="frames">
+      <div>
+        <div class="mini">
+          <div class="r1">
+            <span class="recdot"></span>
+            <span class="c">00:47:12</span>
+            <span class="sp2">
+              <span class="ib">❙❙</span>
+              <span class="ib" style="color:var(--rec);border-color:var(--rec)">■</span>
+            </span>
+          </div>
+          <div class="meter"><span class="who lbl" style="width:52px;color:var(--you)">You</span><span class="bar" style="height:7px"><span class="fill" style="width:46%;background:var(--you)"></span></span></div>
+          <div class="meter"><span class="who lbl" style="width:52px;color:var(--remote)">Remote</span><span class="bar" style="height:7px"><span class="fill" style="width:71%;background:var(--remote)"></span></span></div>
+        </div>
+        <p class="cap">Floating recorder · always on top</p>
+      </div>
+
+      <div>
+        <div class="mini" style="background:#FFFFFF;color:#0E1720;border-color:rgba(10,20,30,.2)">
+          <div class="r1">
+            <span class="recdot" style="background:#C22C25;box-shadow:0 0 0 4px rgba(194,44,37,.1)"></span>
+            <span class="c">00:47:12</span>
+            <span class="sp2">
+              <span class="ib" style="background:#E7ECF1;border-color:rgba(10,20,30,.2);color:#0E1720">❙❙</span>
+              <span class="ib" style="background:#E7ECF1;color:#C22C25;border-color:#C22C25">■</span>
+            </span>
+          </div>
+          <div class="meter"><span class="who lbl" style="width:52px;color:#B36C10">You</span><span class="bar" style="height:7px;background:#F5F7F9;border-color:rgba(10,20,30,.11)"><span class="fill" style="width:46%;background:#B36C10"></span></span></div>
+          <div class="meter"><span class="who lbl" style="width:52px;color:#0B767E">Remote</span><span class="bar" style="height:7px;background:#F5F7F9;border-color:rgba(10,20,30,.11)"><span class="fill" style="width:71%;background:#0B767E"></span></span></div>
+        </div>
+        <p class="cap">Same control, light theme</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 5 ============ -->
+  <section class="plate">
+    <div class="plate-head"><span class="plate-num">05</span><h2>All recordings</h2></div>
+    <p class="plate-note">Browsing is its own full-width screen, not a sidebar squeezed next to a detail pane. Each row carries what you need to decide whether to open it: the shape of the conversation, what was found in it, and whether it is finished. Rows are grouped by day, and a recording <em>opens</em> — it doesn't preview in place.</p>
+
+    <div class="win">
+      <div class="winbar"><span class="mark"></span><span class="t"><b>EchoForge</b> — all recordings</span><span class="wbtns"><i>—</i><i>▢</i><i>✕</i></span></div>
+      <div class="wbody">
+        <nav class="rail">
+          <span class="rbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="7"/></svg></span>
+          <span class="rbtn on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>
+          <span class="spacer"></span>
+        </nav>
+        <div class="main" style="gap:8px">
+
+          <div style="display:flex;gap:12px;align-items:center">
+            <div class="search" style="flex:1"><span>⌕</span><span style="color:var(--ink-faint);font-size:13px">Search every recording and transcript</span></div>
+            <span class="btn ghost sm">All statuses ▾</span>
+            <span class="btn ghost sm">Newest first ▾</span>
+          </div>
+
+          <div class="grp"><span class="g">Today · 5 August</span><span class="rule2"></span><span class="lbl">2 recordings · 1h 13m</span></div>
+
+          <div class="rec sel">
+            <span><p class="ttl">Deployment planning</p><span class="sub">14:02 → 14:47 · 45m 09s · 782 MB</span></span>
+            <span class="spark" data-spark="21"></span>
+            <span class="counts"><b>4</b> actions · <b>2</b> decisions</span>
+            <span><span class="chip ok">Ready</span></span>
+            <span class="open">›</span>
+          </div>
+
+          <div class="rec">
+            <span><p class="ttl">Vendor call — Northwind</p><span class="sub">09:30 → 09:58 · 28m 41s · 498 MB</span></span>
+            <span class="spark" data-spark="5"></span>
+            <span class="counts" style="color:var(--ink-faint)">summarizing…</span>
+            <span><span class="chip">Summarizing</span></span>
+            <span class="open">›</span>
+          </div>
+
+          <div class="grp"><span class="g">Tuesday · 4 August</span><span class="rule2"></span><span class="lbl">1 recording · 1h 12m</span></div>
+
+          <div class="rec">
+            <span><p class="ttl">Design review</p><span class="sub">11:00 → 12:12 · 1h 12m · 1.3 GB</span></span>
+            <span class="spark" data-spark="33" data-gap="1"></span>
+            <span class="counts" style="color:var(--rec)">gap at 00:41</span>
+            <span><span class="chip warn">Needs attention</span></span>
+            <span class="open">›</span>
+          </div>
+
+          <div class="grp"><span class="g">Monday · 3 August</span><span class="rule2"></span><span class="lbl">2 recordings · 1h 17m</span></div>
+
+          <div class="rec">
+            <span><p class="ttl">Weekly sync</p><span class="sub">10:00 → 10:52 · 52m 18s · 901 MB</span></span>
+            <span class="spark" data-spark="14"></span>
+            <span class="counts"><b>7</b> actions · <b>3</b> decisions</span>
+            <span><span class="chip ok">Ready</span></span>
+            <span class="open">›</span>
+          </div>
+
+          <div class="rec">
+            <span><p class="ttl">1:1 with Priya</p><span class="sub">15:30 → 15:55 · 24m 55s · 431 MB</span></span>
+            <span class="spark" data-spark="41"></span>
+            <span class="counts"><b>2</b> actions · <b>1</b> decision</span>
+            <span><span class="chip ok">Ready</span></span>
+            <span class="open">›</span>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 6 ============ -->
+  <section class="plate">
+    <div class="plate-head"><span class="plate-num">06</span><h2>One recording, opened</h2></div>
+    <p class="plate-note">The recording gets the whole window and a way back. No Actions tab: the summary is one document — overview, actions, decisions, open questions, risks — because that is exactly how the summary schema stores it, and splitting it hides half the picture. The transcript sits alongside rather than behind a tab, so a claim and its evidence are visible at the same time.</p>
+
+    <div class="win">
+      <div class="winbar"><span class="mark"></span><span class="t"><b>EchoForge</b> — Deployment planning</span><span class="wbtns"><i>—</i><i>▢</i><i>✕</i></span></div>
+      <div class="wbody">
+        <div class="main" style="gap:14px">
+
+          <div class="shead">
+            <span class="back">‹ All recordings</span>
+            <span>
+              <span class="stitle">Deployment planning</span><br>
+              <span class="smeta">2026-08-05 14:02 → 14:47 · 45m 09s · transcript r2 · summary r1</span>
+            </span>
+            <span class="sacts">
+              <span class="chip ok">Ready</span>
+              <span class="btn ghost sm">Export</span>
+              <span class="btn ghost sm">Run again</span>
+              <span class="btn ghost sm">⋯</span>
+            </span>
+          </div>
+
+          <div class="ribbon">
+            <div class="ruler" data-ruler="45"></div>
+            <div class="lanewrap">
+              <span class="lanetag you">You</span>
+              <div class="lane you" data-seed="21"></div>
+              <span class="lanetag remote" style="top:38px">Remote</span>
+              <div class="lane remote" data-seed="22"></div>
+              <span class="playhead" style="left:41%"></span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px;margin-top:9px">
+              <span class="btn ghost sm">▶︎ Play</span>
+              <span class="mono" style="font-size:11.5px;color:var(--ink-dim)">18:21 / 45:09</span>
+              <span style="margin-left:auto" class="lbl">You + Remote · click the ribbon to seek</span>
+            </div>
+          </div>
+
+          <div class="cols">
+            <div class="colL">
+              <div class="sec">
+                <div class="sec-lbl"><span class="l">Overview</span><span class="rule"></span></div>
+                <p class="body">The team settled on a staged rollout behind a feature flag, with the database migration running the night before. Rollback criteria were agreed. The load-test window is still unresolved because the staging cluster is booked.</p>
+              </div>
+
+              <div class="sec">
+                <div class="sec-lbl"><span class="l">Actions</span><span class="n">4</span><span class="rule"></span><span class="lbl">Owner inference off</span></div>
+                <div class="item">
+                  <p class="txt">Prepare the deployment checklist and circulate it before Thursday's standup.</p>
+                  <span class="foot"><span class="owner"><b>Alex</b></span><span class="mono" style="font-size:11.5px">2026-08-07</span><span class="stat">Both explicit</span><span style="flex:1"></span><span class="ev remote">00:42:18</span></span>
+                </div>
+                <div class="item">
+                  <p class="txt">Book the staging cluster for a four-hour load test.</p>
+                  <span class="foot"><span class="slot">no owner stated</span><span class="slot">no date stated</span><span style="flex:1"></span><span class="ev remote">00:31:52</span></span>
+                </div>
+                <div class="item">
+                  <p class="txt">Write the rollback runbook and link it from the release ticket.</p>
+                  <span class="foot"><span class="owner"><b>You</b></span><span class="slot">no date stated</span><span style="flex:1"></span><span class="ev you">00:38:05</span></span>
+                </div>
+              </div>
+
+              <div class="sec">
+                <div class="sec-lbl"><span class="l">Decisions</span><span class="n">2</span><span class="rule"></span></div>
+                <div class="item">
+                  <p class="txt">Ship behind a feature flag, enabled for internal users first.</p>
+                  <span class="foot"><span class="stat">Explicit</span><span style="flex:1"></span><span class="ev remote">00:08:31</span><span class="ev you">00:09:04</span></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="colR">
+              <div class="rhead">
+                <span class="lbl">Transcript</span>
+                <span class="search" style="flex:1;padding:5px 9px"><span>⌕</span><span style="font-size:12.5px">Search this recording</span></span>
+              </div>
+              <div>
+                <div class="turn r"><span class="tm">00:41:52</span><span class="who2">Remote</span><p class="sp">So the flag stays off in production until we've had a clean internal day.</p></div>
+                <div class="turn y"><span class="tm">00:42:04</span><span class="who2">You</span><p class="sp">Agreed. And we should have something written down rather than doing it from memory.</p></div>
+                <div class="turn r"><span class="tm">00:42:18</span><span class="who2">Remote</span><p class="sp">Alex, can you prepare the deployment checklist and get it out before Thursday's standup?</p></div>
+                <div class="turn r"><span class="tm">00:42:31</span><span class="who2">Remote</span><p class="sp">Yeah, I'll have it in the channel by Wednesday night.</p></div>
+                <div class="turn y"><span class="tm">00:42:44</span><span class="who2">You</span><p class="sp">Perfect. I'll take the rollback runbook and link it from the ticket.</p></div>
+                <div class="turn r"><span class="tm">00:43:02</span><span class="who2">Remote</span><p class="sp">One thing we still haven't sorted is the load test — staging is booked solid this week.</p></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 7 ============ -->
+  <section class="plate">
+    <div class="plate-head"><span class="plate-num">07</span><h2>Following a claim to its source</h2></div>
+    <p class="plate-note">The reason the two panes sit side by side. Selecting an action marks it, scrolls the transcript to the exact segment that supports it, and drops a marker on the ribbon at that moment — so checking whether EchoForge got it right takes one click and no navigation. The audio is one more click from here.</p>
+
+    <div class="win">
+      <div class="winbar"><span class="mark"></span><span class="t"><b>EchoForge</b> — Deployment planning</span><span class="wbtns"><i>—</i><i>▢</i><i>✕</i></span></div>
+      <div class="wbody">
+        <div class="main" style="gap:14px">
+
+          <div class="shead">
+            <span class="back">‹ All recordings</span>
+            <span>
+              <span class="stitle">Deployment planning</span><br>
+              <span class="smeta">2026-08-05 14:02 → 14:47 · 45m 09s · transcript r2 · summary r1</span>
+            </span>
+            <span class="sacts">
+              <span class="btn ghost sm">Export</span>
+              <span class="btn ghost sm">⋯</span>
+            </span>
+          </div>
+
+          <div class="ribbon">
+            <div class="ruler" data-ruler="45"></div>
+            <div class="lanewrap">
+              <span class="lanetag you">You</span>
+              <div class="lane you" data-seed="21"></div>
+              <span class="lanetag remote" style="top:38px">Remote</span>
+              <div class="lane remote" data-seed="22"></div>
+              <span class="evmark" style="left:calc(56px + (100% - 56px) * 0.938)"></span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px;margin-top:9px">
+              <span class="btn ghost sm">▶︎ Play from 00:42:18</span>
+              <span class="mono" style="font-size:11.5px;color:var(--ink-dim)">Remote track</span>
+              <span style="margin-left:auto" class="lbl">Evidence for the selected action</span>
+            </div>
+          </div>
+
+          <div class="cols">
+            <div class="colL">
+              <div class="sec">
+                <div class="sec-lbl"><span class="l">Actions</span><span class="n">4</span><span class="rule"></span></div>
+                <div class="item active">
+                  <p class="txt">Prepare the deployment checklist and circulate it before Thursday's standup.</p>
+                  <span class="foot"><span class="owner"><b>Alex</b></span><span class="stat">Owner · explicit</span><span class="mono" style="font-size:11.5px">2026-08-07</span><span class="stat">Date · explicit</span><span style="flex:1"></span><span class="ev remote on">00:42:18</span></span>
+                </div>
+                <div class="item">
+                  <p class="txt">Book the staging cluster for a four-hour load test.</p>
+                  <span class="foot"><span class="slot">no owner stated</span><span class="slot">no date stated</span><span style="flex:1"></span><span class="ev remote">00:31:52</span></span>
+                </div>
+                <div class="item">
+                  <p class="txt">Write the rollback runbook and link it from the release ticket.</p>
+                  <span class="foot"><span class="owner"><b>You</b></span><span class="slot">no date stated</span><span style="flex:1"></span><span class="ev you">00:38:05</span></span>
+                </div>
+                <div class="item">
+                  <p class="txt">Ask Priya whether the vendor contract covers the extra region. <span class="stat" style="border:1px dashed var(--line-strong);border-radius:3px;padding:1px 6px;margin-left:4px">Inferred</span></p>
+                  <span class="foot"><span class="slot">no owner stated</span><span class="slot">no date stated</span><span style="flex:1"></span><span class="ev remote">00:44:09</span></span>
+                </div>
+                <div class="note" style="margin-top:12px"><span style="color:var(--ink-faint)">◆</span><span><b>Two owners and three dates were left blank</b> because the meeting never stated them. Inferred items are never promoted to explicit.</span></div>
+              </div>
+            </div>
+
+            <div class="colR">
+              <div class="rhead">
+                <span class="lbl">Transcript</span>
+                <span class="mono" style="margin-left:auto;font-size:11px;color:var(--focus)">jumped to 00:42:18</span>
+              </div>
+              <div>
+                <div class="turn r" style="opacity:.5"><span class="tm">00:41:52</span><span class="who2">Remote</span><p class="sp">So the flag stays off in production until we've had a clean internal day.</p></div>
+                <div class="turn y" style="opacity:.5"><span class="tm">00:42:04</span><span class="who2">You</span><p class="sp">Agreed. And we should have something written down rather than doing it from memory.</p></div>
+                <div class="turn r hit"><span class="tm">00:42:18</span><span class="who2">Remote</span><p class="sp">Alex, can you prepare the deployment <mark>checklist</mark> and get it out before Thursday's standup?</p></div>
+                <div class="turn r"><span class="tm">00:42:31</span><span class="who2">Remote</span><p class="sp">Yeah, I'll have it in the channel by Wednesday night.</p></div>
+                <div class="turn y" style="opacity:.5"><span class="tm">00:42:44</span><span class="who2">You</span><p class="sp">Perfect. I'll take the rollback runbook and link it from the ticket.</p></div>
+                <div class="turn r" style="opacity:.5"><span class="tm">00:43:02</span><span class="who2">Remote</span><p class="sp">One thing we still haven't sorted is the load test — staging is booked solid this week.</p></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 8 ============ -->
+  <section class="plate">
+    <div class="plate-head"><span class="plate-num">08</span><h2>Processing, and falling back</h2></div>
+    <p class="plate-note">Stages are named in the user's terms and carry real elapsed times. When the GPU path fails, the notice says what happened, what EchoForge switched to, and what it will cost you — the plan forbids a silent profile change, so the fallback is a statement, not a spinner.</p>
+
+    <div class="win">
+      <div class="winbar"><span class="mark"></span><span class="t"><b>EchoForge</b> — Vendor call · processing</span><span class="wbtns"><i>—</i><i>▢</i><i>✕</i></span></div>
+      <div class="wbody">
+        <nav class="rail">
+          <span class="rbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="7"/></svg></span>
+          <span class="rbtn on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>
+          <span class="spacer"></span>
+        </nav>
+        <div class="main">
+
+          <div class="banner" style="border-color:var(--line-strong);background:var(--raised)">
+            <span class="ic" style="color:var(--ink-dim)">i</span>
+            <span>
+              <h4>Graphics card ran out of memory — switched to the processor</h4>
+              <p>Transcription restarted on the CPU with the <span class="mono">small</span> model. This run will take roughly 40 minutes instead of 6. Your recording is untouched.</p>
+            </span>
+            <span class="act"><button class="btn ghost">Stop and keep audio</button></span>
+          </div>
+
+          <div class="pair">
+            <div class="card pad">
+              <p class="lbl" style="margin:0 0 12px">Transcribe</p>
+              <div class="stage done"><span class="mk">✓</span><span>Check recorded chunks</span><span class="tm2">0:04</span></div>
+              <div class="stage done"><span class="mk">✓</span><span>Prepare audio for recognition</span><span class="tm2">1:12</span></div>
+              <div class="stage now"><span class="mk">▸</span><span>Transcribe You</span><span class="tm2">6:38</span></div>
+              <div class="stage"><span class="mk">·</span><span>Transcribe Remote</span><span class="tm2">—</span></div>
+              <div class="stage"><span class="mk">·</span><span>Merge onto the timeline</span><span class="tm2">—</span></div>
+              <div style="margin-top:14px" class="pbar"><i style="width:38%"></i></div>
+              <p class="mono" style="font-size:11.5px;color:var(--ink-dim);margin:9px 0 0">Window 7 of 18 · about 34 min left</p>
+            </div>
+
+            <div class="card pad">
+              <p class="lbl" style="margin:0 0 12px">Summarize</p>
+              <div class="stage"><span class="mk">·</span><span>Split the transcript</span><span class="tm2">—</span></div>
+              <div class="stage"><span class="mk">·</span><span>Pull out facts, chunk by chunk</span><span class="tm2">—</span></div>
+              <div class="stage"><span class="mk">·</span><span>Check every claim against the transcript</span><span class="tm2">—</span></div>
+              <div class="stage"><span class="mk">·</span><span>Merge duplicates</span><span class="tm2">—</span></div>
+              <div class="stage"><span class="mk">·</span><span>Write the summary</span><span class="tm2">—</span></div>
+              <div style="margin-top:14px" class="pbar"><i style="width:0%"></i></div>
+              <p class="mono" style="font-size:11.5px;color:var(--ink-dim);margin:9px 0 0">Waiting — the transcript has to finish first</p>
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:12px">
+            <button class="btn ghost">Cancel</button>
+            <span class="mono lbl" style="margin-left:auto">Gemma 4 12B · Q4 · 32K context · unloads speech model first</span>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+  // Capture helpers: ?only=N shows a single screen, ?theme= pins the palette.
+  (function () {
+    const q = new URLSearchParams(location.search);
+    const theme = q.get('theme');
+    if (theme) document.documentElement.setAttribute('data-theme', theme);
+    const only = q.get('only');
+    if (only) {
+      document.body.classList.add('solo');
+      const target = document.querySelectorAll('.plate')[+only - 1];
+      if (target) target.classList.add('show');
+    }
+  })();
+
+  // Deterministic pseudo-random so the mockups look identical on every redeploy.
+  function lcg(seed) { let s = seed * 9301 + 49297; return () => { s = (s * 9301 + 49297) % 233280; return s / 233280; }; }
+
+  // Speech density: bursts of talking separated by listening. Reads like a conversation, not noise.
+  function density(rand, n, talkiness) {
+    const out = []; let i = 0;
+    while (i < n) {
+      const talking = rand() < talkiness;
+      const run = Math.max(1, Math.round((talking ? 5 : 4) * (0.4 + rand() * 1.6)));
+      for (let k = 0; k < run && i < n; k++, i++) out.push(talking ? 0.3 + rand() * 0.7 : rand() * 0.06);
+    }
+    return out;
+  }
+
+  document.querySelectorAll('.lane').forEach(lane => {
+    const rand = lcg((+lane.dataset.seed || 1) + 1);
+    const n = 96;
+    const flat = lane.dataset.flat === '1';
+    const talkiness = lane.classList.contains('you') ? 0.36 : 0.54;
+    const vals = flat ? new Array(n).fill(0.015) : density(rand, n, talkiness);
+    const deadFrom = lane.dataset.deadFrom ? Math.floor(n * +lane.dataset.deadFrom) : -1;
+
+    vals.forEach((v, idx) => {
+      if (deadFrom >= 0 && idx >= deadFrom) { const d = document.createElement('span'); d.className = 'dead'; lane.appendChild(d); return; }
+      const b = document.createElement('span');
+      b.className = 'bx';
+      b.style.height = Math.max(1, Math.round(v * 34)) + 'px';
+      b.style.opacity = v < 0.1 ? 0.3 : 0.55 + v * 0.45;
+      lane.appendChild(b);
+    });
+  });
+
+  // Tick ruler: minor tick each minute, major + label every few.
+  document.querySelectorAll('.ruler').forEach(r => {
+    const mins = +r.dataset.ruler || 45;
+    const step = mins > 30 ? 5 : mins > 12 ? 2 : 1;
+    for (let m = 0; m <= mins; m++) {
+      const major = m % step === 0;
+      const t = document.createElement('span');
+      t.className = 'tk' + (major ? ' maj' : '');
+      t.style.left = 'calc(56px + (100% - 56px) * ' + (m / mins) + ')';
+      r.appendChild(t);
+      // Keep the last label clear of the playhead at the right edge.
+      if (major && (mins - m) / mins > 0.07) {
+        const c = document.createElement('span');
+        c.className = 'cap';
+        c.style.left = 'calc(56px + (100% - 56px) * ' + (m / mins) + ')';
+        c.textContent = String(m).padStart(2, '0') + ':00';
+        r.appendChild(c);
+      }
+    }
+  });
+
+  // Library sparklines reuse the same density function at a smaller scale.
+  document.querySelectorAll('.spark').forEach(s => {
+    const rand = lcg((+s.dataset.spark || 3) + 5);
+    const n = 44;
+    const you = density(rand, n, 0.34), rem = density(rand, n, 0.5);
+    const gap = s.dataset.gap === '1';
+    for (let i = 0; i < n; i++) {
+      const b = document.createElement('i');
+      if (gap && i > 26 && i < 32) {
+        b.style.height = '18px';
+        b.style.background = 'repeating-linear-gradient(135deg,transparent 0 3px,rgba(140,160,175,.3) 3px 4px)';
+      } else {
+        const y = you[i], r = rem[i], v = Math.max(y, r);
+        b.style.height = Math.max(1, Math.round(v * 18)) + 'px';
+        b.style.background = y > r ? 'var(--you)' : 'var(--remote)';
+        b.style.opacity = v < 0.12 ? 0.25 : 0.5 + v * 0.5;
+      }
+      s.appendChild(b);
+    }
+  });
+</script>

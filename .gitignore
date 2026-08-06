@@ -42,6 +42,9 @@ runtime/
 tests/corpus/
 tests/fixtures/private/
 
+# ---- Local machine settings ----
+.claude/settings.local.json
+
 # ---- Secrets ----
 *.pfx
 *.snk
