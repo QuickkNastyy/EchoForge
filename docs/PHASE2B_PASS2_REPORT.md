@@ -137,23 +137,51 @@ still takes priority, and nothing slow runs on the UI thread.
 | `scripts/lock-worker-runtime.ps1 -Check` | manifest matches a fresh resolution |
 | `scripts/install-worker-runtime.ps1` | production environment installs offline and imports |
 | Application launch | window opens with backend, profile, language, and glossary controls |
+| `scripts/smoke-production-backend.ps1` | **PASSED** on GPU `int8_float16`, no fallback |
+
+## Production smoke test — run, and passed
+
+The pinned 1.6 GB model was downloaded and its SHA-256 matched
+`e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da` exactly — the first
+independent confirmation of the one digest in the manifest that had been taken from the
+publisher's LFS metadata rather than re-computed locally. That entry is now locally verified too.
+
+`scripts/smoke-production-backend.ps1` then re-hashed all five model files, assembled the model
+directory, and drove the real backend over two windows with a five-second overlap:
+
+```
+faster-whisper stack: {'faster_whisper': '1.2.1', 'ctranslate2': '4.8.1'}
+CUDA devices visible to CTranslate2: 1
+requested profile: cuda-int8-float16
+actual profile:   cuda-int8-float16 (cuda, int8_float16, batch 8)
+fell back:        False
+attempts:         ['cuda-int8-float16 (cuda, int8_float16, batch 8): ok']
+windows run:      2
+segments:         0
+model:            0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf / int8_float16 / recognises speech: True
+```
+
+The pinned weights load from the verified directory with the Hub switched off, CTranslate2
+executes them on this GPU, and the requested profile was honoured with no fallback.
+
+**Zero segments is the correct result and the substantive assertion.** The fixture is a quiet
+synthetic tone, not speech. A recogniser that returned words for it would be hallucinating —
+precisely what the VAD filter exists to prevent, and precisely what the architecture plan warns
+Whisper does around silence. Getting nothing back is the model behaving.
 
 ## Remaining Phase 2 limitation
 
-**The end-to-end production smoke test against the real 1.6 GB model has not been run in this
-session.** `scripts/smoke-production-backend.ps1` and `scripts/smoke_production_backend.py` exist
-and will run it: they assemble the model directory from verified artifacts, refuse if anything is
-missing or mismatched, and drive the real backend over a two-window fixture with a five-second
-overlap, asserting the compute outcome and that every timestamp is well formed.
+**Recognition accuracy is not measured and is not claimed.** The smoke test proves the machinery,
+not the transcription quality: no real speech has been put through this pipeline. The plan's STT
+evaluation — word and name accuracy, timestamp accuracy, You/Remote attribution, hallucination on
+silence and music, and the turbo-versus-large-v3-versus-CPU comparison — needs recorded meetings
+with corrected reference transcripts. That is a corpus task and a separate gate; no synthetic
+fixture can stand in for it.
 
-The model download was still in progress when this pass closed. Everything else in the production
-path is exercised by tests; what remains unproven on this machine is specifically that the pinned
-weights load and CTranslate2 executes them here. Run:
+Two smaller items remain open, both deliberate:
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke-production-backend.ps1
-```
-
-Accuracy is a separate matter and is not claimed. The plan's STT evaluation — word and name
-accuracy, timestamp accuracy, hallucination on silence and music — needs real recorded meetings and
-is a Phase 3 gate, not something a synthetic fixture can establish.
+- **NVIDIA CUDA and cuDNN are unpinned.** The GPU path works here on a system-installed runtime,
+  and falls back with a recorded reason where there is not one. Redistribution needs the Phase 6
+  licence review.
+- **The GPU profiles resolve to the same artifact set as `cpu-int8`**, since the wheels and model
+  are shared and only the system CUDA runtime differs.
