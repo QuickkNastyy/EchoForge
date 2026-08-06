@@ -1,0 +1,20 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>EchoForge.App</RootNamespace>
+    <UseWPF>true</UseWPF>
+    <!-- NotifyIcon is the mature tray API on Windows; a tiny WinForms adapter is cheaper
+         than a hand-rolled shell notification wrapper. -->
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EchoForge.Contracts\EchoForge.Contracts.csproj" />
+    <ProjectReference Include="..\EchoForge.Core\EchoForge.Core.csproj" />
+    <ProjectReference Include="..\EchoForge.Audio.Windows\EchoForge.Audio.Windows.csproj" />
+    <ProjectReference Include="..\EchoForge.Infrastructure\EchoForge.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

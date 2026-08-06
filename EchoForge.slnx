@@ -3,6 +3,7 @@
     <Project Path="poc/EchoForge.AudioCapture.Poc/EchoForge.AudioCapture.Poc.csproj" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/EchoForge.App/EchoForge.App.csproj" />
     <Project Path="src/EchoForge.Audio.Windows/EchoForge.Audio.Windows.csproj" />
     <Project Path="src/EchoForge.Contracts/EchoForge.Contracts.csproj" />
     <Project Path="src/EchoForge.Core/EchoForge.Core.csproj" />

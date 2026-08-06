@@ -7,7 +7,12 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <AnalysisLevel>latest-recommended</AnalysisLevel>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!--
+      Globalization-invariant mode is deliberately OFF. WPF needs real culture data for font
+      fallback and text layout, and the app formats dates and durations for the user's locale.
+      Machine-readable values are written with InvariantCulture explicitly at each call site.
+    -->
+    <InvariantGlobalization>false</InvariantGlobalization>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <Deterministic>true</Deterministic>
     <NeutralLanguage>en-US</NeutralLanguage>

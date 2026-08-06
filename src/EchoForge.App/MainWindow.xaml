@@ -1,0 +1,190 @@
+<Window x:Class="EchoForge.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="EchoForge" Height="560" Width="880" MinHeight="500" MinWidth="720"
+        Background="{StaticResource Surface}"
+        FontFamily="{StaticResource UiFont}"
+        WindowStartupLocation="CenterScreen">
+
+  <Window.Resources>
+    <BooleanToVisibilityConverter x:Key="BoolToVis" />
+  </Window.Resources>
+
+  <Grid Margin="26,20,26,22">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <!-- Status strip: the red dot is bound only to live capture state. -->
+    <Grid Grid.Row="0" Margin="0,0,0,14">
+      <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+        <Ellipse Width="12" Height="12" Fill="{StaticResource Rec}" VerticalAlignment="Center"
+                 Visibility="{Binding IndicatorVisible, Converter={StaticResource BoolToVis}}" />
+        <Ellipse Width="12" Height="12" Stroke="{StaticResource InkFaint}" StrokeThickness="2"
+                 VerticalAlignment="Center">
+          <Ellipse.Style>
+            <Style TargetType="Ellipse">
+              <Setter Property="Visibility" Value="Visible" />
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding IndicatorVisible}" Value="True">
+                  <Setter Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+              </Style.Triggers>
+            </Style>
+          </Ellipse.Style>
+        </Ellipse>
+
+        <TextBlock Text="{Binding StatusHeadline}" Margin="12,0,0,0" VerticalAlignment="Center"
+                   FontFamily="{StaticResource DataFont}" FontSize="11" Foreground="{StaticResource InkDim}">
+          <TextBlock.Style>
+            <Style TargetType="TextBlock">
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding IsRecording}" Value="True">
+                  <Setter Property="Foreground" Value="{StaticResource Rec}" />
+                </DataTrigger>
+              </Style.Triggers>
+            </Style>
+          </TextBlock.Style>
+        </TextBlock>
+
+        <TextBlock Text="{Binding Elapsed}" Margin="18,0,0,0" VerticalAlignment="Center"
+                   FontFamily="{StaticResource DataFont}" FontSize="40" FontWeight="Light"
+                   Foreground="{StaticResource Ink}" />
+      </StackPanel>
+
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+        <StackPanel Margin="0,0,26,0">
+          <TextBlock Text="CHUNKS" Style="{StaticResource Label}" HorizontalAlignment="Right" />
+          <TextBlock Text="{Binding ChunkSummary}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
+        </StackPanel>
+        <StackPanel Margin="0,0,26,0">
+          <TextBlock Text="RATE" Style="{StaticResource Label}" HorizontalAlignment="Right" />
+          <TextBlock Text="{Binding StorageRate}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
+        </StackPanel>
+        <StackPanel>
+          <TextBlock Text="DISK" Style="{StaticResource Label}" HorizontalAlignment="Right" />
+          <TextBlock Text="{Binding FreeSpace}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
+        </StackPanel>
+      </StackPanel>
+    </Grid>
+
+    <!-- Degraded / recovery notice -->
+    <Border Grid.Row="1" Margin="0,0,0,14" CornerRadius="6" Padding="14,11"
+            Background="#221518" BorderBrush="{StaticResource Rec}" BorderThickness="1"
+            Visibility="{Binding HasNotice, Converter={StaticResource BoolToVis}}">
+      <TextBlock Text="{Binding Notice}" TextWrapping="Wrap" Foreground="{StaticResource Ink}" />
+    </Border>
+
+    <!-- Device selection. Disabled while recording: endpoints are pinned for the session. -->
+    <StackPanel Grid.Row="2" Margin="0,0,0,16" IsEnabled="{Binding DevicesEditable}">
+      <TextBlock Text="CAPTURE FROM" Style="{StaticResource Label}" Margin="0,0,0,8" />
+
+      <Grid Margin="0,0,0,8">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="14" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Ellipse Grid.Column="0" Width="8" Height="8" Fill="{StaticResource Remote}" VerticalAlignment="Center" />
+        <ComboBox Grid.Column="1" ItemsSource="{Binding RenderDevices}" SelectedItem="{Binding SelectedRender}"
+                  DisplayMemberPath="FriendlyName" />
+      </Grid>
+
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="14" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Ellipse Grid.Column="0" Width="8" Height="8" Fill="{StaticResource You}" VerticalAlignment="Center" />
+        <ComboBox Grid.Column="1" ItemsSource="{Binding CaptureDevices}" SelectedItem="{Binding SelectedCapture}"
+                  DisplayMemberPath="FriendlyName" />
+      </Grid>
+    </StackPanel>
+
+    <!-- Level meters, coloured by track and by track alone. -->
+    <StackPanel Grid.Row="3" Margin="0,0,0,16">
+      <Grid Margin="0,0,0,9">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="130" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <TextBlock Grid.Column="0" Text="{Binding YouCaption}" Style="{StaticResource Label}"
+                   Foreground="{StaticResource You}" VerticalAlignment="Center" />
+        <ProgressBar Grid.Column="1" Style="{StaticResource Meter}"
+                     Foreground="{StaticResource You}" Value="{Binding YouLevel, Mode=OneWay}" />
+      </Grid>
+
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="130" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <TextBlock Grid.Column="0" Text="{Binding RemoteCaption}" Style="{StaticResource Label}"
+                   Foreground="{StaticResource Remote}" VerticalAlignment="Center" />
+        <ProgressBar Grid.Column="1" Style="{StaticResource Meter}"
+                     Foreground="{StaticResource Remote}" Value="{Binding RemoteLevel, Mode=OneWay}" />
+      </Grid>
+    </StackPanel>
+
+    <!-- Consent. EchoForge never starts on its own. -->
+    <Border Grid.Row="4" VerticalAlignment="Top" CornerRadius="6" Padding="14,12"
+            Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+      <StackPanel>
+        <TextBlock Text="Everyone in this meeting should know it's being recorded."
+                   FontWeight="SemiBold" TextWrapping="Wrap" />
+        <TextBlock Margin="0,5,0,0" TextWrapping="Wrap" Foreground="{StaticResource InkDim}"
+                   Text="EchoForge shows a red indicator the whole time and never starts on its own. Recording law varies by jurisdiction and by where each participant is; obtaining consent is your responsibility." />
+        <TextBlock Margin="0,9,0,0" Style="{StaticResource Label}" Text="{Binding QueueSummary}" />
+      </StackPanel>
+    </Border>
+
+    <!-- Controls -->
+    <StackPanel Grid.Row="5" Orientation="Horizontal" Margin="0,16,0,0">
+      <Button Content="Start recording" Command="{Binding StartCommand}" Margin="0,0,10,0">
+        <Button.Style>
+          <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+            <Style.Triggers>
+              <DataTrigger Binding="{Binding IsRecording}" Value="True">
+                <Setter Property="Visibility" Value="Collapsed" />
+              </DataTrigger>
+              <DataTrigger Binding="{Binding IsPaused}" Value="True">
+                <Setter Property="Visibility" Value="Collapsed" />
+              </DataTrigger>
+            </Style.Triggers>
+          </Style>
+        </Button.Style>
+      </Button>
+
+      <Button Content="Pause" Command="{Binding PauseCommand}" Margin="0,0,10,0"
+              Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}" />
+
+      <Button Content="Resume" Style="{StaticResource PrimaryButton}" Command="{Binding ResumeCommand}"
+              Margin="0,0,10,0" Visibility="{Binding IsPaused, Converter={StaticResource BoolToVis}}" />
+
+      <Button Content="Stop recording" Command="{Binding StopCommand}" Margin="0,0,10,0">
+        <Button.Style>
+          <Style TargetType="Button" BasedOn="{StaticResource DangerButton}">
+            <Setter Property="Visibility" Value="Collapsed" />
+            <Style.Triggers>
+              <DataTrigger Binding="{Binding IsRecording}" Value="True">
+                <Setter Property="Visibility" Value="Visible" />
+              </DataTrigger>
+              <DataTrigger Binding="{Binding IsPaused}" Value="True">
+                <Setter Property="Visibility" Value="Visible" />
+              </DataTrigger>
+            </Style.Triggers>
+          </Style>
+        </Button.Style>
+      </Button>
+
+      <Button Content="Refresh devices" Command="{Binding RefreshDevicesCommand}" />
+
+      <TextBlock Style="{StaticResource Label}" VerticalAlignment="Center" Margin="18,0,0,0"
+                 Text="Chunks · 60 s · PCM16 · separate tracks" />
+    </StackPanel>
+  </Grid>
+</Window>

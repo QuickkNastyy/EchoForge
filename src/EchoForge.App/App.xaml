@@ -1,0 +1,206 @@
+<Application x:Class="EchoForge.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ShutdownMode="OnMainWindowClose">
+  <Application.Resources>
+
+    <!--
+      Colour is information, never decoration. Amber is always You, teal is always Remote,
+      red means capture and appears nowhere else. Everything else is achromatic graphite.
+    -->
+    <SolidColorBrush x:Key="Ground"   Color="#0D1318" />
+    <SolidColorBrush x:Key="Surface"  Color="#141C23" />
+    <SolidColorBrush x:Key="Raised"   Color="#1D2831" />
+    <SolidColorBrush x:Key="Sunken"   Color="#0A1015" />
+    <SolidColorBrush x:Key="Line"     Color="#26313B" />
+    <SolidColorBrush x:Key="Ink"      Color="#E6EDF3" />
+    <SolidColorBrush x:Key="InkDim"   Color="#8496A6" />
+    <SolidColorBrush x:Key="InkFaint" Color="#5B6C7B" />
+    <SolidColorBrush x:Key="You"      Color="#F2A93B" />
+    <SolidColorBrush x:Key="Remote"   Color="#3FBFC7" />
+    <SolidColorBrush x:Key="Rec"      Color="#E2453D" />
+
+    <FontFamily x:Key="UiFont">Segoe UI Variable Text, Segoe UI</FontFamily>
+    <FontFamily x:Key="DataFont">Cascadia Mono, Consolas</FontFamily>
+
+    <Style TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+      <Setter Property="FontSize" Value="13" />
+    </Style>
+
+    <Style x:Key="Label" TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="{StaticResource DataFont}" />
+      <Setter Property="FontSize" Value="10.5" />
+      <Setter Property="Foreground" Value="{StaticResource InkFaint}" />
+      <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+    </Style>
+
+    <Style x:Key="Data" TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="{StaticResource DataFont}" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+    </Style>
+
+    <Style TargetType="Button">
+      <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+      <Setter Property="Background" Value="{StaticResource Raised}" />
+      <Setter Property="BorderBrush" Value="{StaticResource Line}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Padding" Value="16,8" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Chrome" CornerRadius="6"
+                    Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}">
+              <!-- The implicit TextBlock style would otherwise paint this near-white,
+                   which is invisible on the light primary button. -->
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                Margin="{TemplateBinding Padding}"
+                                TextElement.Foreground="{TemplateBinding Foreground}" />
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Chrome" Property="Background" Value="#26313B" />
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.4" />
+                <Setter Property="Cursor" Value="Arrow" />
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Chrome" Property="BorderBrush" Value="#9CC4F0" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="Background" Value="{StaticResource Ink}" />
+      <Setter Property="Foreground" Value="#0D1318" />
+      <Setter Property="BorderBrush" Value="{StaticResource Ink}" />
+    </Style>
+
+    <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="{StaticResource Rec}" />
+      <Setter Property="BorderBrush" Value="{StaticResource Rec}" />
+    </Style>
+
+    <!-- Level meter. Foreground is set per track so colour keeps meaning who is speaking. -->
+    <Style x:Key="Meter" TargetType="ProgressBar">
+      <Setter Property="Minimum" Value="0" />
+      <Setter Property="Maximum" Value="1" />
+      <Setter Property="Height" Value="10" />
+      <Setter Property="Background" Value="{StaticResource Sunken}" />
+      <Setter Property="BorderBrush" Value="{StaticResource Line}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ProgressBar">
+            <Border CornerRadius="2"
+                    Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}">
+              <Grid Margin="1">
+                <Rectangle x:Name="PART_Track" />
+                <Rectangle x:Name="PART_Indicator" HorizontalAlignment="Left"
+                           RadiusX="1" RadiusY="1" Fill="{TemplateBinding Foreground}" />
+              </Grid>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!--
+      A minimal ComboBox template. The stock Windows chrome ignores Background on the closed
+      state, which left a white bar carrying near-white text.
+    -->
+    <Style TargetType="ComboBoxItem">
+      <Setter Property="Background" Value="{StaticResource Raised}" />
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+      <Setter Property="Padding" Value="10,7" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ComboBoxItem">
+            <Border x:Name="Row" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+              <ContentPresenter TextElement.Foreground="{TemplateBinding Foreground}" />
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsHighlighted" Value="True">
+                <Setter TargetName="Row" Property="Background" Value="#2C3A46" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style TargetType="ComboBox">
+      <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Padding" Value="10,7" />
+      <Setter Property="Background" Value="{StaticResource Raised}" />
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+      <Setter Property="BorderBrush" Value="{StaticResource Line}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ComboBox">
+            <Grid>
+              <ToggleButton x:Name="Toggle" Focusable="False" ClickMode="Press"
+                            IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                <ToggleButton.Template>
+                  <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="Chrome" CornerRadius="6"
+                            Background="{StaticResource Raised}"
+                            BorderBrush="{StaticResource Line}" BorderThickness="1">
+                      <Path HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0"
+                            Data="M 0 0 L 4 4 L 8 0 Z" Fill="{StaticResource InkFaint}" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                      <Trigger Property="IsMouseOver" Value="True">
+                        <Setter TargetName="Chrome" Property="Background" Value="#26313B" />
+                      </Trigger>
+                    </ControlTemplate.Triggers>
+                  </ControlTemplate>
+                </ToggleButton.Template>
+              </ToggleButton>
+
+              <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center"
+                                HorizontalAlignment="Left" IsHitTestVisible="False"
+                                Content="{TemplateBinding SelectionBoxItem}"
+                                ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                TextElement.Foreground="{TemplateBinding Foreground}" />
+
+              <Popup x:Name="PART_Popup" AllowsTransparency="True" Placement="Bottom"
+                     IsOpen="{TemplateBinding IsDropDownOpen}" PopupAnimation="Slide">
+                <Border Background="{StaticResource Surface}" BorderBrush="{StaticResource Line}"
+                        BorderThickness="1" CornerRadius="6"
+                        MinWidth="{TemplateBinding ActualWidth}" MaxHeight="280">
+                  <ScrollViewer>
+                    <ItemsPresenter />
+                  </ScrollViewer>
+                </Border>
+              </Popup>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.45" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+  </Application.Resources>
+</Application>
