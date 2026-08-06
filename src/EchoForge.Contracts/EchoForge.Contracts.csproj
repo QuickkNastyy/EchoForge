@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>EchoForge.Contracts</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    Contracts must not reference WPF, NAudio, SQLite, Python, or inference runtimes.
+    It has no package references by design.
+  -->
+
+</Project>

@@ -326,7 +326,7 @@ Transcription and summarization each have independent `not_requested / queued / 
 
 ~~~text
 C:\EchoForge\
-├─ EchoForge.sln
+├─ EchoForge.slnx
 ├─ global.json
 ├─ Directory.Build.props
 ├─ Directory.Packages.props
@@ -895,9 +895,9 @@ Artifact pinning
   fails the build on a branch name or a missing filename.
 
 Development commands after scaffolding
-  dotnet restore EchoForge.sln
-  dotnet build EchoForge.sln -c Debug -warnaserror
-  dotnet test EchoForge.sln -c Debug
+  dotnet restore EchoForge.slnx
+  dotnet build EchoForge.slnx -c Debug -warnaserror
+  dotnet test EchoForge.slnx -c Debug
   uv sync --project worker --locked
   uv run --project worker pytest worker_tests
   dotnet run --project poc\EchoForge.AudioCapture.Poc
@@ -912,7 +912,7 @@ Inno compilation. Pin SDK/package/runtime/model versions; do not use floating al
 
 First files to create
 1. global.json, Directory.Build.props, Directory.Packages.props, .gitignore, README.md.
-2. EchoForge.sln and the Contracts, Core, Audio.Windows, POC, and test projects.
+2. EchoForge.slnx and the Contracts, Core, Audio.Windows, POC, and test projects.
 3. schemas\session.schema.json and the minimal session/audio DTOs.
 4. IAudioDeviceCatalog, IAudioRecorder, CaptureEpoch, AudioChunkMetadata.
 5. POC device enumeration, dual capture, chunk writer, journal, validation report.

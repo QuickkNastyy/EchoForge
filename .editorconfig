@@ -1,0 +1,26 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+indent_style = space
+trim_trailing_whitespace = true
+
+[*.{cs,csproj,props,targets}]
+indent_size = 4
+
+[*.{json,yml,yaml,md}]
+indent_size = 2
+
+[*.cs]
+# CA1711 reserves suffixes such as Queue, Stack, and Stream to prevent implying a base
+# type. EchoForge's BoundedAudioQueue really is a queue and is named for what it does, so
+# the rule is off repo-wide rather than suppressed one type at a time.
+dotnet_diagnostic.CA1711.severity = none
+
+# Style preferences that would otherwise fail the warnings-as-errors build without
+# saying anything about correctness.
+csharp_using_directive_placement = outside_namespace:silent
+csharp_style_namespace_declarations = file_scoped:suggestion
+dotnet_diagnostic.IDE0055.severity = suggestion

@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>EchoForge.Audio.Windows</RootNamespace>
+    <!-- The packet converter reads the engine's buffer pointer directly. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Tests forge a half-written chunk to prove the repair path. -->
+    <InternalsVisibleTo Include="EchoForge.UnitTests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EchoForge.Contracts\EchoForge.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

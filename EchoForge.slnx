@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/poc/">
+    <Project Path="poc/EchoForge.AudioCapture.Poc/EchoForge.AudioCapture.Poc.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/EchoForge.Audio.Windows/EchoForge.Audio.Windows.csproj" />
+    <Project Path="src/EchoForge.Contracts/EchoForge.Contracts.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/EchoForge.UnitTests/EchoForge.UnitTests.csproj" />
+  </Folder>
+</Solution>
