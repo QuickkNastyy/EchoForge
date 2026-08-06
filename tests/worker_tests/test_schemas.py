@@ -12,26 +12,26 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import hello_line, run_worker, simple_session, start_job_line
+from conftest import REPO_ROOT, hello_line, run_worker, simple_session, start_job_line
 from jsonschema import Draft202012Validator, ValidationError
 
 
-@pytest.fixture(scope="module")
-def transcript_validator(request) -> Draft202012Validator:
-    schema = json.loads(
-        (Path(request.config.rootdir) / "schemas" / "transcript.schema.json").read_text("utf-8")
-    )
+def _validator(name: str) -> Draft202012Validator:
+    # Resolved from this file's own location rather than pytest's rootdir, which moves
+    # depending on where the run was started from.
+    schema = json.loads((REPO_ROOT / "schemas" / name).read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     return Draft202012Validator(schema)
 
 
 @pytest.fixture(scope="module")
-def protocol_validator(request) -> Draft202012Validator:
-    schema = json.loads(
-        (Path(request.config.rootdir) / "schemas" / "worker-protocol.schema.json").read_text("utf-8")
-    )
-    Draft202012Validator.check_schema(schema)
-    return Draft202012Validator(schema)
+def transcript_validator() -> Draft202012Validator:
+    return _validator("transcript.schema.json")
+
+
+@pytest.fixture(scope="module")
+def protocol_validator() -> Draft202012Validator:
+    return _validator("worker-protocol.schema.json")
 
 
 def test_the_schemas_are_themselves_valid(transcript_validator, protocol_validator) -> None:

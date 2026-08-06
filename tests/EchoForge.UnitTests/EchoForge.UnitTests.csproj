@@ -26,5 +26,14 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <!--
+    Python workers that misbehave on purpose. The real worker cannot answer an unsupported
+    protocol version or claim someone else's job, so the supervisor's refusals can only be
+    tested against a child that does.
+  -->
+  <ItemGroup>
+    <None Include="PythonStubs\**\*.py" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
 

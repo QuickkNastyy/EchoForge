@@ -3,6 +3,11 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>EchoForge.Infrastructure</RootNamespace>
+    <!--
+      LibraryImport generates the marshalling stubs for the Job Object interop. The
+      generated code is unsafe; nothing hand-written here is.
+    -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <!--

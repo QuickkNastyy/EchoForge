@@ -89,6 +89,19 @@ public sealed record WorkerRunResult
     /// <summary>Non-terminal warnings the worker reported along the way.</summary>
     public IReadOnlyList<WarningMessage> Warnings { get; init; } = [];
 
+    /// <summary>
+    /// Things the worker said that it should not have, after it had already finished.
+    ///
+    /// <para>
+    /// A second terminal message, or anything at all after one, is a protocol violation. It
+    /// is recorded here rather than retracting the outcome: the transcript on disk has
+    /// already been written and its digest verified, and discarding verified work because
+    /// the child kept talking afterwards would be the worse failure. A non-empty list
+    /// belongs in the log and means the worker build is suspect.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string> ProtocolViolations { get; init; } = [];
+
     public bool Succeeded => Outcome == WorkerOutcome.Succeeded;
 
     /// <summary>
