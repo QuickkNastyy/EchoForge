@@ -37,6 +37,18 @@ public static class WorkerProtocol
     public const string TranscribeJobKind = "transcribe";
 
     /// <summary>
+    /// Phase 3's job kind. Added alongside rather than replacing: a worker runs exactly one job
+    /// of one kind and exits, so the two share the handshake and nothing else.
+    /// </summary>
+    public const string SummarizeJobKind = "summarize";
+
+    /// <summary>
+    /// The deterministic placeholder summariser. It reads the real transcript and cites real
+    /// segments, and it composes nothing: its prose is assembled, not written.
+    /// </summary>
+    public const string MockSummaryBackend = "mock-summary";
+
+    /// <summary>
     /// The deterministic placeholder backend. It performs no speech recognition of any kind and
     /// says so in every transcript it writes.
     /// </summary>

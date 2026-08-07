@@ -22,6 +22,7 @@ SUPPORTED_PROTOCOL_VERSIONS: Final[tuple[int, ...]] = (1,)
 WORKER_VERSION: Final[str] = "0.1.0"
 
 TRANSCRIBE_JOB_KIND: Final[str] = "transcribe"
+SUMMARIZE_JOB_KIND: Final[str] = "summarize"
 
 
 class Stage:

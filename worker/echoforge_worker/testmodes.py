@@ -34,6 +34,11 @@ OUTPUT_AFTER_COMPLETION: Final[str] = "output_after_completion"
 STDERR: Final[str] = "stderr"
 HANG: Final[str] = "hang"
 
+#: Summary-only faults: a document that is schema-shaped but cites nothing real, and one that
+#: stops halfway. Both are what a language model does on a bad day.
+MALFORMED_SUMMARY: Final[str] = "malformed_summary"
+TRUNCATED_SUMMARY: Final[str] = "truncated_summary"
+
 KNOWN_MODES: Final[frozenset[str]] = frozenset(
     {
         NORMAL,
@@ -48,6 +53,8 @@ KNOWN_MODES: Final[frozenset[str]] = frozenset(
         OUTPUT_AFTER_COMPLETION,
         STDERR,
         HANG,
+        MALFORMED_SUMMARY,
+        TRUNCATED_SUMMARY,
     }
 )
 
@@ -119,6 +126,46 @@ class FaultInjector:
             # No terminal message, no cleanup, no flush. Exactly what a hard exit looks like.
             sys.stdout.flush()
             os._exit(7)
+
+    def corrupt_summary(self, summary: dict[str, Any]) -> dict[str, Any]:
+        """Damage the summary document itself, before it is written.
+
+        Distinct from corrupting the result message: a summary that is malformed on disk is
+        what the host's repair-once path exists for, and it has to be produced somehow.
+        """
+        if self.mode == MALFORMED_SUMMARY:
+            corrupted = dict(summary)
+            # A decision citing a segment the transcript does not contain. Schema-shaped,
+            # entirely unsupported, and exactly what the evidence validator is for.
+            corrupted["decisions"] = [
+                {
+                    "id": "decision-999",
+                    "text": "something nobody said",
+                    "certainty": "explicit",
+                    "confidence": None,
+                    "evidence": [
+                        {
+                            "transcript_revision": summary.get("transcript_revision", 1),
+                            "segment_id": "segment-999999",
+                            "source_track": "microphone",
+                            "start_seconds": 0.0,
+                            "end_seconds": 1.0,
+                            "display_timestamp": "00:00:00",
+                        }
+                    ],
+                }
+            ]
+            return corrupted
+
+        if self.mode == TRUNCATED_SUMMARY:
+            # Every required top-level field after the model block is gone.
+            return {
+                "schema_version": 1,
+                "session_id": summary.get("session_id", ""),
+                "summary_revision": summary.get("summary_revision", 1),
+            }
+
+        return summary
 
     def corrupt_result(self, message: dict[str, Any]) -> dict[str, Any]:
         if self.mode == MALFORMED_RESULT:

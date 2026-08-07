@@ -125,6 +125,17 @@ class WorkerSession:
         self._job_id = job_id
 
         kind = message.get("job_kind")
+
+        if kind == protocol.SUMMARIZE_JOB_KIND:
+            if "summary_request" not in message:
+                raise WorkerFailure(
+                    ErrorCode.INVALID_REQUEST, Stage.ACCEPTING, "start_job carries no summary request"
+                )
+
+            from .summarize import SummaryRequest
+
+            return job_id, SummaryRequest.from_json(message["summary_request"])
+
         if kind != protocol.TRANSCRIBE_JOB_KIND:
             raise WorkerFailure(
                 ErrorCode.INVALID_REQUEST,
@@ -139,7 +150,92 @@ class WorkerSession:
 
         return job_id, TranscriptionRequest.from_json(message["request"])
 
-    def _run_job(self, job_id: str, request: TranscriptionRequest) -> int:
+    def _run_job(self, job_id: str, request: Any) -> int:
+        from .summarize import SummaryRequest
+
+        if isinstance(request, SummaryRequest):
+            return self._run_summary_job(job_id, request)
+
+        return self._run_transcription_job(job_id, request)
+
+    def _run_summary_job(self, job_id: str, request: Any) -> int:
+        """Summarise one transcript revision, then exit.
+
+        Structurally the same as a transcription job - the same faults, the same cancellation,
+        the same one terminal message - because a worker runs one job of one kind and leaves.
+        """
+        from .summarize import (
+            build_summary,
+            deduplicate,
+            read_transcript,
+            resolve_summary_backend,
+            slice_chunk,
+        )
+
+        faults = FaultInjector.from_environment(
+            request.test_mode, request.test_delay_seconds, self._env
+        )
+        if faults.requested_but_refused:
+            self._writer.send(
+                protocol.warning(
+                    job_id,
+                    "test_mode_refused",
+                    "a test mode was requested but this worker was not started with test modes enabled",
+                )
+            )
+
+        backend = resolve_summary_backend(request.backend)
+        self._writer.send(protocol.started(job_id, backend.name, backend.produces_summaries))
+
+        if self._watch_stdin:
+            self._start_cancel_watcher(job_id)
+
+        faults.after_started(self._writer, self._stderr, job_id)
+
+        self._total_units = max(1, len(request.chunks))
+        self._emit_progress(Stage.PREPARING)
+
+        try:
+            faults.during_transcription(self._cancel.is_set)
+
+            document, segments = read_transcript(Path(request.transcript_path))
+
+            candidates = []
+            for chunk in request.chunks:
+                self._check_cancelled()
+                candidates.extend(backend.extract(chunk, slice_chunk(segments, chunk), request))
+                self._completed_units += 1
+                self._emit_progress(Stage.TRANSCRIBING_MICROPHONE)
+
+            self._check_cancelled()
+            self._emit_progress(Stage.MERGING)
+            merged = deduplicate(candidates)
+
+            self._check_cancelled()
+            self._emit_progress(Stage.VALIDATING)
+            summary = build_summary(request, document, segments, merged, backend)
+
+            self._check_cancelled()
+            self._emit_progress(Stage.WRITING_OUTPUT)
+            digest = _write_json(request.output_path, faults.corrupt_summary(summary))
+        except Cancelled:
+            self._writer.send(protocol.cancelled(job_id, self._stage))
+            return EXIT_OK
+
+        message = faults.corrupt_result(
+            protocol.result(
+                job_id=job_id,
+                output_path=str(Path(request.output_path)),
+                sha256=digest,
+                segment_count=len(summary.get("decisions", [])) + len(summary.get("action_items", [])),
+                duration_seconds=0.0,
+            )
+        )
+        self._writer.send(message)
+        faults.after_result(self._writer, message, job_id)
+        return EXIT_OK
+
+    def _run_transcription_job(self, job_id: str, request: TranscriptionRequest) -> int:
         faults = FaultInjector.from_environment(
             request.options.test_mode, request.options.test_delay_seconds, self._env
         )
@@ -303,6 +399,29 @@ def _reject_impossible_times(request: TranscriptionRequest, transcript: Any) -> 
                     Stage.VALIDATING,
                     f"a word in {segment.id} falls outside its segment",
                 )
+
+
+def _write_json(output_path: str, payload: Any) -> str:
+    """Write a JSON document atomically and return the digest of the bytes written."""
+    destination = Path(output_path)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+        staging = destination.with_name(destination.name + ".partial")
+        with open(staging, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(staging, destination)
+    except OSError as error:
+        raise WorkerFailure(
+            ErrorCode.OUTPUT_WRITE_FAILED,
+            Stage.WRITING_OUTPUT,
+            f"could not write the output: {error}",
+        ) from error
+
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _write_transcript(output_path: str, transcript: Any) -> str:

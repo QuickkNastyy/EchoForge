@@ -211,6 +211,15 @@ public static class WorkerMessageCodec
         ReadyMessage ready when ready.Backends.Count == 0 =>
             "ready declares no backends",
 
+        // Exactly one request, matching the job kind. A start_job carrying neither, or both,
+        // describes no job the worker could run.
+        StartJobMessage job when job.JobKind == WorkerProtocol.TranscribeJobKind && job.Request is null =>
+            "a transcribe job carries no transcription request",
+        StartJobMessage job when job.JobKind == WorkerProtocol.SummarizeJobKind && job.SummaryRequest is null =>
+            "a summarize job carries no summary request",
+        StartJobMessage job when job.Request is not null && job.SummaryRequest is not null =>
+            "a job carries two requests",
+
         _ => null,
     };
 

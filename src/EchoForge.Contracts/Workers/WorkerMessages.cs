@@ -44,8 +44,13 @@ public sealed record StartJobMessage : WorkerMessage
     [JsonPropertyName("job_kind")]
     public string JobKind { get; init; } = WorkerProtocol.TranscribeJobKind;
 
+    /// <summary>Set for a transcription job. Exactly one of the two request fields is present.</summary>
     [JsonPropertyName("request")]
-    public required TranscriptionRequest Request { get; init; }
+    public TranscriptionRequest? Request { get; init; }
+
+    /// <summary>Set for a summarisation job.</summary>
+    [JsonPropertyName("summary_request")]
+    public Summaries.SummaryRequest? SummaryRequest { get; init; }
 }
 
 /// <summary>Idempotent. The worker stops at its next safe boundary and answers <c>cancelled</c>.</summary>

@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://echoforge.local/schemas/summary.schema.json",
+  "title": "EchoForge canonical summary, version 1",
+  "description": "One immutable summary revision, generated from one exact transcript revision. Every factual item carries evidence: the pair transcript_revision + segment_id, plus times EchoForge derived from that segment rather than took from model output. A summary is a reviewable draft, not an unquestionable record, and the schema is built so that an unsupported claim cannot be represented as a supported one.",
+
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "session_id",
+    "summary_revision",
+    "created_at_utc",
+    "transcript_revision",
+    "transcript_sha256",
+    "prompt_version",
+    "model",
+    "title",
+    "overview",
+    "key_points",
+    "decisions",
+    "action_items",
+    "open_questions",
+    "risks",
+    "blockers"
+  ],
+
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "summary_revision": { "type": "integer", "minimum": 1 },
+    "created_at_utc": { "type": "string", "format": "date-time" },
+
+    "transcript_revision": {
+      "description": "The revision this summary was written from. Half of every evidence identity: a bare segment ID is stable only inside one revision and is not a durable reference.",
+      "type": "integer",
+      "minimum": 1
+    },
+
+    "transcript_sha256": {
+      "description": "Digest of the transcript revision, so 'the transcript changed underneath this summary' is detectable rather than assumed.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+
+    "meeting_date": {
+      "description": "The calendar date of the meeting, when it is known. Null means relative dates such as 'Friday' cannot be resolved and must stay unknown.",
+      "type": ["string", "null"],
+      "format": "date"
+    },
+
+    "prompt_version": { "type": "string", "minLength": 1 },
+    "model": { "$ref": "#/$defs/model" },
+
+    "title": { "type": "string" },
+    "overview": { "type": "string" },
+
+    "key_points": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+    "decisions": { "type": "array", "items": { "$ref": "#/$defs/supported_item" } },
+    "action_items": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+    "open_questions": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+    "risks": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+    "blockers": { "type": "array", "items": { "$ref": "#/$defs/item" } }
+  },
+
+  "$defs": {
+    "certainty": {
+      "description": "How well the transcript supports this. 'explicit' requires direct supporting text; 'inferred' is a reading of it and is shown separately; 'unknown' is the honest answer when the transcript does not say. Final synthesis may never raise one of these.",
+      "enum": ["explicit", "inferred", "unknown"]
+    },
+
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime", "backend", "model_id", "revision", "context_tokens", "thinking", "produces_summaries", "worker_version"],
+      "properties": {
+        "runtime": { "type": "string", "minLength": 1 },
+        "backend": { "type": "string", "minLength": 1 },
+        "model_id": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 },
+        "context_tokens": { "type": "integer", "minimum": 0 },
+        "thinking": { "type": "boolean" },
+        "produces_summaries": {
+          "description": "False for any placeholder backend. A false value must be surfaced, never hidden: placeholder prose is not a summary of anything that was said.",
+          "type": "boolean"
+        },
+        "worker_version": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "evidence": {
+      "description": "One citation. The identity is the pair transcript_revision + segment_id; the times are derived by EchoForge from that segment and are never taken from model output.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transcript_revision", "segment_id", "source_track", "start_seconds", "end_seconds", "display_timestamp"],
+      "properties": {
+        "transcript_revision": { "type": "integer", "minimum": 1 },
+        "segment_id": { "type": "string", "pattern": "^segment-[0-9]{6}$" },
+        "source_track": { "enum": ["microphone", "system"] },
+        "start_seconds": { "type": "number", "minimum": 0 },
+        "end_seconds": { "type": "number", "minimum": 0 },
+        "display_timestamp": { "type": "string", "pattern": "^[0-9]{2,}:[0-9]{2}:[0-9]{2}$" }
+      }
+    },
+
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text", "certainty", "confidence", "evidence"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "certainty": { "$ref": "#/$defs/certainty" },
+        "confidence": {
+          "description": "A model's own number, which is not statistically calibrated. Labelled heuristic everywhere it is shown, and never the basis for certainty.",
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "certainty": { "const": "explicit" } }, "required": ["certainty"] },
+          "then": { "properties": { "evidence": { "minItems": 1 } } }
+        }
+      ]
+    },
+
+    "supported_item": {
+      "description": "An item that may never be emitted without a citation, whatever its certainty. Decisions are the things people act on afterwards.",
+      "allOf": [
+        { "$ref": "#/$defs/item" },
+        { "properties": { "evidence": { "minItems": 1 } }, "required": ["evidence"] }
+      ]
+    },
+
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "task", "certainty", "confidence", "evidence",
+        "owner", "owner_status", "due_date", "due_date_text", "due_date_status"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "task": { "type": "string", "minLength": 1 },
+        "certainty": { "$ref": "#/$defs/certainty" },
+        "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence" } },
+
+        "owner": { "type": ["string", "null"] },
+        "owner_status": { "$ref": "#/$defs/certainty" },
+
+        "due_date": {
+          "description": "An ISO date, emitted only when the transcript gives an unambiguous calendar date relative to a known meeting date.",
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "due_date_text": {
+          "description": "What was actually said - 'by Friday', 'end of the month'. Kept even when no date could be resolved.",
+          "type": ["string", "null"]
+        },
+        "due_date_status": { "$ref": "#/$defs/certainty" }
+      },
+
+      "allOf": [
+        {
+          "description": "An unknown owner is null. There is no such thing as an unknown owner with a name.",
+          "if": { "properties": { "owner_status": { "const": "unknown" } }, "required": ["owner_status"] },
+          "then": { "properties": { "owner": { "type": "null" } } }
+        },
+        {
+          "description": "An explicit owner has to be a name the transcript actually gives.",
+          "if": { "properties": { "owner_status": { "const": "explicit" } }, "required": ["owner_status"] },
+          "then": { "properties": { "owner": { "type": "string", "minLength": 1 } } }
+        },
+        {
+          "if": { "properties": { "due_date_status": { "const": "unknown" } }, "required": ["due_date_status"] },
+          "then": { "properties": { "due_date": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "due_date_status": { "const": "explicit" } }, "required": ["due_date_status"] },
+          "then": { "properties": { "due_date": { "type": "string", "minLength": 1 } } }
+        }
+      ]
+    }
+  }
+}

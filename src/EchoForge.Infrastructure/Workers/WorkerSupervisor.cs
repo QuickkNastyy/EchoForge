@@ -53,7 +53,54 @@ public sealed class WorkerSupervisor
             return WorkerRunResult.Busy();
         }
 
-        using Run run = new(_options, jobId, request, progress);
+        using Run run = new(
+            _options,
+            jobId,
+            new StartJobMessage
+            {
+                JobId = jobId,
+                JobKind = WorkerProtocol.TranscribeJobKind,
+                Request = request,
+            },
+            progress);
+
+        return await run.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs one summarisation job.
+    ///
+    /// <para>
+    /// The same supervisor, the same Job Object, the same failure taxonomy. A worker runs one job
+    /// of one kind and exits, so the two job kinds share everything except what they are asked to
+    /// do — which is why summarisation needed no second process model.
+    /// </para>
+    /// </summary>
+    public async Task<WorkerRunResult> SummarizeAsync(
+        string jobId,
+        Contracts.Summaries.SummaryRequest request,
+        IProgress<ProgressMessage>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (_captureGate.IsCaptureActive)
+        {
+            return WorkerRunResult.Busy();
+        }
+
+        using Run run = new(
+            _options,
+            jobId,
+            new StartJobMessage
+            {
+                JobId = jobId,
+                JobKind = WorkerProtocol.SummarizeJobKind,
+                SummaryRequest = request,
+            },
+            progress);
+
         return await run.ExecuteAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -61,7 +108,7 @@ public sealed class WorkerSupervisor
     private sealed class Run(
         WorkerLaunchOptions options,
         string jobId,
-        TranscriptionRequest request,
+        StartJobMessage startJob,
         IProgress<ProgressMessage>? progress) : IDisposable
     {
         private readonly Lock _terminateLock = new();
@@ -343,12 +390,7 @@ public sealed class WorkerSupervisor
                 ready.ProtocolVersion,
                 ready.Backends);
 
-            Send(new StartJobMessage
-            {
-                JobId = jobId,
-                JobKind = WorkerProtocol.TranscribeJobKind,
-                Request = request,
-            });
+            Send(startJob);
 
             return true;
         }
