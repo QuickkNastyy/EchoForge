@@ -4,11 +4,52 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Windows.Threading;
 using EchoForge.Contracts.Library;
+using EchoForge.Contracts.Playback;
 using EchoForge.Infrastructure.Library;
+using EchoForge.Infrastructure.Playback;
 using EchoForge.Infrastructure.Processing;
+using EchoForge.Infrastructure.Sessions;
 using EchoForge.Infrastructure.Summaries;
 
 namespace EchoForge.App.Library;
+
+/// <summary>
+/// Asks the user to confirm a deletion.
+///
+/// <para>
+/// An interface so the decision to destroy something is testable without a window, and so there is
+/// exactly one place in the application that can answer yes.
+/// </para>
+/// </summary>
+public interface IDeleteConfirmation
+{
+    bool Confirm(DeletionEligibility eligibility);
+}
+
+/// <summary>
+/// The optional halves of the library: playing, reprocessing, deleting, and keeping the index up
+/// to date.
+///
+/// <para>
+/// Optional because each of them depends on something the application may not have — an output
+/// device, a Python runtime, a shell. A machine without them still gets a library it can read,
+/// search and export from, which is the same rule transcription itself follows.
+/// </para>
+/// </summary>
+public sealed record LibraryServices
+{
+    public PlaybackPreparer? Playback { get; init; }
+
+    public Func<IPlaybackDevice>? Devices { get; init; }
+
+    public IMeetingReprocessor? Reprocessor { get; init; }
+
+    public SessionDeletionService? Deletion { get; init; }
+
+    public IDeleteConfirmation? Confirmation { get; init; }
+
+    public LibraryIndexMaintainer? Index { get; init; }
+}
 
 /// <summary>One row in the meeting list.</summary>
 public sealed record MeetingRow(LibraryEntry Entry)
@@ -73,12 +114,15 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
     private readonly FileTranscriptionStore _transcripts;
     private readonly FileSummaryStore _summaries;
     private readonly FileSpeakerAliasStore _aliases;
+    private readonly LibraryServices _services;
     private readonly OperationGate _gate = new();
 
     private MeetingRow? _selected;
     private MeetingViewModel? _open;
     private string _searchText = string.Empty;
     private string? _status;
+    private DateTime? _from;
+    private DateTime? _to;
     private bool _busy;
     private bool _disposed;
 
@@ -87,18 +131,30 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
         LibraryProjection projection,
         FileTranscriptionStore transcripts,
         FileSummaryStore summaries,
-        FileSpeakerAliasStore aliases)
+        FileSpeakerAliasStore aliases,
+        LibraryServices? services = null)
     {
         _index = index ?? throw new ArgumentNullException(nameof(index));
         _projection = projection ?? throw new ArgumentNullException(nameof(projection));
         _transcripts = transcripts ?? throw new ArgumentNullException(nameof(transcripts));
         _summaries = summaries ?? throw new ArgumentNullException(nameof(summaries));
         _aliases = aliases ?? throw new ArgumentNullException(nameof(aliases));
+        _services = services ?? new LibraryServices();
 
         SearchCommand = new AsyncRelayCommand(SearchAsync, _gate, () => !_busy, m => Status = m);
         RefreshCommand = new AsyncRelayCommand(RefreshAsync, _gate, () => !_busy, m => Status = m);
         RebuildCommand = new AsyncRelayCommand(RebuildAsync, _gate, () => !_busy, m => Status = m);
         ClearSearchCommand = new RelayCommand(ClearSearch, () => Results.Count > 0 || SearchText.Length > 0);
+        ClearDatesCommand = new RelayCommand(ClearDates, () => _from is not null || _to is not null);
+
+        TranscribeAgainCommand = new AsyncRelayCommand(
+            () => ReprocessAsync(transcribe: true), _gate, () => CanReprocess(transcribe: true), m => Status = m);
+
+        SummarizeAgainCommand = new AsyncRelayCommand(
+            () => ReprocessAsync(transcribe: false), _gate, () => CanReprocess(transcribe: false), m => Status = m);
+
+        DeleteMeetingCommand = new AsyncRelayCommand(
+            DeleteAsync, _gate, () => _services.Deletion is not null && _selected is not null, m => Status = m);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -115,10 +171,94 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
 
     public RelayCommand ClearSearchCommand { get; }
 
+    public RelayCommand ClearDatesCommand { get; }
+
+    public AsyncRelayCommand TranscribeAgainCommand { get; }
+
+    public AsyncRelayCommand SummarizeAgainCommand { get; }
+
+    public AsyncRelayCommand DeleteMeetingCommand { get; }
+
+    public bool CanReprocessHere => _services.Reprocessor is not null;
+
+    public bool CanDeleteHere => _services.Deletion is not null;
+
     public string SearchText
     {
         get => _searchText;
         set { _searchText = value ?? string.Empty; Changed(); }
+    }
+
+    // -- date range ----------------------------------------------------------------------------
+
+    /// <summary>
+    /// The first day to include, as a local calendar date.
+    ///
+    /// <para>
+    /// A date, not an instant. Meetings are stored in UTC and remembered in local time, and the
+    /// conversion between the two is done once, in <see cref="LibraryFilter.ForLocalDates"/> —
+    /// which is what stops an evening meeting being filed under the following day.
+    /// </para>
+    /// </summary>
+    public DateTime? FromDate
+    {
+        get => _from;
+        set { _from = value?.Date; Changed(); ApplyDates(); }
+    }
+
+    public DateTime? ToDate
+    {
+        get => _to;
+        set { _to = value?.Date; Changed(); ApplyDates(); }
+    }
+
+    public bool HasDateFilter => _from is not null || _to is not null;
+
+    /// <summary>The filter the list and every search are read through.</summary>
+    public LibraryFilter Filter => LibraryFilter.ForLocalDates(
+        _from is { } from ? DateOnly.FromDateTime(from) : null,
+        _to is { } to ? DateOnly.FromDateTime(to) : null);
+
+    /// <summary>
+    /// Re-reads the list through the new range.
+    ///
+    /// <para>
+    /// A query, never a rebuild. The index already knows when every meeting was; discarding it to
+    /// ask a narrower question would turn picking a date into a full re-read of every transcript
+    /// on disk.
+    /// </para>
+    /// </summary>
+    private void ApplyDates()
+    {
+        Changed(nameof(HasDateFilter));
+        Changed(nameof(Filter));
+        ClearDatesCommand.RaiseCanExecuteChanged();
+
+        LoadMeetings();
+
+        if (Filter.IsReversed)
+        {
+            // Swapping them silently would show results for a range nobody asked for.
+            Status = "The first date is after the last one, so nothing can match. Swap them, or clear the dates.";
+        }
+        else if (Meetings.Count == 0 && HasDateFilter)
+        {
+            Status = "No meetings in that date range.";
+        }
+        else if (Status is not null && Status.StartsWith("No meetings in that date range", StringComparison.Ordinal))
+        {
+            Status = null;
+        }
+    }
+
+    private void ClearDates()
+    {
+        _from = null;
+        _to = null;
+        Changed(nameof(FromDate));
+        Changed(nameof(ToDate));
+        ApplyDates();
+        Status = null;
     }
 
     public string? Status
@@ -148,18 +288,58 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
             }
 
             _selected = value;
-            OpenMeeting = value is null
-                ? null
-                : new MeetingViewModel(value.Entry, _transcripts, _summaries, _aliases);
+            OpenMeeting = value is null ? null : Open(value.Entry);
 
             Changed();
+            RaiseCommands();
         }
     }
+
+    /// <summary>
+    /// Opens a meeting, closing whatever was open first.
+    ///
+    /// <para>
+    /// The closing is the important half. A meeting owns a transport, and a transport owns an
+    /// audio device and an open file; leaving the previous one alive would claim an output for a
+    /// meeting nobody is looking at and hold the derivative against the rebuild a reprocess needs.
+    /// One opened meeting, one playback session.
+    /// </para>
+    /// </summary>
+    private MeetingViewModel Open(LibraryEntry entry)
+    {
+        PlaybackViewModel? playback = _services is { Playback: { } preparer, Devices: { } devices }
+            ? new PlaybackViewModel(entry.SessionId, preparer, devices)
+            : null;
+
+        MeetingViewModel meeting = new(entry, _transcripts, _summaries, _aliases, playback);
+        meeting.CanonicalChanged += OnMeetingChanged;
+
+        // Building the aligned audio reads every chunk the first time, so it is started rather
+        // than awaited: the transcript is readable while the audio catches up.
+        _ = playback?.PrepareAsync();
+
+        return meeting;
+    }
+
+    private void OnMeetingChanged(object? sender, string sessionId) => _services.Index?.Invalidate(sessionId);
 
     public MeetingViewModel? OpenMeeting
     {
         get => _open;
-        private set { _open = value; Changed(); Changed(nameof(HasOpenMeeting)); }
+        private set
+        {
+            MeetingViewModel? previous = _open;
+            _open = value;
+
+            if (previous is not null && !ReferenceEquals(previous, value))
+            {
+                previous.CanonicalChanged -= OnMeetingChanged;
+                previous.Dispose();
+            }
+
+            Changed();
+            Changed(nameof(HasOpenMeeting));
+        }
     }
 
     public bool HasOpenMeeting => _open is not null;
@@ -242,8 +422,19 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
         {
             // Off the UI thread: a search over a large library reads the index, and this thread
             // has a recording indicator to paint.
+            LibraryFilter range = Filter;
+
             SearchResults found = await Task
-                .Run(() => _index.Search(new SearchQuery { Text = text, Limit = 300 }))
+                .Run(() => _index.Search(new SearchQuery
+                {
+                    Text = text,
+                    Limit = 300,
+                    // Search and the date range apply together rather than one replacing the
+                    // other: narrowing to a fortnight and then searching within it is the whole
+                    // point of having both.
+                    Since = range.Since,
+                    Until = range.Until,
+                }))
                 .ConfigureAwait(true);
 
             Dictionary<string, string> titles = Meetings.ToDictionary(m => m.SessionId, m => m.Title, StringComparer.Ordinal);
@@ -302,10 +493,26 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
         return null;
     }
 
-    /// <summary>Re-reads one meeting from disk and re-indexes it.</summary>
+    /// <summary>
+    /// Re-reads one meeting from disk and re-indexes it.
+    ///
+    /// <para>
+    /// The index update goes through the maintainer when there is one, so several notifications
+    /// about the same meeting in quick succession become one pass rather than several overlapping
+    /// re-reads of the same folder. The meeting on screen is then rebuilt from the files either
+    /// way: what the reader sees comes from the revision, never from the database.
+    /// </para>
+    /// </summary>
     public async Task RefreshMeetingAsync(string sessionId)
     {
-        await _index.UpdateAsync(sessionId).ConfigureAwait(true);
+        if (_services.Index is { } maintainer)
+        {
+            await maintainer.UpdateNowAsync(sessionId).ConfigureAwait(true);
+        }
+        else
+        {
+            await _index.UpdateAsync(sessionId).ConfigureAwait(true);
+        }
 
         LibraryDocument? document = _projection.Build(sessionId);
         if (document is null)
@@ -328,12 +535,133 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    // -- reprocessing --------------------------------------------------------------------------
+
+    private bool CanReprocess(bool transcribe) =>
+        !_busy && _selected is not null && _services.Reprocessor is { } reprocessor &&
+        (transcribe ? reprocessor.CanTranscribe : reprocessor.CanSummarize);
+
+    /// <summary>
+    /// Runs transcription or summarisation again on the open meeting.
+    ///
+    /// <para>
+    /// The coordinators decide everything: recording still outranks it, only one heavy job runs at
+    /// a time, and a refusal arrives in the coordinator's own words. What happens here is what a
+    /// library needs and a coordinator does not do — the list and the open meeting are re-read
+    /// afterwards, so a new revision appears without anybody pressing Refresh.
+    /// </para>
+    /// </summary>
+    private async Task ReprocessAsync(bool transcribe)
+    {
+        if (_selected is not { } row || _services.Reprocessor is not { } reprocessor)
+        {
+            return;
+        }
+
+        string sessionId = row.SessionId;
+
+        IsBusy = true;
+        Status = transcribe ? "Transcribing again…" : "Generating the summary again…";
+
+        try
+        {
+            ReprocessOutcome outcome = transcribe
+                ? await reprocessor.TranscribeAgainAsync(sessionId).ConfigureAwait(true)
+                : await reprocessor.SummarizeAgainAsync(sessionId).ConfigureAwait(true);
+
+            Status = outcome.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+
+        // Whether it worked or not: a failed attempt still leaves a job record worth showing, and
+        // a successful one leaves a revision the reader is waiting to see.
+        await RefreshMeetingAsync(sessionId).ConfigureAwait(true);
+    }
+
+    // -- deletion ------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Deletes the open meeting, having asked first and re-checked afterwards.
+    ///
+    /// <para>
+    /// The confirmation and the deletion are two separate decisions and the service treats them
+    /// that way. Between them a recording can start; the service refuses at that point, and the
+    /// user is told rather than losing a meeting to a race.
+    /// </para>
+    /// </summary>
+    private async Task DeleteAsync()
+    {
+        if (_selected is not { } row || _services.Deletion is not { } deletion)
+        {
+            return;
+        }
+
+        string sessionId = row.SessionId;
+        DeletionEligibility eligibility = deletion.Check(sessionId);
+
+        if (!eligibility.Allowed)
+        {
+            Status = eligibility.Message;
+            return;
+        }
+
+        if (_services.Confirmation is not { } confirmation || !confirmation.Confirm(eligibility))
+        {
+            // Cancelling leaves everything exactly as it was, including what is on screen.
+            Status = null;
+            return;
+        }
+
+        IsBusy = true;
+
+        try
+        {
+            DeletionResult result = await Task.Run(() => deletion.DeleteAsync(sessionId)).ConfigureAwait(true);
+            Status = result.Message;
+
+            if (!result.Deleted)
+            {
+                return;
+            }
+
+            // Gone from the list, and the open meeting closed: leaving it on screen would let
+            // somebody keep reading a transcript that is in the Recycle Bin.
+            SelectedMeeting = null;
+
+            for (int i = 0; i < Meetings.Count; i++)
+            {
+                if (string.Equals(Meetings[i].SessionId, sessionId, StringComparison.Ordinal))
+                {
+                    Meetings.RemoveAt(i);
+                    break;
+                }
+            }
+
+            for (int i = Results.Count - 1; i >= 0; i--)
+            {
+                if (string.Equals(Results[i].Hit.SessionId, sessionId, StringComparison.Ordinal))
+                {
+                    Results.RemoveAt(i);
+                }
+            }
+
+            Changed(nameof(HasResults));
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
     private void LoadMeetings()
     {
         string? keep = _selected?.SessionId;
 
         Meetings.Clear();
-        foreach (LibraryEntry entry in _index.Meetings())
+        foreach (LibraryEntry entry in _index.Meetings(Filter))
         {
             Meetings.Add(new MeetingRow(entry));
         }
@@ -350,6 +678,9 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
         SearchCommand.RaiseCanExecuteChanged();
         RefreshCommand.RaiseCanExecuteChanged();
         RebuildCommand.RaiseCanExecuteChanged();
+        TranscribeAgainCommand.RaiseCanExecuteChanged();
+        SummarizeAgainCommand.RaiseCanExecuteChanged();
+        DeleteMeetingCommand.RaiseCanExecuteChanged();
     }
 
     private static void Dispatch(Action action)
@@ -376,6 +707,10 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
         }
 
         _disposed = true;
+
+        // The open meeting first: it holds the audio device and the prepared file, and closing
+        // the window must not leave either claimed.
+        OpenMeeting = null;
         _index.Dispose();
     }
 }

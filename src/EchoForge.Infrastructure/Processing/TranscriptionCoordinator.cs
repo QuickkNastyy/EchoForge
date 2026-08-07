@@ -242,6 +242,19 @@ public sealed class TranscriptionCoordinator : IDisposable
     /// <summary>Raised whenever the durable state changed enough for the UI to re-read it.</summary>
     public event EventHandler? StateChanged;
 
+    /// <summary>
+    /// The same news, naming the session it happened to.
+    ///
+    /// <para>
+    /// Separate from <see cref="StateChanged"/> so a listener that has to know <i>which</i> meeting
+    /// changed — the search index, principally — does not have to guess from whatever the
+    /// coordinator happens to be working on at the moment it is asked. A subscriber to this can
+    /// never affect the operation that raised it: it is announced after the canonical change is
+    /// already durable.
+    /// </para>
+    /// </summary>
+    public event EventHandler<string>? SessionChanged;
+
     public bool IsRunning
     {
         get { lock (_sync) { return _running is not null; } }
@@ -308,7 +321,7 @@ public sealed class TranscriptionCoordinator : IDisposable
         bool selected = _transcripts.SelectRevision(sessionId, revision, Now);
         if (selected)
         {
-            RaiseStateChanged();
+            RaiseStateChanged(sessionId);
         }
 
         return selected;
@@ -822,7 +835,9 @@ public sealed class TranscriptionCoordinator : IDisposable
             return Reject(attempt, "activation_refused", activation.Refusal ?? "refused");
         }
 
-        RaiseStateChanged();
+        // Announced only after the revision is durable. A listener that failed here could not
+        // retract it if it wanted to.
+        RaiseStateChanged(attempt.SessionId);
 
         return new TranscriptionRunResult(
             ProcessingStageState.Succeeded,
@@ -885,11 +900,19 @@ public sealed class TranscriptionCoordinator : IDisposable
             }
         }
 
-        RaiseStateChanged();
+        RaiseStateChanged(pending.SessionId);
         pending.Completion.TrySetResult(result);
     }
 
-    private void RaiseStateChanged() => StateChanged?.Invoke(this, EventArgs.Empty);
+    private void RaiseStateChanged(string? sessionId = null)
+    {
+        StateChanged?.Invoke(this, EventArgs.Empty);
+
+        if (sessionId is not null)
+        {
+            SessionChanged?.Invoke(this, sessionId);
+        }
+    }
 
     private DateTimeOffset Now => _clock.GetUtcNow();
 

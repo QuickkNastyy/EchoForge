@@ -92,6 +92,13 @@ public sealed class SummaryCoordinator : IDisposable
 
     public event EventHandler? StateChanged;
 
+    /// <summary>
+    /// The same news, naming the session it happened to, for a listener that has to know which
+    /// meeting changed. Raised after the change is already durable, so nothing subscribed to it
+    /// can undo one.
+    /// </summary>
+    public event EventHandler<string>? SessionChanged;
+
     public bool IsRunning
     {
         get { lock (_sync) { return _running is not null; } }
@@ -132,6 +139,7 @@ public sealed class SummaryCoordinator : IDisposable
         if (selected)
         {
             StateChanged?.Invoke(this, EventArgs.Empty);
+            SessionChanged?.Invoke(this, sessionId);
         }
 
         return selected;
@@ -319,6 +327,7 @@ public sealed class SummaryCoordinator : IDisposable
             }
 
             StateChanged?.Invoke(this, EventArgs.Empty);
+            SessionChanged?.Invoke(this, sessionId);
         }
     }
 
@@ -531,6 +540,7 @@ public sealed class SummaryCoordinator : IDisposable
         }
 
         StateChanged?.Invoke(this, EventArgs.Empty);
+        SessionChanged?.Invoke(this, attempt.SessionId);
 
         string ready = summary.Model.ProducesSummaries
             ? "Summary ready."

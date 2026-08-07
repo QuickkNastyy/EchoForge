@@ -67,7 +67,7 @@ internal static class TimestampExtensions
 /// database can never put words on screen that the transcript does not contain.
 /// </para>
 /// </summary>
-public sealed class MeetingViewModel : INotifyPropertyChanged
+public sealed class MeetingViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly FileTranscriptionStore _transcripts;
     private readonly FileSummaryStore _summaries;
@@ -77,22 +77,48 @@ public sealed class MeetingViewModel : INotifyPropertyChanged
     private TranscriptDocument? _transcript;
     private SummaryDocument? _summary;
     private string? _notice;
+    private bool _disposed;
 
     public MeetingViewModel(
         LibraryEntry entry,
         FileTranscriptionStore transcripts,
         FileSummaryStore summaries,
-        FileSpeakerAliasStore aliases)
+        FileSpeakerAliasStore aliases,
+        PlaybackViewModel? playback = null)
     {
         _entry = entry ?? throw new ArgumentNullException(nameof(entry));
         _transcripts = transcripts ?? throw new ArgumentNullException(nameof(transcripts));
         _summaries = summaries ?? throw new ArgumentNullException(nameof(summaries));
         _aliases = aliases ?? throw new ArgumentNullException(nameof(aliases));
+        Playback = playback;
 
         Load();
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    /// <summary>
+    /// Raised when something canonical about this meeting changed on disk.
+    ///
+    /// <para>
+    /// Selecting a revision and renaming a speaker both change what the library should say about a
+    /// meeting, and both happen here rather than where the index lives. The event is how the index
+    /// finds out without this class having to know one exists.
+    /// </para>
+    /// </summary>
+    public event EventHandler<string>? CanonicalChanged;
+
+    /// <summary>
+    /// The transport for this meeting, or null when playback is not composed.
+    ///
+    /// <para>
+    /// One per opened meeting, owned by the meeting and disposed with it, so there is never a
+    /// second transport holding an audio device for a meeting nobody is looking at.
+    /// </para>
+    /// </summary>
+    public PlaybackViewModel? Playback { get; }
+
+    public bool CanPlay => Playback is not null;
 
     public string SessionId => _entry.SessionId;
 
@@ -126,6 +152,7 @@ public sealed class MeetingViewModel : INotifyPropertyChanged
             // rewritten, retracted or re-pointed by looking at a different transcript.
             _transcripts.SelectRevision(SessionId, revision, DateTimeOffset.UtcNow);
             Reload();
+            RaiseCanonicalChanged();
         }
     }
 
@@ -141,6 +168,7 @@ public sealed class MeetingViewModel : INotifyPropertyChanged
 
             _summaries.SelectRevision(SessionId, revision, DateTimeOffset.UtcNow);
             Reload();
+            RaiseCanonicalChanged();
         }
     }
 
@@ -346,7 +374,12 @@ public sealed class MeetingViewModel : INotifyPropertyChanged
 
         Load();
         Notice = string.IsNullOrWhiteSpace(alias) ? "Original name restored." : "Name updated for display only.";
+
+        // Search results carry the presented name, so the index has something to catch up on.
+        RaiseCanonicalChanged();
     }
+
+    private void RaiseCanonicalChanged() => CanonicalChanged?.Invoke(this, SessionId);
 
     // -- evidence navigation -----------------------------------------------------------------------
 
@@ -388,6 +421,54 @@ public sealed class MeetingViewModel : INotifyPropertyChanged
         }
 
         return Lines.FirstOrDefault(l => string.Equals(l.SegmentId, segmentId, StringComparison.Ordinal));
+    }
+
+    /// <summary>What following a citation reached: a line to reveal, and a moment to hear.</summary>
+    public sealed record EvidenceFollow(TranscriptLine? Line, PlaybackRequest Request)
+    {
+        public bool IsApproximate => Request.IsApproximate;
+    }
+
+    /// <summary>
+    /// Follows a citation into both the transcript and the audio, in one step.
+    ///
+    /// <para>
+    /// A resolved citation opens the revision it names — never the selected one — and produces an
+    /// exact seek. An unresolved one produces a seek to the time stored with the citation and says
+    /// so, and does <b>not</b> change which transcript is selected: re-pointing a citation at a
+    /// segment ID in a newer revision would show a reader a sentence the summary never saw, with
+    /// every appearance of authority.
+    /// </para>
+    /// </summary>
+    public EvidenceFollow FollowEvidence(EvidenceLocation location)
+    {
+        ArgumentNullException.ThrowIfNull(location);
+
+        PlaybackRequest request = location.ToPlaybackRequest();
+
+        if (!location.IsResolved)
+        {
+            Notice = location.Explanation ?? "That passage could not be located in this transcript version. " +
+                "The audio can still be played from the time stored with the citation.";
+
+            return new EvidenceFollow(null, request);
+        }
+
+        Notice = null;
+        return new EvidenceFollow(LocateEvidence(location), request);
+    }
+
+    /// <summary>A seek from a transcript line, which is exact by construction.</summary>
+    public PlaybackRequest RequestPlayback(TranscriptLine line)
+    {
+        ArgumentNullException.ThrowIfNull(line);
+
+        return new PlaybackRequest
+        {
+            SessionId = SessionId,
+            StartSeconds = line.StartSeconds,
+            EndSeconds = line.StartSeconds,
+        };
     }
 
     // -- exports -----------------------------------------------------------------------------------
@@ -432,6 +513,18 @@ public sealed class MeetingViewModel : INotifyPropertyChanged
 
     private void Changed([CallerMemberName] string? name = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+
+    /// <summary>Closes the meeting, and with it the audio device and the file it held.</summary>
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        Playback?.Dispose();
+    }
 }
 
 /// <summary>A speaker a user may rename, and what they are currently called.</summary>

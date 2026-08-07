@@ -292,6 +292,17 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
 
     // -- commands ---------------------------------------------------------------------------
 
+    /// <summary>
+    /// The backend currently chosen, shared with "generate again" in the library so both mean the
+    /// same thing rather than each carrying its own default.
+    /// </summary>
+    public SummaryOptions CurrentOptions() => new()
+    {
+        Backend = UseProductionModel && ProductionAvailable
+            ? SummaryOptions.ProductionBackend
+            : SummaryOptions.MockBackend,
+    };
+
     private async Task GenerateAsync()
     {
         if (_sessionId is not { } sessionId)
@@ -304,12 +315,7 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
 
         // Chunking walks the whole transcript and the worker launch blocks; neither belongs on
         // the thread that paints the window.
-        SummaryOptions options = new()
-        {
-            Backend = UseProductionModel && ProductionAvailable
-                ? SummaryOptions.ProductionBackend
-                : SummaryOptions.MockBackend,
-        };
+        SummaryOptions options = CurrentOptions();
 
         SummaryRunResult result = await Task
             .Run(() => _coordinator.SummarizeAsync(sessionId, options))

@@ -1,7 +1,9 @@
 using System.IO;
 using System.Windows;
 using EchoForge.Audio.Windows;
+using EchoForge.Audio.Windows.Playback;
 using EchoForge.Contracts.Recording;
+using EchoForge.Infrastructure.Playback;
 using EchoForge.Infrastructure.Artifacts;
 using EchoForge.Contracts.Settings;
 using EchoForge.Core.Exports;
@@ -42,7 +44,9 @@ public partial class App : System.Windows.Application, IDisposable
     private SummaryCoordinator? _summaryCoordinator;
     private FileSpeakerAliasStore? _aliases;
     private SqliteLibraryIndex? _libraryIndex;
+    private LibraryIndexMaintainer? _indexMaintenance;
     private LibraryViewModel? _library;
+    private FileSessionLeaseProvider? _leases;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -63,6 +67,7 @@ public partial class App : System.Windows.Application, IDisposable
 
         FileSessionStore store = new();
         FileSessionLeaseProvider leases = new(store);
+        _leases = leases;
         ISettingsStore settings = new JsonSettingsStore();
         _catalog = new AudioDeviceCatalog();
         _endpoints = new MmDeviceEndpointMonitor();
@@ -232,7 +237,48 @@ public partial class App : System.Windows.Application, IDisposable
         _aliases = new FileSpeakerAliasStore(store);
         LibraryProjection projection = new(store, _transcripts, _summaries, _aliases);
         _libraryIndex = new SqliteLibraryIndex(Path.Combine(store.Root, "library.db"), projection);
-        _library = new LibraryViewModel(_libraryIndex, projection, _transcripts, _summaries, _aliases);
+
+        // Keeps the index in step with the folders. Deliberately fire-and-forget: an index update
+        // that fails must never be able to undo the transcript activation that triggered it.
+        _indexMaintenance = new LibraryIndexMaintainer(_libraryIndex);
+        _coordinator.SessionChanged += OnSessionChangedForIndex;
+        _summaryCoordinator.SessionChanged += OnSessionChangedForIndex;
+
+        _library = new LibraryViewModel(
+            _libraryIndex,
+            projection,
+            _transcripts,
+            _summaries,
+            _aliases,
+            new LibraryServices
+            {
+                Playback = new PlaybackPreparer(store),
+                Devices = () => new NAudioPlaybackDevice(),
+                Reprocessor = new CoordinatorReprocessor(
+                    _coordinator,
+                    _summaryCoordinator,
+                    // The choices made on the main window, so reprocessing from the library uses
+                    // the same backend the user already picked rather than a second default.
+                    () => _viewModel?.Transcription?.CurrentOptions() ?? new Contracts.Processing.TranscriptionOptions(),
+                    () => _viewModel?.Summary?.CurrentOptions() ?? new Contracts.Summaries.SummaryOptions()),
+                Deletion = new SessionDeletionService(
+                    store,
+                    store.Root,
+                    new CompositeDeletionAuthority(
+                        new SessionStateDeletionAuthority(store),
+                        new LeaseDeletionAuthority(_leases!),
+                        // What only the running application knows: a live recorder and the two
+                        // heavy jobs. Asked again at the moment of deletion, not just when the
+                        // button was drawn.
+                        new DelegateDeletionAuthority(RefuseWhileBusy)),
+                    new WindowsRecycleBin(),
+                    sessionId => _indexMaintenance?.UpdateNowAsync(sessionId) ?? Task.CompletedTask),
+                Confirmation = new DialogDeleteConfirmation(window),
+                Index = _indexMaintenance,
+            });
+
+        // Finishing a recording changes what the library should say about it.
+        _controller.StateChanged += OnRecordingStateChangedForIndex;
 
         _viewModel.AttachLibrary(_library, () => new LibraryWindow(_library) { Owner = window });
 
@@ -244,6 +290,76 @@ public partial class App : System.Windows.Application, IDisposable
 
     private void OnRecordingStateChangedForProcessing(object? sender, RecordingStateChangedEventArgs e) =>
         _coordinator?.CaptureStateChanged();
+
+    /// <summary>
+    /// A session's canonical state changed, so the index has something to catch up on.
+    ///
+    /// <para>
+    /// Nothing here is awaited and nothing here can fail the operation that raised it. That is the
+    /// whole rule: a transcript that activated stays activated even if the database is locked, out
+    /// of space, or gone entirely.
+    /// </para>
+    /// </summary>
+    private void OnSessionChangedForIndex(object? sender, string sessionId) =>
+        _indexMaintenance?.Invalidate(sessionId);
+
+    /// <summary>
+    /// A recording that has settled is a meeting the library should be able to find, without
+    /// anybody pressing Refresh.
+    /// </summary>
+    private void OnRecordingStateChangedForIndex(object? sender, RecordingStateChangedEventArgs e)
+    {
+        if (_controller?.SessionId is not { } sessionId)
+        {
+            return;
+        }
+
+        if (e.State is Contracts.Sessions.SessionState.Recorded
+            or Contracts.Sessions.SessionState.NeedsAttention
+            or Contracts.Sessions.SessionState.Failed)
+        {
+            _indexMaintenance?.Invalidate(sessionId);
+        }
+    }
+
+    /// <summary>
+    /// What only the running application knows about whether a meeting is busy.
+    ///
+    /// <para>
+    /// Consulted again immediately before a folder is moved, which is the point: a user can open
+    /// the confirmation while nothing is happening and answer it after a recording has started.
+    /// </para>
+    /// </summary>
+    private Contracts.Sessions.DeletionRefusal? RefuseWhileBusy(string sessionId)
+    {
+        if (_controller is { } controller &&
+            string.Equals(controller.SessionId, sessionId, StringComparison.Ordinal) &&
+            controller.CaptureMayBeLive)
+        {
+            return new Contracts.Sessions.DeletionRefusal(
+                "recording_active",
+                "That recording is running right now, so it was not deleted. Stop it first.");
+        }
+
+        if (_coordinator is { } transcription &&
+            (transcription.IsRunning || transcription.IsQueued) &&
+            string.Equals(transcription.ActiveSessionId, sessionId, StringComparison.Ordinal))
+        {
+            return new Contracts.Sessions.DeletionRefusal(
+                "transcribing",
+                "That recording is being transcribed right now, so it was not deleted. Wait for it to finish, or cancel it.");
+        }
+
+        if (_summaryCoordinator is { IsRunning: true } summaries &&
+            summaries.StateFor(sessionId).CurrentJob is { State: Contracts.Transcripts.ProcessingStageState.Running })
+        {
+            return new Contracts.Sessions.DeletionRefusal(
+                "summarizing",
+                "That recording is being summarised right now, so it was not deleted. Wait for it to finish, or cancel it.");
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// The worker package during development, where it sits beside the solution rather than in
@@ -315,6 +431,15 @@ public partial class App : System.Windows.Application, IDisposable
         _tray?.Dispose();
         _tray = null;
 
+        // Before the index: the library owns the open meeting, and the open meeting owns an audio
+        // device and a handle on its prepared audio.
+        _library?.Dispose();
+        _library = null;
+        _libraryIndex = null;
+
+        _indexMaintenance?.Dispose();
+        _indexMaintenance = null;
+
         _viewModel?.Dispose();
         _viewModel = null;
 
@@ -323,6 +448,17 @@ public partial class App : System.Windows.Application, IDisposable
         if (_controller is not null)
         {
             _controller.StateChanged -= OnRecordingStateChangedForProcessing;
+            _controller.StateChanged -= OnRecordingStateChangedForIndex;
+        }
+
+        if (_coordinator is not null)
+        {
+            _coordinator.SessionChanged -= OnSessionChangedForIndex;
+        }
+
+        if (_summaryCoordinator is not null)
+        {
+            _summaryCoordinator.SessionChanged -= OnSessionChangedForIndex;
         }
 
         _summaryCoordinator?.Dispose();
@@ -391,6 +527,43 @@ public sealed class DialogConsentPrompt(Window owner) : IConsentPrompt
             MessageBoxResult.Cancel);
 
         return Task.FromResult(answer == MessageBoxResult.OK);
+    }
+}
+
+/// <summary>
+/// Asks before deleting a meeting.
+///
+/// <para>
+/// The dialog names the meeting and its date rather than its session ID, because the whole safety
+/// of an explicit confirmation rests on the user recognising which recording it is about. It says
+/// what will happen to it — the Recycle Bin, not oblivion — and it defaults to No.
+/// </para>
+/// </summary>
+public sealed class DialogDeleteConfirmation(Window owner) : IDeleteConfirmation
+{
+    public bool Confirm(EchoForge.Infrastructure.Sessions.DeletionEligibility eligibility)
+    {
+        ArgumentNullException.ThrowIfNull(eligibility);
+
+        string when = eligibility.RecordedUtc is { } recorded
+            ? recorded.ToLocalTime().ToString("ddd d MMM yyyy, HH:mm", System.Globalization.CultureInfo.CurrentCulture)
+            : "date unknown";
+
+        string size = eligibility.ApproximateBytes > 0
+            ? $"\n\nAbout {eligibility.ApproximateBytes / (1024.0 * 1024.0):F0} MB will be moved."
+            : string.Empty;
+
+        MessageBoxResult answer = System.Windows.MessageBox.Show(
+            owner,
+            $"Delete this meeting?\n\n{eligibility.Title}\n{when}\n\n" +
+            "Its recording, transcript versions, summary versions and speaker names all go together, " +
+            "to the Recycle Bin. You can restore them from there." + size,
+            "Delete meeting",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+
+        return answer == MessageBoxResult.Yes;
     }
 }
 

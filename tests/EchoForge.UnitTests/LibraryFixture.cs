@@ -70,11 +70,19 @@ public sealed class LibraryFixture : IDisposable
     // -- building meetings -------------------------------------------------------------------------
 
     /// <summary>Creates a recorded session with a snapshot the projection can read.</summary>
-    public string AddSession(string sessionId, string? title = null, SessionState state = SessionState.Recorded)
+    /// <param name="createdUtc">
+    /// When the meeting happened. Given explicitly by the date-filter tests, which are about
+    /// exactly this value and cannot use a clock that advances by a minute per call.
+    /// </param>
+    public string AddSession(
+        string sessionId,
+        string? title = null,
+        SessionState state = SessionState.Recorded,
+        DateTimeOffset? createdUtc = null)
     {
         Sessions.Create(sessionId);
 
-        DateTimeOffset created = Tick();
+        DateTimeOffset created = createdUtc ?? Tick();
 
         Sessions.WriteSnapshot(new SessionSnapshot(
             SessionId: sessionId,

@@ -61,9 +61,14 @@ public partial class LibraryWindow : Window
 
         EvidenceLocation first = summary.Evidence[0];
 
-        TranscriptLine? line = meeting.LocateEvidence(first);
+        MeetingViewModel.EvidenceFollow follow = meeting.FollowEvidence(first);
 
-        if (line is not null)
+        // The audio moves either way. A citation whose transcript version is gone can still be
+        // heard at the time stored with it, and the transport says that the position is
+        // approximate rather than pretending the link was followed exactly.
+        meeting.Playback?.Cue(follow.Request);
+
+        if (follow.Line is not null)
         {
             // Switch to the transcript so the reader lands where the citation points.
             if (FindTabControl() is { } tabs)
@@ -71,8 +76,59 @@ public partial class LibraryWindow : Window
                 tabs.SelectedIndex = 0;
             }
 
-            Reveal(line);
+            Reveal(follow.Line);
         }
+    }
+
+    /// <summary>Double-clicking a transcript line moves the audio to that moment.</summary>
+    private void OnTranscriptLineActivated(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (TranscriptList.SelectedItem is not TranscriptLine line || _library.OpenMeeting is not { } meeting)
+        {
+            return;
+        }
+
+        meeting.Playback?.Cue(meeting.RequestPlayback(line));
+    }
+
+    // -- the timeline ----------------------------------------------------------------------------
+
+    /// <summary>
+    /// While the thumb is held, the clock stops writing to the slider.
+    ///
+    /// <para>
+    /// Without this the position update a fifth of a second later would drag the thumb back out
+    /// from under the pointer, which feels like the control fighting the user because it is.
+    /// </para>
+    /// </summary>
+    private void OnTimelineDragStarted(object sender, System.Windows.Controls.Primitives.DragStartedEventArgs e)
+    {
+        if (_library.OpenMeeting?.Playback is { } playback)
+        {
+            playback.IsScrubbing = true;
+        }
+    }
+
+    private void OnTimelineDragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
+    {
+        if (_library.OpenMeeting?.Playback is not { } playback)
+        {
+            return;
+        }
+
+        playback.IsScrubbing = false;
+        playback.SeekTo(Timeline.Value);
+    }
+
+    /// <summary>A click anywhere on the line seeks there, which is what a timeline should do.</summary>
+    private void OnTimelineClicked(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (_library.OpenMeeting?.Playback is not { IsScrubbing: false } playback)
+        {
+            return;
+        }
+
+        playback.SeekTo(Timeline.Value);
     }
 
     private System.Windows.Controls.TabControl? FindTabControl() =>

@@ -37,8 +37,15 @@ public sealed class SqliteLibraryIndex : IDisposable
     /// Bumped whenever the stored shape changes. There is deliberately no migration path: a
     /// projection that can be rebuilt in seconds does not need one, and hand-written migrations
     /// are how a cache quietly becomes a thing you are afraid to delete.
+    ///
+    /// <para>
+    /// Version 2 added <c>created_utc_ticks</c>. Date filtering had been comparing round-trip
+    /// timestamp <i>strings</i>, which orders correctly only while every row happens to carry the
+    /// same UTC offset — true today and not a thing to build a date filter on. An integer is
+    /// unambiguous, and bumping the version costs a rebuild, which is exactly what a cache is for.
+    /// </para>
     /// </summary>
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
 
     private readonly string _databasePath;
     private readonly LibraryProjection _projection;
@@ -289,6 +296,7 @@ public sealed class SqliteLibraryIndex : IDisposable
                 session_id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 created_utc TEXT NOT NULL,
+                created_utc_ticks INTEGER NOT NULL,
                 started_utc TEXT,
                 duration_seconds REAL NOT NULL,
                 state TEXT NOT NULL,
@@ -327,7 +335,7 @@ public sealed class SqliteLibraryIndex : IDisposable
                 tokenize = "unicode61 remove_diacritics 2"
             );
 
-            CREATE INDEX IF NOT EXISTS meetings_created ON meetings (created_utc DESC);
+            CREATE INDEX IF NOT EXISTS meetings_created ON meetings (created_utc_ticks DESC);
             """;
         command.ExecuteNonQuery();
 
@@ -361,14 +369,14 @@ public sealed class SqliteLibraryIndex : IDisposable
             command.Transaction = transaction;
             command.CommandText = """
                 INSERT INTO meetings (
-                    session_id, title, created_utc, started_utc, duration_seconds, state, has_audio,
+                    session_id, title, created_utc, created_utc_ticks, started_utc, duration_seconds, state, has_audio,
                     has_transcript, selected_transcript_revision, transcript_revisions,
                     transcript_backend, transcript_model_id, transcript_profile, segment_count,
                     has_summary, selected_summary_revision, summary_revisions, summary_backend,
                     summary_model_id, summary_profile, summary_source_transcript_revision,
                     summary_produces_summaries, needs_attention, attention_reason
                 ) VALUES (
-                    $session_id, $title, $created_utc, $started_utc, $duration_seconds, $state, $has_audio,
+                    $session_id, $title, $created_utc, $created_utc_ticks, $started_utc, $duration_seconds, $state, $has_audio,
                     $has_transcript, $selected_transcript_revision, $transcript_revisions,
                     $transcript_backend, $transcript_model_id, $transcript_profile, $segment_count,
                     $has_summary, $selected_summary_revision, $summary_revisions, $summary_backend,
@@ -380,6 +388,7 @@ public sealed class SqliteLibraryIndex : IDisposable
             command.Parameters.AddWithValue("$session_id", entry.SessionId);
             command.Parameters.AddWithValue("$title", entry.Title);
             command.Parameters.AddWithValue("$created_utc", entry.CreatedUtc.ToString("O", CultureInfo.InvariantCulture));
+            command.Parameters.AddWithValue("$created_utc_ticks", entry.CreatedUtc.UtcTicks);
             command.Parameters.AddWithValue("$started_utc", (object?)entry.StartedUtc?.ToString("O", CultureInfo.InvariantCulture) ?? DBNull.Value);
             command.Parameters.AddWithValue("$duration_seconds", entry.Duration.TotalSeconds);
             command.Parameters.AddWithValue("$state", entry.State.ToString());
@@ -523,8 +532,16 @@ public sealed class SqliteLibraryIndex : IDisposable
 
     // -- reading ------------------------------------------------------------------------------------
 
-    /// <summary>Every meeting, newest first. Reads the index; the files remain the authority.</summary>
-    public IReadOnlyList<LibraryEntry> Meetings()
+    /// <summary>
+    /// Every meeting the filter admits, newest first.
+    ///
+    /// <para>
+    /// A date range is a <c>WHERE</c> clause, never a reason to rebuild. The index already knows
+    /// when every meeting was; throwing it away to ask a narrower question would turn a keystroke
+    /// into a full re-read of every transcript on disk.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<LibraryEntry> Meetings(LibraryFilter? filter = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -532,7 +549,12 @@ public sealed class SqliteLibraryIndex : IDisposable
         {
             using SqliteConnection connection = Open();
             using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "SELECT * FROM meetings ORDER BY created_utc DESC, session_id ASC;";
+
+            StringBuilder sql = new("SELECT * FROM meetings");
+            AppendRange(sql, command, filter, "WHERE", "created_utc_ticks");
+            sql.Append(" ORDER BY created_utc_ticks DESC, session_id ASC;");
+
+            command.CommandText = sql.ToString();
 
             using SqliteDataReader reader = command.ExecuteReader();
             List<LibraryEntry> entries = [];
@@ -581,6 +603,40 @@ public sealed class SqliteLibraryIndex : IDisposable
         NeedsAttention = reader.GetInt32(reader.GetOrdinal("needs_attention")) != 0,
         AttentionReason = Nullable(reader, "attention_reason"),
     };
+
+    /// <summary>
+    /// Adds the date bounds to a query, comparing integers rather than formatted timestamps.
+    ///
+    /// <para>
+    /// Both ends inclusive, and both converted through <c>UtcTicks</c> so a bound written in one
+    /// offset and a meeting recorded in another are still compared as the instants they are.
+    /// </para>
+    /// </summary>
+    private static void AppendRange(
+        StringBuilder sql, SqliteCommand command, LibraryFilter? filter, string joiner, string column)
+    {
+        if (filter is null || filter.IsEmpty)
+        {
+            return;
+        }
+
+        string next = joiner;
+
+        if (filter.Since is { } since)
+        {
+            sql.Append(CultureInfo.InvariantCulture, $" {next} {column} >= $since");
+            command.Parameters.AddWithValue("$since", since.UtcTicks);
+            next = "AND";
+        }
+
+        if (filter.Until is { } until)
+        {
+            sql.Append(CultureInfo.InvariantCulture, $" {next} {column} <= $until");
+            command.Parameters.AddWithValue("$until", until.UtcTicks);
+        }
+
+        sql.Append(' ');
+    }
 
     private static string? Nullable(SqliteDataReader reader, string column)
     {
@@ -631,17 +687,12 @@ public sealed class SqliteLibraryIndex : IDisposable
                 command.Parameters.AddWithValue("$session", sessionId);
             }
 
-            if (query.Since is { } since)
-            {
-                sql.Append("AND meetings.created_utc >= $since ");
-                command.Parameters.AddWithValue("$since", since.ToString("O", CultureInfo.InvariantCulture));
-            }
-
-            if (query.Until is { } until)
-            {
-                sql.Append("AND meetings.created_utc <= $until ");
-                command.Parameters.AddWithValue("$until", until.ToString("O", CultureInfo.InvariantCulture));
-            }
+            AppendRange(
+                sql,
+                command,
+                new LibraryFilter { Since = query.Since, Until = query.Until },
+                "AND",
+                "meetings.created_utc_ticks");
 
             if (query.Kinds.Count > 0)
             {
@@ -658,7 +709,7 @@ public sealed class SqliteLibraryIndex : IDisposable
             // Relevance first, then a total order. bm25 ties are common - two segments of the
             // same length containing the same word score identically - and without the tie-break
             // the same search would return the same rows in a different order on a rebuild.
-            sql.Append("ORDER BY rank ASC, meetings.created_utc DESC, hit_id ASC LIMIT $limit;");
+            sql.Append("ORDER BY rank ASC, meetings.created_utc_ticks DESC, hit_id ASC LIMIT $limit;");
 
             command.CommandText = sql.ToString();
             command.Parameters.AddWithValue("$q", expression);
@@ -739,8 +790,18 @@ public sealed class SqliteLibraryIndex : IDisposable
             command.Parameters.AddWithValue("$session", sessionId);
         }
 
+        // The fallback is a different way of matching, not a different library: a date range
+        // still means the same thing when the query happens to be in a script the tokenizer
+        // cannot split.
+        AppendRange(
+            sql,
+            command,
+            new LibraryFilter { Since = query.Since, Until = query.Until },
+            "AND",
+            "meetings.created_utc_ticks");
+
         // No relevance to rank by, so the order is simply stable.
-        sql.Append("ORDER BY meetings.created_utc DESC, hit_id ASC LIMIT $limit;");
+        sql.Append("ORDER BY meetings.created_utc_ticks DESC, hit_id ASC LIMIT $limit;");
 
         command.CommandText = sql.ToString();
         command.Parameters.AddWithValue("$needle", needle);

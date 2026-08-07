@@ -425,6 +425,23 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
 
     // -- commands ------------------------------------------------------------------------------
 
+    /// <summary>
+    /// The backend, profile, language and glossary currently chosen.
+    ///
+    /// <para>
+    /// Shared with reprocessing from the library, so "transcribe again" on a stored meeting means
+    /// the same thing as pressing the button here. A second set of defaults living somewhere else
+    /// would eventually run a meeting through the placeholder because nobody noticed.
+    /// </para>
+    /// </summary>
+    public TranscriptionOptions CurrentOptions() => new()
+    {
+        Backend = SelectedBackend.Id,
+        ComputeProfile = SelectedComputeProfile.Id,
+        Language = SelectedLanguage.Code,
+        Glossary = [.. Glossary.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+    };
+
     private async Task TranscribeAsync()
     {
         if (_sessionId is not { } sessionId)
@@ -438,13 +455,7 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         OnChanged(nameof(FallbackNotice));
         OnChanged(nameof(HasFallbackNotice));
 
-        TranscriptionOptions options = new()
-        {
-            Backend = SelectedBackend.Id,
-            ComputeProfile = SelectedComputeProfile.Id,
-            Language = SelectedLanguage.Code,
-            Glossary = [.. Glossary.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
-        };
+        TranscriptionOptions options = CurrentOptions();
 
         // Request verifies every source chunk against its recorded digest, which means hashing
         // the audio. That is not something the UI thread may do.

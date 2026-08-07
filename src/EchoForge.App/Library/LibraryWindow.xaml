@@ -32,6 +32,27 @@
                   ToolTip="The index is a cache. Rebuilding it never touches your recordings." />
         </StackPanel>
 
+        <!--
+          Dates are a query, never a rebuild: the index already knows when every meeting was.
+          Both ends are whole local days, and both are included.
+        -->
+        <TextBlock Text="DATES" Style="{StaticResource Label}" Margin="0,4,0,6" />
+        <Grid Margin="0,0,0,8">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+          </Grid.ColumnDefinitions>
+          <DatePicker Grid.Column="0" SelectedDate="{Binding FromDate, Mode=TwoWay}"
+                      ToolTip="The first day to include, in your own time zone." />
+          <TextBlock Grid.Column="1" Text=" to " VerticalAlignment="Center"
+                     Style="{StaticResource Label}" Foreground="{StaticResource InkDim}" />
+          <DatePicker Grid.Column="2" SelectedDate="{Binding ToDate, Mode=TwoWay}"
+                      ToolTip="The last day to include, in your own time zone." />
+          <Button Grid.Column="3" Content="Clear" Margin="8,0,0,0" Command="{Binding ClearDatesCommand}" />
+        </Grid>
+
         <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,0,0,8"
                    Foreground="{StaticResource InkDim}"
                    Visibility="{Binding HasStatus, Converter={StaticResource BoolToVis}}" />
@@ -104,9 +125,9 @@
         </TextBlock.Style>
       </TextBlock>
 
-      <TabControl Background="Transparent" BorderThickness="0">
-        <TabControl.Style>
-          <Style TargetType="TabControl">
+      <DockPanel>
+        <DockPanel.Style>
+          <Style TargetType="DockPanel">
             <Setter Property="Visibility" Value="Visible" />
             <Style.Triggers>
               <DataTrigger Binding="{Binding}" Value="{x:Null}">
@@ -114,7 +135,73 @@
               </DataTrigger>
             </Style.Triggers>
           </Style>
-        </TabControl.Style>
+        </DockPanel.Style>
+
+        <!--
+          Playback. A transport and a line to drag, not a waveform editor: the timeline is one
+          control whatever the meeting's length, so a three-hour recording costs the same as a
+          three-minute one.
+        -->
+        <Border DockPanel.Dock="Top" Margin="0,0,0,8" Padding="10,8" CornerRadius="4"
+                Background="#14171A" BorderBrush="#2A2F35" BorderThickness="1"
+                Visibility="{Binding CanPlay, Converter={StaticResource BoolToVis}}"
+                DataContext="{Binding Playback}">
+          <StackPanel>
+            <DockPanel>
+              <Button DockPanel.Dock="Left" MinWidth="70" Content="{Binding PlayPauseLabel}"
+                      Command="{Binding PlayPauseCommand}" Style="{StaticResource PrimaryButton}" />
+              <Button DockPanel.Dock="Left" Content="Stop" Margin="8,0,0,0" Command="{Binding StopCommand}" />
+
+              <TextBlock DockPanel.Dock="Right" Margin="10,0,0,0" VerticalAlignment="Center"
+                         Style="{StaticResource Label}" Foreground="{StaticResource InkDim}"
+                         Text="{Binding DurationText}" />
+              <TextBlock DockPanel.Dock="Left" Margin="12,0,8,0" VerticalAlignment="Center" MinWidth="52"
+                         Style="{StaticResource Label}" Foreground="{StaticResource Ink}"
+                         Text="{Binding PositionText}" />
+
+              <Slider x:Name="Timeline" VerticalAlignment="Center" IsMoveToPointEnabled="True"
+                      Minimum="0" Maximum="{Binding DurationSeconds, Mode=OneWay}"
+                      Value="{Binding PositionSeconds, Mode=OneWay}"
+                      Thumb.DragStarted="OnTimelineDragStarted"
+                      Thumb.DragCompleted="OnTimelineDragCompleted"
+                      PreviewMouseLeftButtonUp="OnTimelineClicked" />
+            </DockPanel>
+
+            <ProgressBar Height="3" Margin="0,6,0,0" Minimum="0" Maximum="1"
+                         Value="{Binding PreparationFraction, Mode=OneWay}"
+                         Visibility="{Binding IsPreparing, Converter={StaticResource BoolToVis}}" />
+
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+              <CheckBox Content="Mute You" IsChecked="{Binding MuteYou, Mode=TwoWay}" Margin="0,0,12,0"
+                        IsEnabled="{Binding HasYouTrack}" />
+              <CheckBox Content="Mute Remote" IsChecked="{Binding MuteRemote, Mode=TwoWay}"
+                        IsEnabled="{Binding HasRemoteTrack}" />
+            </StackPanel>
+
+            <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" Margin="0,6,0,0"
+                       Foreground="{StaticResource InkDim}"
+                       Visibility="{Binding HasMessage, Converter={StaticResource BoolToVis}}" />
+
+            <TextBlock Text="{Binding SeekNotice}" TextWrapping="Wrap" Margin="0,6,0,0"
+                       Foreground="#D8A657"
+                       Visibility="{Binding HasSeekNotice, Converter={StaticResource BoolToVis}}" />
+          </StackPanel>
+        </Border>
+
+        <!-- Reprocessing and deletion, on the meeting rather than on the main window. -->
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+          <Button Content="Transcribe again" Margin="0,0,8,0"
+                  Command="{Binding DataContext.TranscribeAgainCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                  ToolTip="Creates a new transcript version. Earlier versions stay exactly as they are." />
+          <Button Content="Generate summary again" Margin="0,0,8,0"
+                  Command="{Binding DataContext.SummarizeAgainCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                  ToolTip="Uses the transcript version selected here, and creates a new summary version." />
+          <Button Content="Delete meeting…"
+                  Command="{Binding DataContext.DeleteMeetingCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                  ToolTip="Asks first, and moves the whole recording to the Recycle Bin." />
+        </StackPanel>
+
+        <TabControl Background="Transparent" BorderThickness="0">
 
         <!-- Transcript -->
         <TabItem Header="Transcript">
@@ -136,6 +223,8 @@
             -->
             <ListBox x:Name="TranscriptList" ItemsSource="{Binding Lines}"
                      SelectionMode="Extended"
+                     MouseDoubleClick="OnTranscriptLineActivated"
+                     ToolTip="Double-click a line to move the audio to that moment."
                      VirtualizingStackPanel.IsVirtualizing="True"
                      VirtualizingStackPanel.VirtualizationMode="Recycling"
                      ScrollViewer.CanContentScroll="True"
@@ -238,6 +327,7 @@
           </StackPanel>
         </TabItem>
       </TabControl>
+      </DockPanel>
     </Grid>
   </Grid>
 </Window>
