@@ -7,10 +7,38 @@ public partial class MainWindow : Window
 {
     private ShutdownCoordinator? _shutdown;
 
+    private CompactRecorderWindow? _compact;
+
     public MainWindow() => InitializeComponent();
 
     /// <summary>Supplied by the composition root once the view model exists.</summary>
     public void UseShutdownCoordinator(ShutdownCoordinator coordinator) => _shutdown = coordinator;
+
+    /// <summary>
+    /// Shrinks to the floating recorder. It shares this window's data context — the live view model —
+    /// so it is a second view, never a second recorder. Closing it restores the full window; it does
+    /// not stop the recording.
+    /// </summary>
+    private void OnCompact(object sender, RoutedEventArgs e)
+    {
+        if (_compact is not null)
+        {
+            _compact.Activate();
+            return;
+        }
+
+        _compact = new CompactRecorderWindow { DataContext = DataContext };
+        _compact.Closed += (_, _) =>
+        {
+            _compact = null;
+            Show();
+            WindowState = WindowState.Normal;
+            Activate();
+        };
+
+        _compact.Show();
+        Hide();
+    }
 
     /// <summary>
     /// Closing is asynchronous because saving is.

@@ -551,6 +551,24 @@
         </Button.Style>
       </Button>
 
+      <!-- Shrink to the floating recorder over the call. Only meaningful while capture is live. -->
+      <Button Content="Compact" Click="OnCompact" Margin="0,0,10,0"
+              ToolTip="Shrink to a small always-on-top recorder">
+        <Button.Style>
+          <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Visibility" Value="Collapsed" />
+            <Style.Triggers>
+              <DataTrigger Binding="{Binding IsRecording}" Value="True">
+                <Setter Property="Visibility" Value="Visible" />
+              </DataTrigger>
+              <DataTrigger Binding="{Binding IsPaused}" Value="True">
+                <Setter Property="Visibility" Value="Visible" />
+              </DataTrigger>
+            </Style.Triggers>
+          </Style>
+        </Button.Style>
+      </Button>
+
       <Button Content="Refresh devices" Command="{Binding RefreshDevicesCommand}" />
 
       <!-- All recordings and Setup now live on the navigation rail, not as footer buttons. -->

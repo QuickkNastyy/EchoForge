@@ -1,0 +1,82 @@
+<Window x:Class="EchoForge.App.CompactRecorderWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="EchoForge — recording"
+        WindowStyle="ToolWindow" ResizeMode="NoResize" Topmost="True"
+        SizeToContent="WidthAndHeight" ShowInTaskbar="False"
+        Background="{StaticResource Surface}" Foreground="{StaticResource Ink}"
+        FontFamily="{StaticResource UiFont}">
+
+  <!--
+    The out-of-the-way recorder from the mockup. It is another view over the SAME MainViewModel — no
+    second controller, no second session authority — so the clock, the meters and the transport are
+    exactly the live ones. Closing it returns to the full window; it never stops the recording, which
+    only Stop does.
+  -->
+  <Border Width="352" Padding="14,12" Background="{StaticResource Surface}">
+    <StackPanel>
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+
+        <Ellipse Grid.Column="0" Width="11" Height="11" Fill="{StaticResource Rec}" VerticalAlignment="Center"
+                 Visibility="{Binding IndicatorVisible, Converter={StaticResource BoolToVis}}" />
+        <Ellipse Grid.Column="0" Width="11" Height="11" Stroke="{StaticResource InkFaint}" StrokeThickness="2"
+                 VerticalAlignment="Center">
+          <Ellipse.Style>
+            <Style TargetType="Ellipse">
+              <Setter Property="Visibility" Value="Visible" />
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding IndicatorVisible}" Value="True">
+                  <Setter Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+              </Style.Triggers>
+            </Style>
+          </Ellipse.Style>
+        </Ellipse>
+
+        <TextBlock Grid.Column="1" Text="{Binding Elapsed}" Margin="12,0,0,0" VerticalAlignment="Center"
+                   FontFamily="{StaticResource DataFont}" FontSize="20" FontWeight="Light" />
+
+        <StackPanel Grid.Column="3" Orientation="Horizontal">
+          <Button Content="❙❙" Command="{Binding PauseCommand}" Width="34" Margin="0,0,6,0" Padding="0,6"
+                  ToolTip="Pause" Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}" />
+          <Button Content="▶" Command="{Binding ResumeCommand}" Width="34" Margin="0,0,6,0" Padding="0,6"
+                  Style="{StaticResource PrimaryButton}" ToolTip="Resume"
+                  Visibility="{Binding IsPaused, Converter={StaticResource BoolToVis}}" />
+          <Button Content="■" Command="{Binding StopCommand}" Width="34" Padding="0,6"
+                  Style="{StaticResource DangerButton}" ToolTip="Stop recording" />
+        </StackPanel>
+      </Grid>
+
+      <Grid Margin="0,10,0,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="54" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <TextBlock Grid.Column="0" Text="You" Style="{StaticResource Label}" Foreground="{StaticResource You}"
+                   VerticalAlignment="Center" />
+        <ProgressBar Grid.Column="1" Style="{StaticResource Meter}" Height="7"
+                     Foreground="{StaticResource You}" Value="{Binding YouLevel, Mode=OneWay}" />
+      </Grid>
+
+      <Grid Margin="0,7,0,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="54" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <TextBlock Grid.Column="0" Text="Remote" Style="{StaticResource Label}" Foreground="{StaticResource Remote}"
+                   VerticalAlignment="Center" />
+        <ProgressBar Grid.Column="1" Style="{StaticResource Meter}" Height="7"
+                     Foreground="{StaticResource Remote}" Value="{Binding RemoteLevel, Mode=OneWay}" />
+      </Grid>
+
+      <TextBlock Margin="0,9,0,0" Style="{StaticResource Label}" Foreground="{StaticResource InkFaint}"
+                 Text="Close to return to the full window · recording keeps running" />
+    </StackPanel>
+  </Border>
+</Window>
