@@ -506,14 +506,14 @@
       "artifact_id": "python.cpython-3-12-13",
       "kind": "runtime",
       "repository": "https://github.com/astral-sh/python-build-standalone",
-      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260805/cpython-3.12.13%2B20260805-x86_64-pc-windows-msvc-install_only.tar.gz",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260805/cpython-3.12.13+20260805-x86_64-pc-windows-msvc-install_only.tar.gz",
       "revision": "20260805",
       "filename": "cpython-3.12.13+20260805-x86_64-pc-windows-msvc-install_only.tar.gz",
       "size_bytes": 46188985,
       "sha256": "d731ce7dddcfad4a9521aac48626ca06326003fe4771a366e0fce6eb58709451",
       "license": "PSF-2.0",
       "license_file": "third_party/licenses/cpython-3.12.13-LICENSE.txt",
-      "provenance": "The interpreter EchoForge ships with, so no system Python is required. python-build-standalone is the redistributable CPython build astral-sh publishes and uv installs; the install_only archive is the full runtime with the standard library and pip, and unlike python.org's embeddable package it can create virtual environments. Downloaded and hashed locally on 2026-08-07; the digest matches the SHA256SUMS file published with the same release. The retained licence text is the LICENSE.txt inside the archive, which carries the PSF licence and the additional conditions for the bundled Windows components.",
+      "provenance": "The interpreter EchoForge ships with, so no system Python is required. python-build-standalone is the redistributable CPython build astral-sh publishes and uv installs; the install_only archive is the full runtime with the standard library and pip, and unlike python.org's embeddable package it can create virtual environments. Downloaded and hashed locally on 2026-08-07, from this exact URL rather than the percent-encoded form the release API reports, and both serve identical bytes; the digest matches the SHA256SUMS file published with the same release. The retained licence text is the LICENSE.txt inside the archive, which carries the PSF licence and the additional conditions for the bundled Windows components.",
       "runtime_version": "CPython 3.12.13 (python-build-standalone 20260805, x86_64-pc-windows-msvc, install_only)",
       "profiles": [
         "any"

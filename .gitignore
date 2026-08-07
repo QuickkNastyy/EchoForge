@@ -5,6 +5,10 @@
 [Rr]elease/
 publish/
 
+# Where scripts/package.ps1 stages the self-contained application. Reproducible from source in
+# one command, and 166 MB of it.
+/build/
+
 # The root artifacts directory holds downloaded output, except for the pinned manifest, which
 # is the gate's own authority and must be committed. Anchored to the root with a leading
 # slash: an unanchored "artifacts/" also matches source folders such as

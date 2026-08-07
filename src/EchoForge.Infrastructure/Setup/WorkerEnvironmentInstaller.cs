@@ -336,6 +336,16 @@ public sealed class WorkerEnvironmentInstaller
             TryDeleteDirectory(building);
             return WorkerEnvironmentResult.Fail("cancelled", "Building the worker environment was cancelled.");
         }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            // The interpreter would not start. An incomplete unpack, a file the antivirus took,
+            // or an architecture mismatch all land here, and all of them are repaired the same
+            // way. It must be a result rather than an exception: this runs from a setup screen.
+            TryDeleteDirectory(building);
+            return WorkerEnvironmentResult.Fail(
+                "interpreter_unusable",
+                "EchoForge's own copy of Python would not start. Repairing it will install it again.");
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             TryDeleteDirectory(building);

@@ -19,8 +19,27 @@
   </PropertyGroup>
 
   <!--
-    Phase 0 is a proof of concept for one machine. Publishing is not in scope until
-    Phase 6, so no RuntimeIdentifier or self-contained settings are pinned here yet.
+    One version, in one place.
+
+    It reaches the assembly, the diagnostics bundle, the setup window and the installer from here,
+    because the alternative is four strings that agree until the day somebody updates three of
+    them. Deliberately plain: no build date, no commit hash, no counter. Anything that varied
+    between two builds of the same source would make the deterministic tests unstable and would
+    stop two identical publishes producing identical bytes.
+  -->
+  <PropertyGroup>
+    <VersionPrefix>0.6.0</VersionPrefix>
+    <Product>EchoForge</Product>
+    <Company>EchoForge</Company>
+    <Authors>EchoForge</Authors>
+    <Copyright>Copyright © EchoForge</Copyright>
+    <AssemblyTitle>EchoForge</AssemblyTitle>
+  </PropertyGroup>
+
+  <!--
+    The publish target is win-x64 and self-contained, and scripts/package.ps1 passes it on the
+    command line. Pinning a RuntimeIdentifier here would make every ordinary Debug build produce
+    a self-contained copy of the framework and slow the test loop down for no benefit.
   -->
 
 </Project>
