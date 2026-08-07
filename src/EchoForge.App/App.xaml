@@ -32,6 +32,7 @@
     <SolidColorBrush x:Key="Ink"      Color="#E6EDF3" />
     <SolidColorBrush x:Key="InkDim"   Color="#8496A6" />
     <SolidColorBrush x:Key="InkFaint" Color="#5B6C7B" />
+    <SolidColorBrush x:Key="Focus"    Color="#9CC4F0" />
     <SolidColorBrush x:Key="You"      Color="#F2A93B" />
     <SolidColorBrush x:Key="Remote"   Color="#3FBFC7" />
     <SolidColorBrush x:Key="Rec"      Color="#E2453D" />
@@ -122,6 +123,52 @@
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="Foreground" Value="{StaticResource Rec}" />
       <Setter Property="BorderBrush" Value="{StaticResource Rec}" />
+    </Style>
+
+    <!--
+      A navigation-rail button: an icon in a 40x40 square, faint until it is the current destination,
+      hovered, or focused. Set Tag="active" on the destination that is showing now; it gets the raised
+      chrome and the left accent bar from the mockup. Icon colour follows the button's Foreground, so a
+      Path inside binds its Stroke to the templated parent.
+    -->
+    <Style x:Key="RailButton" TargetType="Button">
+      <Setter Property="Width" Value="44" />
+      <Setter Property="Height" Value="44" />
+      <Setter Property="Margin" Value="0,2" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="{StaticResource InkFaint}" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Focusable" Value="True" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Grid>
+              <Border x:Name="Accent" Width="3" HorizontalAlignment="Left" Margin="0,11"
+                      CornerRadius="2" Background="{StaticResource Ink}" Visibility="Collapsed" />
+              <Border x:Name="Chrome" CornerRadius="7" Margin="4,0"
+                      Background="{TemplateBinding Background}" BorderThickness="1" BorderBrush="Transparent">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                  TextElement.Foreground="{TemplateBinding Foreground}" />
+              </Border>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource Raised}" />
+                <Setter Property="Foreground" Value="{StaticResource Ink}" />
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource Focus}" />
+                <Setter Property="Foreground" Value="{StaticResource Ink}" />
+              </Trigger>
+              <Trigger Property="Tag" Value="active">
+                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource Raised}" />
+                <Setter TargetName="Accent" Property="Visibility" Value="Visible" />
+                <Setter Property="Foreground" Value="{StaticResource Ink}" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
 
     <!-- Level meter. Foreground is set per track so colour keeps meaning who is speaking. -->

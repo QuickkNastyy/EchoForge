@@ -7,7 +7,54 @@
         FontFamily="{StaticResource UiFont}"
         WindowStartupLocation="CenterScreen">
 
-  <Grid Margin="26,20,26,22">
+  <Grid>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="Auto" />
+      <ColumnDefinition Width="*" />
+    </Grid.ColumnDefinitions>
+
+    <!--
+      Primary navigation rail. Record is the current destination; All recordings and Setup reuse the
+      existing single library and setup windows (bring-to-front, never a duplicate). Icon colour
+      follows each button's Foreground so hover/focus/active all read correctly, and every icon-only
+      button carries a tooltip and an accessibility name for keyboard and screen-reader use.
+    -->
+    <Border Grid.Column="0" Width="58" Background="{StaticResource Sunken}"
+            BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
+      <DockPanel Margin="0,10" LastChildFill="False">
+        <Button DockPanel.Dock="Top" HorizontalAlignment="Center" Style="{StaticResource RailButton}"
+                Tag="active" ToolTip="Record" AutomationProperties.Name="Record"
+                IsHitTestVisible="False">
+          <Ellipse Width="18" Height="18" StrokeThickness="1.8"
+                   Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}" />
+        </Button>
+
+        <Button DockPanel.Dock="Top" HorizontalAlignment="Center" Style="{StaticResource RailButton}"
+                ToolTip="All recordings" AutomationProperties.Name="All recordings"
+                Command="{Binding OpenLibraryCommand}"
+                IsEnabled="{Binding HasLibrary}">
+          <Path Width="20" Height="20" Stretch="Uniform" StrokeThickness="1.8" StrokeStartLineCap="Round"
+                StrokeEndLineCap="Round" Data="M4,6 H20 M4,12 H20 M4,18 H14"
+                Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}" />
+        </Button>
+
+        <Button DockPanel.Dock="Bottom" HorizontalAlignment="Center" Style="{StaticResource RailButton}"
+                ToolTip="Setup and diagnostics" AutomationProperties.Name="Setup"
+                Command="{Binding OpenSetupCommand}"
+                IsEnabled="{Binding HasSetup}">
+          <Grid Width="20" Height="20">
+            <Ellipse Width="6" Height="6"
+                     Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"
+                     StrokeThickness="1.6" />
+            <Path Stretch="Uniform" StrokeThickness="1.6" StrokeStartLineCap="Round"
+                  Data="M12,2 V6 M12,18 V22 M2,12 H6 M18,12 H22 M5,5 L8,8 M16,16 L19,19 M19,5 L16,8 M8,16 L5,19"
+                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}" />
+          </Grid>
+        </Button>
+      </DockPanel>
+    </Border>
+
+    <Grid Grid.Column="1" Margin="26,20,26,22">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
@@ -506,17 +553,7 @@
 
       <Button Content="Refresh devices" Command="{Binding RefreshDevicesCommand}" />
 
-      <Button Content="Meetings…" Margin="10,0,0,0" Command="{Binding OpenLibraryCommand}"
-              ToolTip="Browse, search and export previous recordings"
-              Visibility="{Binding HasLibrary, Converter={StaticResource BoolToVis}}" />
-
-      <!--
-        Always available once the manifest has been read, including when nothing is installed:
-        that is exactly the state somebody needs this screen for. Recording works regardless.
-      -->
-      <Button Content="Setup…" Margin="10,0,0,0" Command="{Binding OpenSetupCommand}"
-              ToolTip="What this machine can do, what is installed, and how to install or repair it"
-              Visibility="{Binding HasSetup, Converter={StaticResource BoolToVis}}" />
+      <!-- All recordings and Setup now live on the navigation rail, not as footer buttons. -->
 
       <TextBlock Style="{StaticResource Label}" VerticalAlignment="Center" Margin="18,0,0,0"
                  Foreground="{StaticResource InkDim}" Text="{Binding ReadinessMessage}" />
@@ -524,5 +561,6 @@
       <TextBlock Style="{StaticResource Label}" VerticalAlignment="Center" Margin="18,0,0,0"
                  Text="Chunks · 60 s · PCM16 · separate tracks" />
     </StackPanel>
+    </Grid>
   </Grid>
 </Window>
