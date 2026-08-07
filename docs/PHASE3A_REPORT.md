@@ -196,6 +196,17 @@ timestamp is now set explicitly, so what is under test is the cheap marker check
 clock underneath it. Its deep-verify sibling still deliberately restores the timestamp, so the two
 together document both halves.
 
+Two more of the same shape were found by soaking the suite — each passed alone and failed roughly
+one run in five together, which is what a test measuring something it does not own looks like.
+`MemoryStaysBoundedHoweverMuchAudioThereIs` read the process-wide GC total while the rest of the
+suite allocated in the same process, so its reading was an upper bound rather than a measurement;
+it now takes the lowest of several readings, rebuilding from nothing each time so no attempt can
+pass by reusing an earlier build. `ConsentIsAskedAgainForEveryRecording` stopped a recording
+underneath the view model and immediately asked it to start another, and executing into a command
+that has not noticed yet does nothing silently. `SpinUntil` also returned quietly at its deadline,
+which is how a stall arrived at the assertions disguised as a wrong count; it now names the
+condition that never came true. **Ten consecutive full runs, 521 passed, none failed.**
+
 ## Remaining Phase 3 work
 
 **Phase 3B — the model.**
