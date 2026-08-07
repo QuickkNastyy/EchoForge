@@ -54,9 +54,18 @@
           "pattern": "^https://[^\\s]+$"
         },
         "revision": {
-          "description": "Full immutable commit SHA or release tag. Never main, master, latest, or an alias. Spelled out as character classes because JSON Schema patterns are ECMA-262 and have no inline (?i) flag: written with one, this guard silently fails to compile instead of rejecting anything.",
+          "description": "Full immutable commit SHA or release tag, and it must be the identifier the download URL itself names - a manifest that pins one revision and fetches another is pinning nothing. Never main, master, latest, or an alias. Spelled out as character classes because JSON Schema patterns are ECMA-262 and have no inline (?i) flag: written with one, this guard silently fails to compile instead of rejecting anything.",
           "type": "string",
-          "minLength": 7,
+          "anyOf": [
+            {
+              "description": "A commit SHA, long enough not to be an ambiguous abbreviation.",
+              "minLength": 7
+            },
+            {
+              "description": "A sequential build-release tag, as llama.cpp uses (b10298). Shorter than seven characters but not an abbreviation of anything: it is the whole identifier, it is immutable, and it is what the release asset URL is addressed by. Allowed as its own shape rather than by lowering the length floor, so an abbreviated SHA is still refused.",
+              "pattern": "^b[0-9]{4,7}$"
+            }
+          ],
           "not": {
             "pattern": "^([Mm][Aa][Ii][Nn]|[Mm][Aa][Ss][Tt][Ee][Rr]|[Ll][Aa][Tt][Ee][Ss][Tt]|[Hh][Ee][Aa][Dd]|[Dd][Ee][Vv]|[Dd][Ee][Vv][Ee][Ll][Oo][Pp]|[Tt][Rr][Uu][Nn][Kk]|[Ss][Tt][Aa][Bb][Ll][Ee]|[Nn][Ee][Ww][Ee][Ss][Tt])$"
           }
@@ -100,7 +109,17 @@
           "description": "Processing profiles this artifact is compatible with.",
           "type": "array",
           "minItems": 1,
-          "items": { "enum": ["cuda-fp16", "cuda-int8-float16", "cpu-int8", "vulkan", "any"] }
+          "items": {
+            "enum": [
+              "cuda-fp16",
+              "cuda-int8-float16",
+              "cpu-int8",
+              "vulkan",
+              "summary-cuda-q4",
+              "summary-cpu-q4",
+              "any"
+            ]
+          }
         },
         "verified_utc": {
           "description": "When this entry was last checked against its source.",

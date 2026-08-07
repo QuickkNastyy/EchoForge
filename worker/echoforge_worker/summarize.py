@@ -76,6 +76,17 @@ class SummaryRequest:
     infer_owners: bool = False
     infer_due_dates: bool = False
     chunks: tuple[SummaryChunk, ...] = ()
+    #: Where the host staged the verified llama.cpp server binary. Empty for the placeholder.
+    #: The worker never resolves an artifact itself: the host owns the manifest, the digests and
+    #: the decision that a file is fit to run, and hands over a path only once it is.
+    llama_binary_path: str = ""
+    #: The verified GGUF the host installed. Same rule.
+    model_path: str = ""
+    #: Which runtime ladder to try: "summary-cuda-q4" starts at 32K on the GPU, "summary-cpu-q4"
+    #: goes straight to the CPU rung.
+    summary_profile: str = ""
+    #: Fixed, so two runs over one transcript produce one answer.
+    seed: int = 7
     #: How many candidates one synthesis group may hold before the fold recurses.
     synthesis_group_size: int = 0
     #: 0 on a first generation, 1 on the single re-ask the host is allowed. Nothing higher
@@ -133,6 +144,10 @@ class SummaryRequest:
             infer_owners=bool(obj.get("infer_owners", False)),
             infer_due_dates=bool(obj.get("infer_due_dates", False)),
             chunks=tuple(chunks),
+            llama_binary_path=str(obj.get("llama_binary_path") or ""),
+            model_path=str(obj.get("model_path") or ""),
+            summary_profile=str(obj.get("summary_profile") or ""),
+            seed=int(obj.get("seed", 7) or 7),
             synthesis_group_size=int(obj.get("synthesis_group_size", 0) or 0),
             repair_attempt=int(obj.get("repair_attempt", 0) or 0),
             rejection_reasons=tuple(str(reason) for reason in (obj.get("rejection_reasons") or [])),
@@ -697,12 +712,23 @@ def build_summary(
             }
         )
 
-    overview = (
-        "This overview was assembled by EchoForge's deterministic placeholder summariser. "
-        "It quotes and groups what was said; it does not understand it, and it is not a summary. "
-        f"{len(buckets['decisions'])} decisions and {len(actions)} action items were extracted "
-        f"from {len(segments)} transcript segments."
-    )
+    # The overview describes whatever actually produced it. A production summary that called
+    # itself a placeholder would be as misleading as a placeholder that called itself a summary,
+    # and the earlier text was hard-coded from when only one of the two existed.
+    if backend.produces_summaries:
+        overview = (
+            f"{len(buckets['decisions'])} decisions and {len(actions)} action items were extracted "
+            f"from {len(segments)} transcript segments by a local language model. Every claim below "
+            "cites the transcript segments it came from; nothing that could not be traced back to "
+            "one was kept. Read it as a reviewable draft, not as a record."
+        )
+    else:
+        overview = (
+            "This overview was assembled by EchoForge's deterministic placeholder summariser. "
+            "It quotes and groups what was said; it does not understand it, and it is not a summary. "
+            f"{len(buckets['decisions'])} decisions and {len(actions)} action items were extracted "
+            f"from {len(segments)} transcript segments."
+        )
 
     if synthesis is not None and synthesis.levels > 1:
         overview += (
@@ -731,7 +757,7 @@ def build_summary(
             "merged_items": synthesis.merged,
             "reached_level_cap": synthesis.reached_level_cap,
         },
-        "title": "Meeting summary (placeholder)",
+        "title": "Meeting summary" if backend.produces_summaries else "Meeting summary (placeholder)",
         "overview": overview,
         "key_points": buckets["key_points"],
         "decisions": buckets["decisions"],
@@ -749,12 +775,23 @@ def _display(seconds: float) -> str:
 
 _BACKENDS: Final[dict[str, type[SummaryBackend]]] = {MockSummaryBackend.name: MockSummaryBackend}
 
+#: The production backend's name. Held here rather than imported so that resolving the placeholder
+#: never pulls in the llama.cpp module, and a machine with no summary model installed runs exactly
+#: the code it did before Phase 3B.
+PRODUCTION_BACKEND: Final[str] = "gemma-4-12b"
+
 
 def available_summary_backends() -> list[str]:
-    return sorted(_BACKENDS)
+    return sorted([*_BACKENDS, PRODUCTION_BACKEND])
 
 
 def resolve_summary_backend(name: str) -> SummaryBackend:
+    """The placeholder, which needs nothing but itself.
+
+    The production backend is not resolvable here: it needs a running server, and a server needs
+    to be started, watched and stopped around the whole job rather than constructed and forgotten.
+    ``main`` owns that lifetime.
+    """
     factory = _BACKENDS.get(name)
     if factory is None:
         raise WorkerFailure(

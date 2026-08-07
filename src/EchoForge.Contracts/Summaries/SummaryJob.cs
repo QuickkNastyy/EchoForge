@@ -9,6 +9,25 @@ public sealed record SummaryOptions
     /// <summary>Defaults to the deterministic placeholder, which summarises nothing.</summary>
     public string Backend { get; init; } = "mock-summary";
 
+    /// <summary>The production backend's name. Anything else runs the placeholder.</summary>
+    public const string ProductionBackend = "gemma-4-12b";
+
+    public const string MockBackend = "mock-summary";
+
+    public bool IsProduction => string.Equals(Backend, ProductionBackend, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Which runtime profile the production backend should use. Empty means "the best one this
+    /// machine has installed". Ignored entirely by the placeholder, which needs no runtime.
+    /// </summary>
+    public string SummaryProfile { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Fixed on purpose. A summary that changed between two runs over one transcript could not be
+    /// reviewed against its own evidence, and reprocessing would stop meaning anything.
+    /// </summary>
+    public int Seed { get; init; } = 7;
+
     public string PromptVersion { get; init; } = "meeting-summary-v1";
 
     /// <summary>
@@ -140,6 +159,28 @@ public sealed record SummaryRequest
     public int SynthesisGroupSize { get; init; } = 200;
 
     /// <summary>
+    /// The verified llama.cpp server the worker may launch, and the verified model it may load.
+    ///
+    /// <para>
+    /// Resolved by the host, from the manifest, after the registry has hashed both. The worker
+    /// never looks for a runtime: it runs what it is handed or it runs nothing, so there is no
+    /// path by which an unverified binary on the machine becomes the thing that summarised a
+    /// meeting.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("llama_binary_path")]
+    public string LlamaBinaryPath { get; init; } = string.Empty;
+
+    [JsonPropertyName("model_path")]
+    public string ModelPath { get; init; } = string.Empty;
+
+    [JsonPropertyName("summary_profile")]
+    public string SummaryProfile { get; init; } = string.Empty;
+
+    [JsonPropertyName("seed")]
+    public int Seed { get; init; } = 7;
+
+    /// <summary>
     /// 0 for a first generation, 1 for the single re-ask that is allowed after a refusal.
     ///
     /// <para>
@@ -229,6 +270,17 @@ public sealed record SummaryRevisionRecord
     /// <summary>How many synthesis passes the facts were folded through. 1 for a short meeting.</summary>
     [JsonPropertyName("synthesis_levels")]
     public int SynthesisLevels { get; init; }
+
+    /// <summary>
+    /// The runtime profile that actually ran, which is not always the one that was asked for.
+    /// Recorded so a summary produced at a reduced context can be told apart from one produced at
+    /// the full context later, without guessing from the chunk count.
+    /// </summary>
+    [JsonPropertyName("runtime")]
+    public string Runtime { get; init; } = string.Empty;
+
+    [JsonPropertyName("context_tokens")]
+    public int ContextTokens { get; init; }
 
     public bool WasRepaired => RepairAttempt > 0;
 

@@ -1,0 +1,42 @@
+Your previous response was rejected. You are being asked once — exactly once — to return it
+correctly. If this attempt is also rejected, the summary fails and the user gets nothing, so read
+what was wrong before you answer.
+
+The rejection reasons follow. They come from EchoForge's validator, which checked your output
+against the actual transcript.
+
+## What repair means
+
+**Repair the structure. Do not change the facts.**
+
+If the problem was the shape of the response — invalid JSON, a truncated object, a missing
+required field, a wrong enum value, a field of the wrong type — fix exactly that and return the
+same content.
+
+If the problem was a **citation that does not resolve**, you cited a segment ID that is not in the
+slice you were given. The fix is **not** to swap in a different ID that does exist. A citation is
+a claim about where something was said, and pointing it at whichever segment happens to be
+available is a fabrication that will look correct to everyone reading it. The fix is to **remove
+the item you could not support**, and keep the rest.
+
+If the problem was an **explicit claim with no evidence**, either cite the segment that supports it
+or lower it to `inferred` — or drop it. Do not leave it explicit and hope.
+
+If the problem was an **owner or a date**, the fix is almost always to set the status to `unknown`
+and the value to `null`. You were told not to guess these; the validator noticed that one was
+guessed.
+
+## What you may not do
+
+- Do not add facts that were not in your previous response.
+- Do not add evidence that was not in your previous response.
+- Do not raise any certainty, owner status, or date status.
+- Do not "improve" the wording while you are here.
+- Do not explain yourself, apologise, or describe what you changed. Return the object only.
+
+Removing an unsupported item is a correct repair and is expected. Returning fewer, well-supported
+items is a success. Returning the same number of items by inventing support for the bad ones is
+the failure this step exists to catch, and EchoForge will catch it again — the validator that
+rejected you is the same validator that will judge this attempt, and it has not been relaxed.
+
+Return only the JSON object the schema describes. No commentary before or after it.

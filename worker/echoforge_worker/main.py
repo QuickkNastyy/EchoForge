@@ -187,7 +187,17 @@ class WorkerSession:
                 )
             )
 
-        backend = resolve_summary_backend(request.backend)
+        # The server, when there is one, is started before anything is read and stopped in the
+        # finally below whatever happens next - including a cancel arriving mid-generation. The
+        # Job Object would take it down anyway; this is so the ordinary path does not rely on that.
+        server = None
+
+        try:
+            backend, server = self._resolve_summary_backend(job_id, request)
+        except Cancelled:
+            self._writer.send(protocol.cancelled(job_id, self._stage))
+            return EXIT_OK
+
         self._writer.send(protocol.started(job_id, backend.name, backend.produces_summaries))
 
         if self._watch_stdin:
@@ -237,6 +247,9 @@ class WorkerSession:
         except Cancelled:
             self._writer.send(protocol.cancelled(job_id, self._stage))
             return EXIT_OK
+        finally:
+            if server is not None:
+                server.stop()
 
         message = faults.corrupt_result(
             protocol.result(
@@ -250,6 +263,68 @@ class WorkerSession:
         self._writer.send(message)
         faults.after_result(self._writer, message, job_id)
         return EXIT_OK
+
+    def _resolve_summary_backend(self, job_id: str, request: Any) -> tuple[Any, Any]:
+        """The placeholder, or a real model with a server behind it.
+
+        Returns the backend and the server that has to be stopped afterwards - ``None`` for the
+        placeholder, which has nothing to tear down.
+        """
+        from .summarize import PRODUCTION_BACKEND, resolve_summary_backend
+
+        if request.backend != PRODUCTION_BACKEND:
+            return resolve_summary_backend(request.backend), None
+
+        # Imported here so a machine with no summary model installed never loads any of it.
+        from .gemma_summary import GemmaSummaryBackend
+        from .llama_server import (
+            CPU_ONLY_LADDER,
+            DEFAULT_LADDER,
+            LlamaServerError,
+            failure_from,
+            start_with_fallback,
+        )
+
+        if not request.llama_binary_path or not request.model_path:
+            raise WorkerFailure(
+                ErrorCode.BACKEND_UNAVAILABLE,
+                Stage.PREPARING,
+                "the production summary backend was asked for without a verified runtime and model",
+            )
+
+        ladder = CPU_ONLY_LADDER if request.summary_profile == "summary-cpu-q4" else DEFAULT_LADDER
+
+        def stepped_down(tried: Any, next_profile: Any, detail: str) -> None:
+            # Never silent. The user is told the model would not run at the size EchoForge asked
+            # for, and the revision records what it actually ran at.
+            self._writer.send(
+                protocol.warning(
+                    job_id,
+                    "summary_context_reduced",
+                    f"{tried.description} did not start ({detail}); trying {next_profile.description}",
+                )
+            )
+
+        try:
+            server = start_with_fallback(
+                binary_path=Path(request.llama_binary_path),
+                model_path=Path(request.model_path),
+                ladder=ladder,
+                seed=request.seed,
+                cancelled=self._cancel.is_set,
+                on_fallback=stepped_down,
+            )
+        except LlamaServerError as error:
+            raise failure_from(error) from error
+
+        return (
+            GemmaSummaryBackend(
+                server,
+                prompt_version=request.prompt_version,
+                model_revision=Path(request.model_path).parent.name,
+            ),
+            server,
+        )
 
     def _run_transcription_job(self, job_id: str, request: TranscriptionRequest) -> int:
         faults = FaultInjector.from_environment(

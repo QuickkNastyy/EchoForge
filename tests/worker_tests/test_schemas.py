@@ -9,6 +9,7 @@ the implementation without anything noticing.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,10 @@ def test_the_pinned_artifact_manifest_validates(manifest, manifest_validator) ->
     manifest_validator.validate(manifest)
 
 
+#: A complete sequential build-release tag, not a shortened hash.
+_BUILD_TAG = re.compile(r"b[0-9]{4,7}")
+
+
 def test_every_pinned_artifact_names_an_immutable_revision(manifest) -> None:
     """The whole point of pinning is that it cannot be quietly bypassed."""
     mutable = {"main", "master", "latest", "head", "dev", "develop", "trunk", "stable", "newest"}
@@ -55,7 +60,11 @@ def test_every_pinned_artifact_names_an_immutable_revision(manifest) -> None:
     for artifact in manifest["artifacts"]:
         revision = artifact["revision"]
         assert revision.lower() not in mutable, artifact["artifact_id"]
-        assert len(revision) >= 7, artifact["artifact_id"]
+
+        # Seven characters, or a whole sequential build tag such as llama.cpp's b10298. The
+        # length floor exists to reject an abbreviated commit SHA, and a build tag is not an
+        # abbreviation of anything - it is the complete identifier the release is addressed by.
+        assert len(revision) >= 7 or _BUILD_TAG.fullmatch(revision), artifact["artifact_id"]
         assert len(artifact["sha256"]) == 64
         assert artifact["size_bytes"] > 0
 

@@ -23,6 +23,13 @@ public sealed record ManifestLoadResult(ArtifactManifest? Manifest, IReadOnlyLis
 /// </summary>
 public static class ArtifactManifestReader
 {
+    /// <summary>
+    /// A complete sequential build-release tag, as llama.cpp publishes (<c>b10298</c>). Shorter
+    /// than a commit SHA and not an abbreviation of one.
+    /// </summary>
+    private static readonly System.Text.RegularExpressions.Regex BuildTag =
+        new("^b[0-9]{4,7}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     /// <summary>Names that move. Pinning to one of them pins nothing.</summary>
     private static readonly string[] MovingReferences =
         ["main", "master", "latest", "head", "dev", "develop", "trunk", "stable", "newest"];
@@ -92,8 +99,12 @@ public static class ArtifactManifestReader
             {
                 problems.Add(Invariant($"{id} pins '{entry.Revision}', which moves"));
             }
-            else if (entry.Revision.Length < 7)
+            else if (entry.Revision.Length < 7 && !BuildTag.IsMatch(entry.Revision))
             {
+                // Seven characters, or a whole sequential build tag such as llama.cpp's b10298.
+                // The floor is there to reject an abbreviated commit SHA, and a build tag is not
+                // an abbreviation of anything: it is the complete identifier the release asset is
+                // addressed by, and it is immutable.
                 problems.Add(Invariant($"{id} has a revision too short to be immutable"));
             }
 

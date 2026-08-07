@@ -178,6 +178,15 @@ public static class TranscriptChunker
         builder.Append(transcript.SourceManifestSha256 ?? string.Empty).Append('');
         builder.Append(firstSegmentId).Append('').Append(lastSegmentId).Append('');
         builder.Append(options.PromptVersion).Append('');
+
+        // The backend is part of the input identity, not a detail of how the input was
+        // processed. The same transcript through the placeholder and through Gemma are two
+        // different extractions, and a checkpoint from one must never be reused for the other.
+        // The tokenizer travels with the backend - it lives inside the pinned GGUF - so naming
+        // the backend and its runtime profile names the tokenizer too.
+        builder.Append(options.Backend).Append('');
+        builder.Append(options.SummaryProfile).Append('');
+        builder.Append(options.Seed.ToString(CultureInfo.InvariantCulture)).Append('');
         builder.Append(options.ChunkCharacters.ToString(CultureInfo.InvariantCulture)).Append('');
         builder.Append(options.OverlapSegments.ToString(CultureInfo.InvariantCulture)).Append('');
         builder.Append(options.InferOwners ? '1' : '0').Append(options.InferDueDates ? '1' : '0').Append('');

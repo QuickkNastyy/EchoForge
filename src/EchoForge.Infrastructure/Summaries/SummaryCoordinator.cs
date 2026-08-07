@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
+using EchoForge.Contracts.Artifacts;
 using EchoForge.Contracts.Processing;
 using EchoForge.Contracts.Sessions;
 using EchoForge.Contracts.Summaries;
@@ -60,6 +61,7 @@ public sealed class SummaryCoordinator : IDisposable
     private readonly WorkerSupervisor _supervisor;
     private readonly ICaptureActivityGate _captureGate;
     private readonly Func<bool> _otherJobRunning;
+    private readonly LlamaRuntimeStager? _runtime;
     private readonly TimeProvider _clock;
     private readonly Lock _sync = new();
 
@@ -73,7 +75,8 @@ public sealed class SummaryCoordinator : IDisposable
         WorkerSupervisor supervisor,
         ICaptureActivityGate? captureGate = null,
         Func<bool>? otherJobRunning = null,
-        TimeProvider? clock = null)
+        TimeProvider? clock = null,
+        LlamaRuntimeStager? runtime = null)
     {
         _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
         _summaries = summaries ?? throw new ArgumentNullException(nameof(summaries));
@@ -82,6 +85,7 @@ public sealed class SummaryCoordinator : IDisposable
         _captureGate = captureGate ?? NoRecordingInProgressGate.Instance;
         _otherJobRunning = otherJobRunning ?? (static () => false);
         _clock = clock ?? TimeProvider.System;
+        _runtime = runtime;
     }
 
     public event EventHandler<SummaryProgressEventArgs>? ProgressChanged;
@@ -134,6 +138,93 @@ public sealed class SummaryCoordinator : IDisposable
     }
 
     public int DiscardOrphanStaging(string sessionId) => _summaries.DiscardOrphanStaging(sessionId);
+
+    /// <summary>True when a local model could actually run. False is a normal, expected state.</summary>
+    public bool ProductionAvailable => ResolveRuntime(new SummaryOptions { Backend = SummaryOptions.ProductionBackend }) is not null;
+
+    /// <summary>What the production backend still needs, for the UI to show.</summary>
+    public SummaryRuntimeStatus? RuntimeStatus(string? profileId = null)
+    {
+        if (_runtime is null)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrEmpty(profileId))
+        {
+            return _runtime.Status(profileId);
+        }
+
+        // The best profile this machine has, which is the one a run would pick.
+        SummaryRuntimeStatus? best = null;
+        foreach (string candidate in ProcessingProfile.SummaryProfiles)
+        {
+            SummaryRuntimeStatus status = _runtime.Status(candidate);
+            if (status.Ready)
+            {
+                return status;
+            }
+
+            best ??= status;
+            if (status.BytesInstalled > best.BytesInstalled)
+            {
+                best = status;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>Downloads and unpacks the summary runtime. Long, cancellable, and never implicit.</summary>
+    public async Task<bool> InstallProductionAsync(
+        string? profileId = null,
+        IProgress<ArtifactProgressEventArgs>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (_runtime is null)
+        {
+            return false;
+        }
+
+        string target = profileId ?? ProcessingProfile.SummaryCudaQ4;
+        LlamaRuntimePaths? paths = await _runtime.EnsureAsync(target, progress, cancellationToken).ConfigureAwait(false);
+
+        StateChanged?.Invoke(this, EventArgs.Empty);
+        return paths is not null;
+    }
+
+    /// <summary>
+    /// The verified runtime a production run would use, or null.
+    ///
+    /// <para>
+    /// Only ever a path the registry has hashed against the manifest. There is deliberately no
+    /// branch that looks for a llama.cpp already on the machine: an unverified binary is not a
+    /// degraded runtime, it is an unknown one, and running a meeting through it would be exactly
+    /// the silent dependency the artifact gate exists to prevent.
+    /// </para>
+    /// </summary>
+    private LlamaRuntimePaths? ResolveRuntime(SummaryOptions options)
+    {
+        if (_runtime is null)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrEmpty(options.SummaryProfile))
+        {
+            return _runtime.TryResolve(options.SummaryProfile);
+        }
+
+        foreach (string candidate in ProcessingProfile.SummaryProfiles)
+        {
+            if (_runtime.TryResolve(candidate) is { } resolved)
+            {
+                return resolved;
+            }
+        }
+
+        return null;
+    }
 
     /// <summary>Asks for a summary. Returns when the job has settled.</summary>
     public async Task<SummaryRunResult> SummarizeAsync(
@@ -189,6 +280,21 @@ public sealed class SummaryCoordinator : IDisposable
             return Refuse("transcript_empty", "That transcript has no segments, so there is nothing to summarise.");
         }
 
+        // Resolved before an attempt exists, so a machine with no summary model refuses cheaply
+        // and leaves no failed revision behind for something it was never able to start.
+        LlamaRuntimePaths? runtime = null;
+        if (options.IsProduction)
+        {
+            runtime = ResolveRuntime(options);
+            if (runtime is null)
+            {
+                return Refuse(
+                    "summary_model_missing",
+                    "The local summary model is not installed yet, so this run would have nothing to summarise with. "
+                    + "Download it first, or switch to the deterministic placeholder.");
+            }
+        }
+
         SummaryAttempt attempt = _summaries.BeginAttempt(
             sessionId, Guid.NewGuid().ToString("n"), transcriptRevision, transcriptDigest, options, Now);
 
@@ -202,7 +308,7 @@ public sealed class SummaryCoordinator : IDisposable
 
         try
         {
-            return await RunAsync(running, transcript, transcriptPath, transcriptDigest, options, cancellationToken)
+            return await RunAsync(running, transcript, transcriptPath, transcriptDigest, options, runtime, cancellationToken)
                 .ConfigureAwait(false);
         }
         finally
@@ -233,6 +339,7 @@ public sealed class SummaryCoordinator : IDisposable
         string transcriptPath,
         string transcriptDigest,
         SummaryOptions options,
+        LlamaRuntimePaths? runtime,
         CancellationToken cancellationToken)
     {
         SummaryAttempt attempt = running.Attempt;
@@ -287,6 +394,10 @@ public sealed class SummaryCoordinator : IDisposable
                 Backend = options.Backend,
                 Chunks = chunks,
                 SynthesisGroupSize = options.SynthesisGroupSize,
+                LlamaBinaryPath = runtime?.ServerBinary ?? string.Empty,
+                ModelPath = runtime?.ModelPath ?? string.Empty,
+                SummaryProfile = runtime?.ProfileId ?? string.Empty,
+                Seed = options.Seed,
                 RepairAttempt = repairAttempt,
                 RejectionReasons = rejected?.Problems ?? [],
                 TestMode = options.TestMode,
@@ -428,6 +539,17 @@ public sealed class SummaryCoordinator : IDisposable
         if (repairAttempt > 0)
         {
             ready += " The first attempt was not supported by the transcript and was refused, so it was generated again.";
+        }
+
+        // A reduced context is never silent. The user is told the model would not start at the
+        // size EchoForge asked for, and the revision records what it actually ran at.
+        foreach (WarningMessage warning in worker.Warnings)
+        {
+            if (string.Equals(warning.Code, "summary_context_reduced", StringComparison.Ordinal))
+            {
+                ready += " This run used a reduced context because the model would not load at the full size on this machine.";
+                break;
+            }
         }
 
         return new SummaryAcceptance(

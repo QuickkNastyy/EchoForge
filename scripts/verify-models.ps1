@@ -91,7 +91,9 @@ foreach ($artifact in $artifacts) {
         if ($mutableRefs -contains $revision.ToLowerInvariant()) {
             Add-Problem "$id pins revision '$revision', which is a moving reference, not an immutable one"
         }
-        elseif ($revision.Length -lt 7) {
+        elseif ($revision.Length -lt 7 -and $revision -notmatch '^b[0-9]{4,7}$') {
+            # Seven characters, or a whole sequential build tag such as llama.cpp's b10298. The
+            # floor rejects an abbreviated commit SHA; a build tag abbreviates nothing.
             Add-Problem "$id has revision '$revision', which is too short to be an immutable commit or tag"
         }
     }

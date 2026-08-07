@@ -118,7 +118,14 @@ public sealed class ArtifactRegistry : IDisposable
             new(ProcessingProfile.Mock, "Deterministic placeholder. Recognises no speech and needs nothing downloaded.", []),
         ];
 
-        foreach (string id in (string[])[ProcessingProfile.CpuInt8, ProcessingProfile.CudaFp16, ProcessingProfile.CudaInt8Float16])
+        foreach (string id in (string[])
+        [
+            ProcessingProfile.CpuInt8,
+            ProcessingProfile.CudaFp16,
+            ProcessingProfile.CudaInt8Float16,
+            ProcessingProfile.SummaryCudaQ4,
+            ProcessingProfile.SummaryCpuQ4,
+        ])
         {
             List<ArtifactEntry> required = [.. _manifest.Artifacts.Where(a => a.BelongsTo(id))];
             if (required.Count > 0)
@@ -138,6 +145,8 @@ public sealed class ArtifactRegistry : IDisposable
         ProcessingProfile.CpuInt8 => "Whisper on the CPU, INT8. Slow but needs no GPU.",
         ProcessingProfile.CudaFp16 => "Whisper on an NVIDIA GPU, FP16.",
         ProcessingProfile.CudaInt8Float16 => "Whisper on an NVIDIA GPU, INT8/FP16. Lower memory.",
+        ProcessingProfile.SummaryCudaQ4 => "Gemma 4 12B Q4_0 on an NVIDIA GPU, through llama.cpp.",
+        ProcessingProfile.SummaryCpuQ4 => "Gemma 4 12B Q4_0 on the CPU. Works everywhere, and is slow enough to say so.",
         _ => id,
     };
 

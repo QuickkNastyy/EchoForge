@@ -156,4 +156,20 @@ public sealed record ProcessingProfile(
     public const string CpuInt8 = "cpu-int8";
     public const string CudaFp16 = "cuda-fp16";
     public const string CudaInt8Float16 = "cuda-int8-float16";
+
+    /// <summary>
+    /// Summarisation profiles. Kept separate from the speech ones rather than reusing
+    /// <see cref="CudaFp16"/> and friends, because the two stages need different files, run at
+    /// different times, and one being installed says nothing about the other. A machine can
+    /// transcribe perfectly well with no summary model on it at all.
+    /// </summary>
+    public const string SummaryCudaQ4 = "summary-cuda-q4";
+
+    public const string SummaryCpuQ4 = "summary-cpu-q4";
+
+    /// <summary>Every summarisation profile, most capable first.</summary>
+    public static readonly IReadOnlyList<string> SummaryProfiles = [SummaryCudaQ4, SummaryCpuQ4];
+
+    public static bool IsSummaryProfile(string? id) =>
+        id is not null && SummaryProfiles.Contains(id, StringComparer.Ordinal);
 }

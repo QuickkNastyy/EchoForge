@@ -601,6 +601,79 @@
         "cpu-int8"
       ],
       "verified_utc": "2026-08-06T00:00:00Z"
+    },
+    {
+      "artifact_id": "summary.llama-cpp-cuda",
+      "kind": "runtime",
+      "repository": "https://github.com/ggml-org/llama.cpp",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10298/llama-b10298-bin-win-cuda-13.3-x64.zip",
+      "revision": "b10298",
+      "filename": "llama-b10298-bin-win-cuda-13.3-x64.zip",
+      "size_bytes": 146523069,
+      "sha256": "6e60ceb4dbe91dc3585d639759b738d5bbe04f36f7b58e387560d65bcdd50a72",
+      "license": "MIT",
+      "license_file": "third_party/licenses/llama-cpp-b10298-LICENSE.txt",
+      "provenance": "Official ggml-org/llama.cpp release build, tag b10298, which git ref/tags resolves to commit 15586e2d7165570fb3aa7c26e0d442e289ef69de. The tag is what the asset URL is addressed by, so it is what revision records. Size and SHA-256 are the digest GitHub's release API publishes for the asset, re-hashed locally after download. The CUDA 13.3 build is the one pinned rather than the CUDA 12.4 build because the target GPU is Blackwell (RTX 50-series, sm_120), which CUDA 12.4 has no kernels for; a 12.4 build would fall back to PTX JIT or fail outright.",
+      "runtime_version": "llama.cpp b10298, Windows x64, CUDA 13.3",
+      "profiles": [
+        "summary-cuda-q4"
+      ],
+      "verified_utc": "2026-08-07T00:00:00Z"
+    },
+    {
+      "artifact_id": "summary.llama-cpp-cudart",
+      "kind": "runtime",
+      "repository": "https://github.com/ggml-org/llama.cpp",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10298/cudart-llama-bin-win-cuda-13.3-x64.zip",
+      "revision": "b10298",
+      "filename": "cudart-llama-bin-win-cuda-13.3-x64.zip",
+      "size_bytes": 390970417,
+      "sha256": "1462a050eb4c684921ba51dcc4cc488a036674c3e73e9945ee705b854808d03e",
+      "license": "NVIDIA CUDA Toolkit EULA (redistributable runtime)",
+      "license_file": "third_party/licenses/nvidia-cuda-redistributable-NOTICE.md",
+      "provenance": "The CUDA runtime libraries llama.cpp's own CUDA build needs, redistributed by ggml-org in the same b10298 release. Pinned rather than taken from the machine because the alternative is depending on whichever CUDA happens to be installed, which is exactly what this manifest exists to prevent - and the CTranslate2 stack Phase 2 uses is a CUDA 12 build, so a CUDA 13 runtime cannot be assumed present. Downloading it for local use is not redistribution; shipping it in an installer is, and that review is still Phase 6's.",
+      "runtime_version": "NVIDIA CUDA 13.3 runtime, Windows x64, as redistributed in llama.cpp b10298",
+      "profiles": [
+        "summary-cuda-q4"
+      ],
+      "verified_utc": "2026-08-07T00:00:00Z"
+    },
+    {
+      "artifact_id": "summary.llama-cpp-cpu",
+      "kind": "runtime",
+      "repository": "https://github.com/ggml-org/llama.cpp",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10298/llama-b10298-bin-win-cpu-x64.zip",
+      "revision": "b10298",
+      "filename": "llama-b10298-bin-win-cpu-x64.zip",
+      "size_bytes": 18360602,
+      "sha256": "e64e26cd4927947314fd9cc5c13efcd48f351500c071cd0402a3661ba9182e3b",
+      "license": "MIT",
+      "license_file": "third_party/licenses/llama-cpp-b10298-LICENSE.txt",
+      "provenance": "The same release, built without CUDA, so the documented CPU fallback is a real pinned runtime rather than a hope that the CUDA build degrades gracefully. 18 MB, so pinning it costs almost nothing.",
+      "runtime_version": "llama.cpp b10298, Windows x64, CPU",
+      "profiles": [
+        "summary-cpu-q4"
+      ],
+      "verified_utc": "2026-08-07T00:00:00Z"
+    },
+    {
+      "artifact_id": "summary.gemma-4-12b-it-qat-q4-0",
+      "kind": "summary-model",
+      "repository": "https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf",
+      "url": "https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf/resolve/29d097773436b69ff9feafd636ab4cf873786537/gemma-4-12b-it-qat-q4_0.gguf",
+      "revision": "29d097773436b69ff9feafd636ab4cf873786537",
+      "filename": "gemma-4-12b-it-qat-q4_0.gguf",
+      "size_bytes": 6975879296,
+      "sha256": "93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b",
+      "license": "Apache-2.0",
+      "license_file": "third_party/licenses/gemma-4-12b-it-qat-q4_0-MODEL-CARD.md",
+      "provenance": "Google's own quantization-aware-training Q4_0 GGUF, from the official google/ repository, pinned to commit 29d097773436b69ff9feafd636ab4cf873786537. The size and SHA-256 are the LFS object the Hugging Face API reports for that commit, re-hashed locally after download. The repository is not gated and the model card states Apache-2.0, which is a change from the Gemma Terms of Use that governed Gemma 3. The vision projector (mmproj-gemma-4-12b-it-qat-q4_0.gguf) in the same repository is deliberately NOT pinned: EchoForge summarises text and loading a vision tower would spend VRAM on a capability it never uses. The tokenizer and chat template live inside this GGUF, so they cannot drift away from the weights.",
+      "runtime_version": "llama.cpp b10298; Gemma 4 12B instruction-tuned, QAT Q4_0",
+      "profiles": [
+        "summary-cuda-q4",
+        "summary-cpu-q4"
+      ],
+      "verified_utc": "2026-08-07T00:00:00Z"
     }
   ]
 }
