@@ -392,7 +392,7 @@ public sealed class DerivativeBuilder(ISessionStore sessions)
     /// disagree and neither can drift.
     /// </para>
     /// </summary>
-    private static long FrameAt(double sessionSeconds, int sampleRate) =>
+    internal static long FrameAt(double sessionSeconds, int sampleRate) =>
         (long)Math.Round(Math.Max(0, sessionSeconds) * sampleRate, MidpointRounding.AwayFromZero);
 
     private static TimingSpan GapSpan(long firstFrame, long frames, int epoch, int rate) => new()
@@ -436,7 +436,7 @@ public sealed class DerivativeBuilder(ISessionStore sessions)
         }
     }
 
-    private static void WriteWavHeader(byte[] header, int sampleRate, int channels, long frames)
+    internal static void WriteWavHeader(byte[] header, int sampleRate, int channels, long frames)
     {
         long dataBytes = frames * channels * 2;
 
@@ -523,7 +523,7 @@ public sealed class DerivativeBuilder(ISessionStore sessions)
         return record;
     }
 
-    private static string Resolve(SessionPaths paths, string relativePath)
+    internal static string Resolve(SessionPaths paths, string relativePath)
     {
         string root = Path.GetFullPath(paths.Root);
         string resolved = Path.GetFullPath(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
@@ -541,10 +541,10 @@ public sealed class DerivativeBuilder(ISessionStore sessions)
         return resolved;
     }
 
-    private static string Relative(SessionPaths paths, string path) =>
+    internal static string Relative(SessionPaths paths, string path) =>
         Path.GetRelativePath(paths.Root, path).Replace('\\', '/');
 
-    private static void WriteAtomically(string path, byte[] payload)
+    internal static void WriteAtomically(string path, byte[] payload)
     {
         string temporary = path + ".partial";
 
@@ -557,7 +557,7 @@ public sealed class DerivativeBuilder(ISessionStore sessions)
         File.Move(temporary, path, overwrite: true);
     }
 
-    private static async Task<string> HashFileAsync(string path, CancellationToken cancellationToken)
+    internal static async Task<string> HashFileAsync(string path, CancellationToken cancellationToken)
     {
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         byte[] buffer = new byte[1024 * 1024];
