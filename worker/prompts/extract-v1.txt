@@ -4,16 +4,20 @@ was said.
 
 The transcript slice follows, one line per segment, in this form:
 
-    [segment-000123] Speaker name: what they said
+    segment-000123  Speaker name: what they said
+
+The segment ID is the first token on the line, before the speaker. It is exactly
+`segment-000123`: the digits are part of it and nothing else is.
 
 ## The only rule that matters
 
 Every item you emit must be supported by the segments you were given, and must cite them by the
-exact segment IDs in the brackets. You may only cite IDs that appear in this slice. A citation to
-anything else is discarded by EchoForge and the whole extraction is refused, so inventing one does
-not get the fact through — it loses the ones that were real.
+exact segment IDs shown at the start of each line. You may only cite IDs that appear in this
+slice. A citation to anything else is discarded by EchoForge, so inventing one does not get the
+fact through - it silently loses the fact instead.
 
-Do not paraphrase a segment ID. Do not renumber them. Copy them exactly.
+Do not paraphrase a segment ID. Do not renumber them. Do not wrap them in brackets, quotes or
+anything else. Copy them exactly: `segment-000123`, never `[segment-000123]` and never `123`.
 
 ## certainty: what the transcript supports
 

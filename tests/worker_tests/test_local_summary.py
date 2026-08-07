@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from echoforge_worker.gemma_summary import (
+from echoforge_worker.local_summary import (
     REPLY_TOKENS,
     TEMPLATE_OVERHEAD_TOKENS,
-    GemmaSummaryBackend,
+    LocalSummaryBackend,
     TokenBudget,
     _apply_merges,
     _parse,
@@ -50,14 +50,27 @@ class FakeServer:
     def token_count(self, text: str) -> int:
         return max(1, int(len(text) * self._tokens_per_char))
 
-    def generate_json(self, system, user, schema, max_tokens):  # noqa: ANN001, ANN201
+    def generate_json(self, system, user, schema, max_tokens, on_response=None):  # noqa: ANN001, ANN201
         self.prompts.append(user)
+
+        # The real server hands back llama.cpp's own accounting; the fake hands back a plausible
+        # shape so the telemetry path is exercised rather than skipped in tests.
+        if on_response is not None:
+            on_response({
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+                "timings": {"prompt_ms": 50.0, "predicted_ms": 200.0},
+            })
+
         if not self._replies:
             return json.dumps(_empty())
         reply = self._replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
         return reply if isinstance(reply, str) else json.dumps(reply)
+
+    @property
+    def pid(self):  # noqa: ANN201
+        return None
 
 
 def _empty() -> dict:
@@ -83,9 +96,9 @@ class Chunk:
         self.index = index
 
 
-def backend_with(replies=None, **kwargs) -> tuple[GemmaSummaryBackend, FakeServer]:
+def backend_with(replies=None, profile=None, **kwargs) -> tuple[LocalSummaryBackend, FakeServer]:
     server = FakeServer(replies, **kwargs)
-    return GemmaSummaryBackend(server, model_revision="rev-under-test"), server
+    return LocalSummaryBackend(server, profile=profile, model_revision="rev-under-test"), server
 
 
 # -- prompts -----------------------------------------------------------------------------------
@@ -157,7 +170,7 @@ def test_the_schema_never_lets_the_model_emit_a_calendar_date() -> None:
 def test_segments_are_rendered_with_the_ids_the_prompt_asks_for() -> None:
     rendered = render_segments([segment(1, "We will ship on Friday")])
 
-    assert rendered == "[segment-000001] You: We will ship on Friday"
+    assert rendered == "segment-000001  You: We will ship on Friday"
 
 
 # -- the allow-list ----------------------------------------------------------------------------

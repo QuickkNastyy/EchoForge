@@ -616,7 +616,8 @@
       "provenance": "Official ggml-org/llama.cpp release build, tag b10298, which git ref/tags resolves to commit 15586e2d7165570fb3aa7c26e0d442e289ef69de. The tag is what the asset URL is addressed by, so it is what revision records. Size and SHA-256 are the digest GitHub's release API publishes for the asset, re-hashed locally after download. The CUDA 13.3 build is the one pinned rather than the CUDA 12.4 build because the target GPU is Blackwell (RTX 50-series, sm_120), which CUDA 12.4 has no kernels for; a 12.4 build would fall back to PTX JIT or fail outright.",
       "runtime_version": "llama.cpp b10298, Windows x64, CUDA 13.3",
       "profiles": [
-        "summary-cuda-q4"
+        "summary-cuda-q4",
+        "summary-bakeoff"
       ],
       "verified_utc": "2026-08-07T00:00:00Z"
     },
@@ -634,7 +635,8 @@
       "provenance": "The CUDA runtime libraries llama.cpp's own CUDA build needs, redistributed by ggml-org in the same b10298 release. Pinned rather than taken from the machine because the alternative is depending on whichever CUDA happens to be installed, which is exactly what this manifest exists to prevent - and the CTranslate2 stack Phase 2 uses is a CUDA 12 build, so a CUDA 13 runtime cannot be assumed present. Downloading it for local use is not redistribution; shipping it in an installer is, and that review is still Phase 6's.",
       "runtime_version": "NVIDIA CUDA 13.3 runtime, Windows x64, as redistributed in llama.cpp b10298",
       "profiles": [
-        "summary-cuda-q4"
+        "summary-cuda-q4",
+        "summary-bakeoff"
       ],
       "verified_utc": "2026-08-07T00:00:00Z"
     },
@@ -672,6 +674,24 @@
       "profiles": [
         "summary-cuda-q4",
         "summary-cpu-q4"
+      ],
+      "verified_utc": "2026-08-07T00:00:00Z"
+    },
+    {
+      "artifact_id": "summary.ministral-3-14b-instruct-2512-q4-k-m",
+      "kind": "summary-model",
+      "repository": "https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512-GGUF",
+      "url": "https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512-GGUF/resolve/74fac473c43357d7fb2671713608183cc72496d0/Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
+      "revision": "74fac473c43357d7fb2671713608183cc72496d0",
+      "filename": "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
+      "size_bytes": 8239593024,
+      "sha256": "824e0f3373e69b84f2cae46fdcb9bd1ebc6ab3bfc7acc125d818b7b8178cc613",
+      "license": "Apache-2.0",
+      "license_file": "third_party/licenses/ministral-3-14b-instruct-2512-MODEL-CARD.md",
+      "provenance": "Mistral AI's own GGUF repository, not a community re-quantization, pinned to commit 74fac473c43357d7fb2671713608183cc72496d0. Size and SHA-256 are the LFS object the Hugging Face API reports for that commit, re-hashed locally after download. Q4_K_M is the quantization the architecture plan names for the bake-off, and it is the closest comparable to Gemma's Q4_0 at 8.24 GB against 6.98 GB - the difference in footprint is itself part of what the comparison is measuring. The BF16 multimodal projector in the same repository is deliberately NOT pinned: EchoForge summarises text, and it is a BF16 file larger than the whole quantized model. This model exists to be compared against Gemma 4, and is not EchoForge's default.",
+      "runtime_version": "llama.cpp b10298; Ministral 3 14B Instruct 2512, Q4_K_M",
+      "profiles": [
+        "summary-bakeoff"
       ],
       "verified_utc": "2026-08-07T00:00:00Z"
     }

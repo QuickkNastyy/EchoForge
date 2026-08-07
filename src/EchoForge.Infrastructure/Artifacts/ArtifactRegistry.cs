@@ -125,6 +125,7 @@ public sealed class ArtifactRegistry : IDisposable
             ProcessingProfile.CudaInt8Float16,
             ProcessingProfile.SummaryCudaQ4,
             ProcessingProfile.SummaryCpuQ4,
+            ProcessingProfile.SummaryBakeoff,
         ])
         {
             List<ArtifactEntry> required = [.. _manifest.Artifacts.Where(a => a.BelongsTo(id))];
@@ -147,6 +148,7 @@ public sealed class ArtifactRegistry : IDisposable
         ProcessingProfile.CudaInt8Float16 => "Whisper on an NVIDIA GPU, INT8/FP16. Lower memory.",
         ProcessingProfile.SummaryCudaQ4 => "Gemma 4 12B Q4_0 on an NVIDIA GPU, through llama.cpp.",
         ProcessingProfile.SummaryCpuQ4 => "Gemma 4 12B Q4_0 on the CPU. Works everywhere, and is slow enough to say so.",
+        ProcessingProfile.SummaryBakeoff => "Ministral 3 14B Q4_K_M, for measuring against the default. Never the default itself.",
         _ => id,
     };
 

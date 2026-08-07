@@ -54,9 +54,22 @@ public sealed class LlamaRuntimeStager
     public LlamaRuntimeStager(ArtifactRegistry registry) =>
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
 
-    /// <summary>The model every summary profile uses. One file, one digest, one revision.</summary>
-    public ArtifactEntry? ModelEntry =>
-        _registry.Artifacts.FirstOrDefault(a => string.Equals(a.Kind, "summary-model", StringComparison.Ordinal));
+    /// <summary>
+    /// The model a given profile uses.
+    ///
+    /// <para>
+    /// Profile-scoped rather than "the first summary model in the manifest", because there is now
+    /// more than one: taking the first would hand a Gemma run the Ministral weights the moment a
+    /// comparison candidate was pinned, and it would look like a quality result rather than a
+    /// wiring mistake.
+    /// </para>
+    /// </summary>
+    public ArtifactEntry? ModelEntryFor(string profileId) =>
+        _registry.Profile(profileId)?.Artifacts
+            .FirstOrDefault(a => string.Equals(a.Kind, "summary-model", StringComparison.Ordinal));
+
+    /// <summary>The default profile's model. Kept for callers that only ever mean production.</summary>
+    public ArtifactEntry? ModelEntry => ModelEntryFor(ProcessingProfile.SummaryCudaQ4);
 
     public string StagingRoot(string profileId) =>
         Path.Combine(_registry.ModelRoot, "summary-runtime", profileId);
@@ -98,7 +111,7 @@ public sealed class LlamaRuntimeStager
     public LlamaRuntimePaths? TryResolve(string profileId)
     {
         ProcessingProfile? profile = _registry.Profile(profileId);
-        if (profile is null || ModelEntry is not { } model)
+        if (profile is null || ModelEntryFor(profileId) is not { } model)
         {
             return null;
         }

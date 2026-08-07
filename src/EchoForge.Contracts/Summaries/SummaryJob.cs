@@ -12,9 +12,24 @@ public sealed record SummaryOptions
     /// <summary>The production backend's name. Anything else runs the placeholder.</summary>
     public const string ProductionBackend = "gemma-4-12b";
 
+    /// <summary>
+    /// The bake-off candidate.
+    ///
+    /// <para>
+    /// A local model exactly like the production one — same schema, same evidence rules, same
+    /// prompts, same validator — that EchoForge measures rather than summarises with. It is named
+    /// here so an evaluation can ask for it, and it is deliberately not the default.
+    /// </para>
+    /// </summary>
+    public const string ComparisonBackend = "ministral-3-14b";
+
     public const string MockBackend = "mock-summary";
 
-    public bool IsProduction => string.Equals(Backend, ProductionBackend, StringComparison.Ordinal);
+    /// <summary>Every backend that loads a real model and needs a verified runtime.</summary>
+    public static readonly IReadOnlyList<string> LocalModelBackends = [ProductionBackend, ComparisonBackend];
+
+    /// <summary>True for any run that needs llama.cpp and a GGUF, whichever model it is.</summary>
+    public bool IsProduction => LocalModelBackends.Contains(Backend, StringComparer.Ordinal);
 
     /// <summary>
     /// Which runtime profile the production backend should use. Empty means "the best one this

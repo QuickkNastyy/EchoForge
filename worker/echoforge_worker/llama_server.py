@@ -117,6 +117,9 @@ class LlamaServer:
     binary_path: Path
     model_path: Path
     profile: LlamaProfile
+    #: Model-specific llama-server arguments, from the model profile. Everything common lives in
+    #: the command below; this is only what genuinely differs between one GGUF and another.
+    model_args: tuple[str, ...] = ()
     seed: int = 7
     cancelled: Callable[[], bool] | None = None
     startup_timeout: float = STARTUP_TIMEOUT_SECONDS
@@ -153,17 +156,11 @@ class LlamaServer:
             "--cache-type-v", self.profile.cache_type,
             "--no-webui",
             "--no-warmup",
-            # Thinking off, twice over, because the model card's account of it is not what
-            # llama.cpp actually does. The card says reasoning is *triggered* by a <|think|>
-            # token at the start of the system prompt; the chat template baked into this GGUF
-            # turns it on regardless. Measured, not assumed: with reasoning left at its default
-            # the model spent the entire reply budget in `reasoning_content` and returned an
-            # empty message, so every extraction failed as "ran out of room". The plan excludes
-            # reasoning mode, a thinking block would break the JSON grammar anyway, and the
-            # budget is pinned to 0 as well as the switch to off so that a future template
-            # change cannot quietly re-enable it.
-            "--reasoning", "off",
-            "--reasoning-budget", "0",
+            # Whatever this particular model needs and no more. Gemma pins reasoning off here
+            # because its template enables thinking by default despite its card describing it as
+            # opt-in; Ministral passes nothing because it has no thinking mode to disable. The
+            # difference belongs to the model profile, not to this file.
+            *self.model_args,
         ]
 
         # Offline, belt and braces: llama.cpp will happily fetch a model from Hugging Face if it
@@ -290,6 +287,11 @@ class LlamaServer:
     def port(self) -> int:
         return self._port
 
+    @property
+    def pid(self) -> int | None:
+        """The server's process id, so VRAM can be measured for it rather than for the card."""
+        return self._process.pid if self._process is not None else None
+
     def stderr_tail(self) -> str:
         return "\n".join(self._stderr)
 
@@ -324,6 +326,7 @@ class LlamaServer:
         user: str,
         schema: dict[str, Any],
         max_tokens: int,
+        on_response: Callable[[dict[str, Any]], None] | None = None,
     ) -> str:
         """One schema-constrained generation. Returns the raw text; parsing is the caller's.
 
@@ -351,6 +354,12 @@ class LlamaServer:
         }
 
         result = self._post("/v1/chat/completions", payload, timeout=self.generation_timeout)
+
+        # llama.cpp reports what it actually did - prompt tokens, decoded tokens, and the time
+        # each took. That is worth more than timing the HTTP call, which cannot tell prompt
+        # evaluation and generation apart.
+        if on_response is not None:
+            on_response(result)
 
         try:
             choice = result["choices"][0]
@@ -436,9 +445,10 @@ def start_with_fallback(
     binary_path: Path,
     model_path: Path,
     ladder: Sequence[LlamaProfile],
+    model_args: Sequence[str] = (),
     seed: int = 7,
     cancelled: Callable[[], bool] | None = None,
-    on_fallback: Callable[[LlamaProfile, LlamaProfile, str], None] | None = None,
+    on_fallback: Callable[[LlamaProfile, LlamaProfile, str, bool], None] | None = None,
     startup_timeout: float = STARTUP_TIMEOUT_SECONDS,
 ) -> LlamaServer:
     """Start the most capable profile that this machine will actually run.
@@ -457,6 +467,7 @@ def start_with_fallback(
             binary_path=binary_path,
             model_path=model_path,
             profile=profile,
+            model_args=tuple(model_args),
             seed=seed,
             cancelled=cancelled,
             startup_timeout=startup_timeout,
@@ -480,7 +491,7 @@ def start_with_fallback(
                 ) from error
 
             if on_fallback is not None:
-                on_fallback(profile, ladder[index + 1], error.detail)
+                on_fallback(profile, ladder[index + 1], error.detail, error.out_of_memory)
 
     raise LlamaServerError("the summary runtime could not be started")
 

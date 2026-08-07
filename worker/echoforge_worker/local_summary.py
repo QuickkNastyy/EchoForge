@@ -1,4 +1,4 @@
-"""The production summary backend: Gemma 4 through llama.cpp, behind the Phase 3A seam.
+"""The production summary backend: a local model through llama.cpp, behind the Phase 3A seam.
 
 Everything that decides whether a claim may be shown to a user already existed before this file
 did, and none of it lives here. This module produces candidates; ``SummaryValidator`` on the host
@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Final, Sequence
 
 from .llama_server import LlamaServer, LlamaServerError
+from .model_profiles import GEMMA_4_12B, SummaryModelProfile
 from .protocol import Cancelled, ErrorCode, Stage, WorkerFailure
 from .summarize import (
     EXPLICIT,
@@ -128,8 +129,16 @@ def extraction_schema() -> dict[str, Any]:
 
 
 def render_segments(segments: Sequence[TranscriptSegment]) -> str:
-    """The transcript slice, in the one form the prompt describes."""
-    return "\n".join(f"[{segment.id}] {segment.speaker_name}: {segment.text}" for segment in segments)
+    """The transcript slice, in the one form the prompt describes.
+
+    The segment ID stands alone at the start of the line, with nothing wrapped around it. It used
+    to be shown as ``[segment-000002]``, and one of the two bake-off models copied the brackets
+    into its citations - producing ``"[segment-000002]"``, which the allow-list correctly refused,
+    which silently emptied every summary that model produced. The guardrail did its job; the
+    prompt was ambiguous about whether the brackets were delimiters or part of the identifier, and
+    an ambiguity two models resolve differently is a defect in the question, not in either answer.
+    """
+    return "\n".join(f"{segment.id}  {segment.speaker_name}: {segment.text}" for segment in segments)
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,38 +155,48 @@ class TokenBudget:
         return max(256, room)
 
 
-class GemmaSummaryBackend(SummaryBackend):
-    """Gemma 4 12B, quantization-aware Q4_0, served locally by llama.cpp.
+class LocalSummaryBackend(SummaryBackend):
+    """A local language model, served by llama.cpp, reading the transcript.
 
-    ``produces_summaries`` is true: unlike the placeholder, this one is a language model reading
-    the transcript. That says nothing about whether any particular answer is *correct*, which is
-    what the validator and the eventual real-meeting corpus are for.
+    One class for every candidate. What differs between Gemma and Ministral is their chat
+    template and their server flags, and both of those live in the model profile - the extraction
+    prompt, the schema, the allow-list, the owner and date invariants and the fold are identical,
+    which is the only reason a comparison between them measures the models rather than the
+    pipelines.
+
+    ``produces_summaries`` is true: unlike the placeholder, this is a language model reading the
+    transcript. That says nothing about whether any particular answer is *correct*, which is what
+    the validator and the annotated corpus are for.
     """
 
-    name = "gemma-4-12b"
     produces_summaries = True
 
     def __init__(
         self,
         server: LlamaServer,
+        profile: SummaryModelProfile | None = None,
         extract_prompt: str | None = None,
         synthesize_prompt: str | None = None,
         repair_prompt: str | None = None,
         prompt_version: str = "meeting-summary-v1",
-        model_id: str = "gemma-4-12b-it-qat-q4_0",
         model_revision: str = "",
         worker_version: str | None = None,
     ) -> None:
+        self._profile = profile or GEMMA_4_12B
+        self.name = self._profile.backend
         self._server = server
         self._extract_prompt = extract_prompt if extract_prompt is not None else load_prompt("extract-v1")
         self._synthesize_prompt = synthesize_prompt if synthesize_prompt is not None else load_prompt("synthesize-v1")
         self._repair_prompt = repair_prompt if repair_prompt is not None else load_prompt("repair-v1")
         self._prompt_version = prompt_version
-        self._model_id = model_id
+        self._model_id = self._profile.model_id
         self._model_revision = model_revision
         self._worker_version = worker_version
         self._schema = extraction_schema()
         self._overhead: int | None = None
+        #: Set by the job so llama.cpp's own accounting lands in one place. Optional, so a test
+        #: can drive the backend without one.
+        self.measurements = None
 
     # -- what produced the summary --------------------------------------------------------
 
@@ -264,6 +283,7 @@ class GemmaSummaryBackend(SummaryBackend):
                 user=render_segments(segments),
                 schema=self._schema,
                 max_tokens=REPLY_TOKENS,
+                on_response=self._record,
             )
         except LlamaServerError as error:
             from .llama_server import failure_from
@@ -428,6 +448,7 @@ class GemmaSummaryBackend(SummaryBackend):
                 user=json.dumps(payload, ensure_ascii=False),
                 schema=merge_schema,
                 max_tokens=REPLY_TOKENS,
+                on_response=self._record,
             )
         except (LlamaServerError, Cancelled):
             # Deterministic merging is a correct answer, just a less clever one.
@@ -438,6 +459,14 @@ class GemmaSummaryBackend(SummaryBackend):
             return deduplicate(group)
 
         return _apply_merges(group, parsed.get("merges") or [])
+
+    def _record(self, response: dict[str, Any]) -> None:
+        if self.measurements is not None:
+            self.measurements.record_response(response)
+
+    @property
+    def profile(self) -> SummaryModelProfile:
+        return self._profile
 
     @property
     def repair_prompt(self) -> str:

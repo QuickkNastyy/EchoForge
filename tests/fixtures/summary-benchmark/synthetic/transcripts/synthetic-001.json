@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "session_id": "01JSYNTHETIC001",
+  "transcript_revision": 1,
+  "created_at_utc": "2026-08-07T12:00:00+00:00",
+  "source_manifest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "duration_seconds": 600.0,
+  "model": {
+    "runtime": "echoforge-synthetic",
+    "backend": "written-by-hand",
+    "model_id": "none",
+    "revision": "none",
+    "compute_type": "none",
+    "recognizes_speech": false,
+    "worker_version": "0.1.0"
+  },
+  "epochs": [
+    {
+      "index": 1,
+      "start_seconds": 0.0,
+      "end_seconds": 600.0
+    }
+  ],
+  "speakers": [
+    {
+      "id": "speaker-you",
+      "name": "You",
+      "source_track": "microphone"
+    },
+    {
+      "id": "speaker-remote",
+      "name": "Remote",
+      "source_track": "system"
+    }
+  ],
+  "languages": [
+    {
+      "source_track": "microphone",
+      "code": "en",
+      "probability": null
+    }
+  ],
+  "segments": [
+    {
+      "id": "segment-000001",
+      "epoch": 1,
+      "start_seconds": 0.0,
+      "end_seconds": 10.0,
+      "speaker_id": "speaker-you",
+      "speaker_name": "You",
+      "source_track": "microphone",
+      "text": "Right, let's settle the release date today.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000002",
+      "epoch": 1,
+      "start_seconds": 12.0,
+      "end_seconds": 22.0,
+      "speaker_id": "speaker-remote",
+      "speaker_name": "Remote",
+      "source_track": "system",
+      "text": "We will ship the beta on Friday.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000003",
+      "epoch": 1,
+      "start_seconds": 24.0,
+      "end_seconds": 34.0,
+      "speaker_id": "speaker-you",
+      "speaker_name": "You",
+      "source_track": "microphone",
+      "text": "Agreed, Friday works for the beta.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000004",
+      "epoch": 1,
+      "start_seconds": 36.0,
+      "end_seconds": 46.0,
+      "speaker_id": "speaker-remote",
+      "speaker_name": "Remote",
+      "source_track": "system",
+      "text": "Alex will prepare the release notes by 2026-08-14.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000005",
+      "epoch": 1,
+      "start_seconds": 48.0,
+      "end_seconds": 58.0,
+      "speaker_id": "speaker-you",
+      "speaker_name": "You",
+      "source_track": "microphone",
+      "text": "Who is going to handle the migration guide?",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000006",
+      "epoch": 1,
+      "start_seconds": 60.0,
+      "end_seconds": 70.0,
+      "speaker_id": "speaker-remote",
+      "speaker_name": "Remote",
+      "source_track": "system",
+      "text": "Someone will have to write it up, we can decide later.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000007",
+      "epoch": 1,
+      "start_seconds": 72.0,
+      "end_seconds": 82.0,
+      "speaker_id": "speaker-you",
+      "speaker_name": "You",
+      "source_track": "microphone",
+      "text": "Hold on, support says Friday is bad for them.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000008",
+      "epoch": 1,
+      "start_seconds": 84.0,
+      "end_seconds": 94.0,
+      "speaker_id": "speaker-remote",
+      "speaker_name": "Remote",
+      "source_track": "system",
+      "text": "Fine, we will ship the beta on Monday instead.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000009",
+      "epoch": 1,
+      "start_seconds": 96.0,
+      "end_seconds": 106.0,
+      "speaker_id": "speaker-you",
+      "speaker_name": "You",
+      "source_track": "microphone",
+      "text": "Should we also raise the price to ninety-nine dollars?",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000010",
+      "epoch": 1,
+      "start_seconds": 108.0,
+      "end_seconds": 118.0,
+      "speaker_id": "speaker-remote",
+      "speaker_name": "Remote",
+      "source_track": "system",
+      "text": "Let's not decide that now, it needs finance.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000011",
+      "epoch": 1,
+      "start_seconds": 120.0,
+      "end_seconds": 130.0,
+      "speaker_id": "speaker-you",
+      "speaker_name": "You",
+      "source_track": "microphone",
+      "text": "One risk: the vendor has not confirmed the certificate yet.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000012",
+      "epoch": 1,
+      "start_seconds": 132.0,
+      "end_seconds": 142.0,
+      "speaker_id": "speaker-remote",
+      "speaker_name": "Remote",
+      "source_track": "system",
+      "text": "And we are blocked on their sandbox until they do.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    }
+  ]
+}

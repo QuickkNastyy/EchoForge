@@ -117,6 +117,7 @@
               "vulkan",
               "summary-cuda-q4",
               "summary-cpu-q4",
+              "summary-bakeoff",
               "any"
             ]
           }

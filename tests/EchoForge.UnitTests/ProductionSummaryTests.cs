@@ -72,9 +72,12 @@ public sealed class ProductionSummaryTests : IDisposable
     [Fact]
     public void TheSummaryModelIsPinnedToAnOfficialImmutableRevision()
     {
-        ArtifactEntry model = Assert.Single(Manifest().Artifacts, a => a.Kind == "summary-model");
+        // There is more than one summary model in the manifest now that a bake-off candidate is
+        // pinned, so this names the default rather than assuming it is the only one.
+        ArtifactEntry model = Assert.Single(
+            Manifest().Artifacts, a => a.ArtifactId == "summary.gemma-4-12b-it-qat-q4-0");
 
-        Assert.Equal("summary.gemma-4-12b-it-qat-q4-0", model.ArtifactId);
+        Assert.Equal("summary-model", model.Kind);
 
         // Google's own repository, not a community re-quantization of it.
         Assert.Contains("huggingface.co/google/", model.Repository, StringComparison.Ordinal);

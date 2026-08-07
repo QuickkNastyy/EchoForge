@@ -17,6 +17,7 @@ import os
 import platform
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Final, Mapping, TextIO
 
@@ -187,13 +188,22 @@ class WorkerSession:
                 )
             )
 
+        from .measurements import RunMeasurements, process_vram_bytes, write_telemetry
+
         # The server, when there is one, is started before anything is read and stopped in the
         # finally below whatever happens next - including a cancel arriving mid-generation. The
         # Job Object would take it down anyway; this is so the ordinary path does not rely on that.
         server = None
+        measurements = RunMeasurements(
+            backend=request.backend,
+            prompt_version=request.prompt_version,
+            repair_attempts=request.repair_attempt,
+            chunks=len(request.chunks),
+        )
+        started_at = time.perf_counter()
 
         try:
-            backend, server = self._resolve_summary_backend(job_id, request)
+            backend, server = self._resolve_summary_backend(job_id, request, measurements)
         except Cancelled:
             self._writer.send(protocol.cancelled(job_id, self._stage))
             return EXIT_OK
@@ -208,20 +218,37 @@ class WorkerSession:
         self._total_units = max(1, len(request.chunks))
         self._emit_progress(Stage.PREPARING)
 
+        if server is not None:
+            measurements.actual_context = server.context_tokens
+            measurements.requested_context = server.profile.context_tokens
+            measurements.requested_gpu_layers = server.profile.gpu_layers
+            measurements.kv_cache_type = server.profile.cache_type
+            measurements.runtime_tier = server.profile.name
+            measurements.used_cpu_only = not server.profile.uses_gpu
+            setattr(backend, "measurements", measurements)
+
         try:
             faults.during_transcription(self._cancel.is_set)
 
             document, segments = read_transcript(Path(request.transcript_path))
 
+            extraction_started = time.perf_counter()
             candidates = []
             for chunk in request.chunks:
                 self._check_cancelled()
                 candidates.extend(backend.extract(chunk, slice_chunk(segments, chunk), request))
                 self._completed_units += 1
                 self._emit_progress(Stage.TRANSCRIBING_MICROPHONE)
+            measurements.extraction_seconds = time.perf_counter() - extraction_started
+
+            # Sampled while the model is still resident. Asking after the server has stopped
+            # would measure an empty card.
+            if server is not None:
+                measurements.peak_vram_bytes, measurements.vram_source = process_vram_bytes(server.pid)
 
             self._check_cancelled()
             self._emit_progress(Stage.MERGING)
+            synthesis_started = time.perf_counter()
 
             def folded_a_level(level: int, groups: int, remaining: int) -> None:
                 # A fold over a long meeting is several passes, and silence during them looks
@@ -237,6 +264,9 @@ class WorkerSession:
                 on_level=folded_a_level,
             )
 
+            measurements.synthesis_seconds = time.perf_counter() - synthesis_started
+            measurements.synthesis_levels = synthesis.levels
+
             self._check_cancelled()
             self._emit_progress(Stage.VALIDATING)
             summary = build_summary(request, document, segments, synthesis.candidates, backend, synthesis)
@@ -244,6 +274,11 @@ class WorkerSession:
             self._check_cancelled()
             self._emit_progress(Stage.WRITING_OUTPUT)
             digest = _write_json(request.output_path, faults.corrupt_summary(summary))
+
+            measurements.total_seconds = time.perf_counter() - started_at
+            # Beside the summary, never inside it: prose and measurements are different things
+            # with different readers, and telemetry must stay free of meeting content.
+            write_telemetry(request.output_path, measurements)
         except Cancelled:
             self._writer.send(protocol.cancelled(job_id, self._stage))
             return EXIT_OK
@@ -264,19 +299,22 @@ class WorkerSession:
         faults.after_result(self._writer, message, job_id)
         return EXIT_OK
 
-    def _resolve_summary_backend(self, job_id: str, request: Any) -> tuple[Any, Any]:
+    def _resolve_summary_backend(self, job_id: str, request: Any, measurements: Any = None) -> tuple[Any, Any]:
         """The placeholder, or a real model with a server behind it.
 
         Returns the backend and the server that has to be stopped afterwards - ``None`` for the
         placeholder, which has nothing to tear down.
         """
-        from .summarize import PRODUCTION_BACKEND, resolve_summary_backend
+        from .model_profiles import is_local_model, resolve_model_profile
+        from .summarize import resolve_summary_backend
 
-        if request.backend != PRODUCTION_BACKEND:
+        if not is_local_model(request.backend):
             return resolve_summary_backend(request.backend), None
 
+        model_profile = resolve_model_profile(request.backend)
+
         # Imported here so a machine with no summary model installed never loads any of it.
-        from .gemma_summary import GemmaSummaryBackend
+        from .local_summary import LocalSummaryBackend
         from .llama_server import (
             CPU_ONLY_LADDER,
             DEFAULT_LADDER,
@@ -294,9 +332,13 @@ class WorkerSession:
 
         ladder = CPU_ONLY_LADDER if request.summary_profile == "summary-cpu-q4" else DEFAULT_LADDER
 
-        def stepped_down(tried: Any, next_profile: Any, detail: str) -> None:
+        def stepped_down(tried: Any, next_profile: Any, detail: str, out_of_memory: bool) -> None:
             # Never silent. The user is told the model would not run at the size EchoForge asked
-            # for, and the revision records what it actually ran at.
+            # for, the revision records what it actually ran at, and the telemetry records how
+            # many rungs it took and whether memory was the reason.
+            if measurements is not None:
+                measurements.note_fallback(tried.name, detail, out_of_memory)
+
             self._writer.send(
                 protocol.warning(
                     job_id,
@@ -305,11 +347,14 @@ class WorkerSession:
                 )
             )
 
+        load_started = time.perf_counter()
+
         try:
             server = start_with_fallback(
                 binary_path=Path(request.llama_binary_path),
                 model_path=Path(request.model_path),
                 ladder=ladder,
+                model_args=model_profile.server_args,
                 seed=request.seed,
                 cancelled=self._cancel.is_set,
                 on_fallback=stepped_down,
@@ -317,9 +362,19 @@ class WorkerSession:
         except LlamaServerError as error:
             raise failure_from(error) from error
 
+        if measurements is not None:
+            from .measurements import llama_version
+
+            measurements.model_load_seconds = time.perf_counter() - load_started
+            measurements.model_id = model_profile.model_id
+            measurements.quantization = model_profile.quantization
+            measurements.model_revision = Path(request.model_path).parent.name
+            measurements.llama_version = llama_version(request.llama_binary_path)
+
         return (
-            GemmaSummaryBackend(
+            LocalSummaryBackend(
                 server,
+                profile=model_profile,
                 prompt_version=request.prompt_version,
                 model_revision=Path(request.model_path).parent.name,
             ),

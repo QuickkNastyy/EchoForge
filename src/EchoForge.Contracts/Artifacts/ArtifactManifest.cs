@@ -167,6 +167,13 @@ public sealed record ProcessingProfile(
 
     public const string SummaryCpuQ4 = "summary-cpu-q4";
 
+    /// <summary>
+    /// The comparison model's profile. Deliberately not one of <see cref="SummaryProfiles"/>: a
+    /// bake-off candidate is something EchoForge measures, not something it will quietly start
+    /// summarising with because it happens to be installed.
+    /// </summary>
+    public const string SummaryBakeoff = "summary-bakeoff";
+
     /// <summary>Every summarisation profile, most capable first.</summary>
     public static readonly IReadOnlyList<string> SummaryProfiles = [SummaryCudaQ4, SummaryCpuQ4];
 
