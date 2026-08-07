@@ -47,7 +47,15 @@
     licence texts are a distribution obligation rather than a convenience.
   -->
   <ItemGroup>
-    <Content Include="..\..\worker\**\*.py" LinkBase="worker" CopyToOutputDirectory="PreserveNewest" />
+    <!--
+      Only the worker package ships. The glob is over all of worker\ so the echoforge_worker
+      directory is preserved in the layout (PYTHONPATH points at worker\ and imports
+      echoforge_worker), but the developer virtual environment, the pytest cache and bytecode
+      caches are development artifacts and must never be vacuumed into the installer.
+    -->
+    <Content Include="..\..\worker\**\*.py"
+             Exclude="..\..\worker\.venv\**;..\..\worker\venv\**;..\..\worker\.pytest_cache\**;..\..\worker\**\__pycache__\**"
+             LinkBase="worker" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\worker\prompts\**\*.txt" LinkBase="worker\prompts" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\worker\requirements-production.txt" LinkBase="worker" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\artifacts\manifest.json" LinkBase="artifacts" CopyToOutputDirectory="PreserveNewest" />
