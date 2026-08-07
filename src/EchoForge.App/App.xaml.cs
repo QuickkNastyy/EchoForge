@@ -11,6 +11,7 @@ using EchoForge.Infrastructure.Processing;
 using EchoForge.Infrastructure.Recovery;
 using EchoForge.Infrastructure.Sessions;
 using EchoForge.Infrastructure.Settings;
+using EchoForge.Infrastructure.Summaries;
 using EchoForge.Infrastructure.Storage;
 using EchoForge.Infrastructure.Workers;
 
@@ -35,6 +36,8 @@ public partial class App : System.Windows.Application, IDisposable
     private TranscriptionCoordinator? _coordinator;
     private FileTranscriptionStore? _transcripts;
     private ArtifactRegistry? _registry;
+    private FileSummaryStore? _summaries;
+    private SummaryCoordinator? _summaryCoordinator;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -203,6 +206,19 @@ public partial class App : System.Windows.Application, IDisposable
 
         _viewModel.AttachTranscription(new TranscriptionViewModel(_coordinator, new SaveFileExportPrompt(window)));
 
+        // Summarisation shares the transcription coordinator's gate rather than keeping its own:
+        // two coordinators each politely checking their own state would still start two jobs.
+        _summaries = new FileSummaryStore(store);
+        _summaryCoordinator = new SummaryCoordinator(
+            store,
+            _summaries,
+            _transcripts,
+            new WorkerSupervisor(options, new RecordingCaptureGate(_controller)),
+            new RecordingCaptureGate(_controller),
+            otherJobRunning: () => _coordinator?.IsRunning ?? false);
+
+        _viewModel.AttachSummary(new SummaryViewModel(_summaryCoordinator));
+
         await Task.Run(() => DiscardOrphanStaging(store)).ConfigureAwait(true);
     }
 
@@ -291,6 +307,10 @@ public partial class App : System.Windows.Application, IDisposable
         {
             _controller.StateChanged -= OnRecordingStateChangedForProcessing;
         }
+
+        _summaryCoordinator?.Dispose();
+        _summaryCoordinator = null;
+        _summaries = null;
 
         _coordinator?.Dispose();
         _coordinator = null;

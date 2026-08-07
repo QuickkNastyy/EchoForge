@@ -309,6 +309,79 @@
             </StackPanel>
           </StackPanel>
         </Border>
+
+        <!-- Summary. A separate stage with its own revisions, from one exact transcript version. -->
+        <Border Margin="0,12,0,0" CornerRadius="6" Padding="14,12"
+                Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1"
+                Visibility="{Binding HasSummary, Converter={StaticResource BoolToVis}}">
+          <StackPanel DataContext="{Binding Summary}">
+
+            <Grid>
+              <TextBlock Text="SUMMARY" Style="{StaticResource Label}" VerticalAlignment="Center" />
+              <TextBlock Text="{Binding StageText}" Style="{StaticResource Data}"
+                         HorizontalAlignment="Right" VerticalAlignment="Center" />
+            </Grid>
+
+            <StackPanel Margin="0,10,0,0"
+                        Visibility="{Binding IsWorking, Converter={StaticResource BoolToVis}}">
+              <ProgressBar Style="{StaticResource Meter}" Minimum="0" Maximum="100"
+                           Foreground="{StaticResource You}" Value="{Binding ProgressPercent, Mode=OneWay}" />
+              <TextBlock Margin="0,6,0,0" Style="{StaticResource Label}" Foreground="{StaticResource InkDim}"
+                         Text="{Binding ProgressDescription}" />
+            </StackPanel>
+
+            <!-- What this build actually does. Not a footnote. -->
+            <Border Margin="0,10,0,0" CornerRadius="4" Padding="10,8"
+                    Background="#1E1A12" BorderBrush="{StaticResource You}" BorderThickness="1"
+                    Visibility="{Binding IsPlaceholderBackend, Converter={StaticResource BoolToVis}}">
+              <TextBlock Text="{Binding PlaceholderWarning}" TextWrapping="Wrap"
+                         Foreground="{StaticResource Ink}" />
+            </Border>
+
+            <Border Margin="0,10,0,0" CornerRadius="4" Padding="10,8"
+                    Background="#141C23" BorderBrush="{StaticResource Line}" BorderThickness="1"
+                    Visibility="{Binding IsStale, Converter={StaticResource BoolToVis}}">
+              <TextBlock Text="{Binding StaleNotice}" TextWrapping="Wrap" Foreground="{StaticResource InkDim}" />
+            </Border>
+
+            <Border Margin="0,10,0,0" CornerRadius="4" Padding="10,8"
+                    Background="#221518" BorderBrush="{StaticResource Rec}" BorderThickness="1"
+                    Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}">
+              <TextBlock Text="{Binding Error}" TextWrapping="Wrap" Foreground="{StaticResource Ink}" />
+            </Border>
+
+            <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" Foreground="{StaticResource InkDim}"
+                       Text="{Binding Notice}"
+                       Visibility="{Binding HasNotice, Converter={StaticResource BoolToVis}}" />
+
+            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+              <Button Content="Generate summary" Command="{Binding GenerateCommand}" Margin="0,0,10,0">
+                <Button.Style>
+                  <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+                    <Style.Triggers>
+                      <DataTrigger Binding="{Binding HasSummary}" Value="True">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </Button.Style>
+              </Button>
+
+              <Button Content="Generate again" Command="{Binding GenerateAgainCommand}" Margin="0,0,10,0"
+                      Visibility="{Binding HasSummary, Converter={StaticResource BoolToVis}}" />
+
+              <Button Content="Cancel" Command="{Binding CancelCommand}" Margin="0,0,10,0"
+                      Visibility="{Binding IsWorking, Converter={StaticResource BoolToVis}}" />
+            </StackPanel>
+
+            <StackPanel Margin="0,12,0,0"
+                        Visibility="{Binding HasSummary, Converter={StaticResource BoolToVis}}">
+              <TextBlock Text="{Binding SummarySummary}" Style="{StaticResource Label}" />
+              <ComboBox Margin="0,8,0,0" ItemsSource="{Binding Revisions}"
+                        SelectedItem="{Binding SelectedRevision}" DisplayMemberPath="Label" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
       </StackPanel>
     </ScrollViewer>
 

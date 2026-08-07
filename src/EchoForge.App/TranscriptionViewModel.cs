@@ -182,6 +182,9 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
 
     public bool HasTranscript => _state.Selected is not null;
 
+    /// <summary>Which transcript revision is current, for anything downstream of it.</summary>
+    public int? SelectedTranscriptRevision => _state.SelectedRevision;
+
     public string TranscriptSummary
     {
         get

@@ -110,6 +110,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public bool HasTranscription => Transcription is not null;
 
+    /// <summary>The summary surface, or null when the app was composed without one.</summary>
+    public SummaryViewModel? Summary { get; private set; }
+
+    public bool HasSummary => Summary is not null;
+
+    /// <summary>Attached once the worker runtime has been located, alongside transcription.</summary>
+    public void AttachSummary(SummaryViewModel summary) => Dispatch(() =>
+    {
+        ArgumentNullException.ThrowIfNull(summary);
+
+        Summary?.Dispose();
+        Summary = summary;
+
+        OnChanged(nameof(Summary));
+        OnChanged(nameof(HasSummary));
+        Refresh();
+    });
+
     /// <summary>
     /// Attaches the transcription surface once it exists.
     ///
@@ -608,6 +626,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             IsReady,
             IsShuttingDown);
 
+        // The summary panel needs the selected transcript revision, not just the session: there
+        // is nothing to summarise until one exists, and a summary written from an earlier one is
+        // stale rather than wrong.
+        Summary?.UpdateHost(
+            _controller.SessionId,
+            Transcription?.SelectedTranscriptRevision,
+            _controller.CaptureMayBeLive,
+            IsReady,
+            IsShuttingDown);
+
         foreach (string name in RefreshedProperties)
         {
             OnChanged(name);
@@ -677,5 +705,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _controller.StateChanged -= OnControllerStateChanged;
         _controller.Notice -= OnControllerNotice;
         Transcription?.Dispose();
+        Summary?.Dispose();
     }
 }
