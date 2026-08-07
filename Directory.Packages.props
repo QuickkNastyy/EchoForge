@@ -11,6 +11,13 @@
   -->
   <ItemGroup>
     <PackageVersion Include="NAudio" Version="2.3.0" />
+    <!--
+      The meeting-library index. Microsoft.Data.Sqlite.Core plus the bundled native library,
+      rather than the metapackage, so the exact SQLitePCLRaw build is pinned too - the FTS5
+      module the search depends on lives in the native bundle, not in the managed provider.
+    -->
+    <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="10.0.0" />
+    <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.2" />
   </ItemGroup>
 
   <ItemGroup Label="Test">

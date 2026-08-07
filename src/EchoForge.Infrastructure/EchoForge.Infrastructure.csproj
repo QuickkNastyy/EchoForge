@@ -20,6 +20,15 @@
     <ProjectReference Include="..\EchoForge.Core\EchoForge.Core.csproj" />
   </ItemGroup>
 
+  <!--
+    SQLite lives here and only here. The index is a disposable projection: Core stays free of it
+    so nothing that decides what a transcript or a summary *is* can start depending on a database.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
+  </ItemGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="EchoForge.UnitTests" />
   </ItemGroup>
