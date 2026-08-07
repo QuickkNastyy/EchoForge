@@ -10,11 +10,49 @@
     <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <!--
+      The publish target is win-x64, self-contained, and it is passed on the publish command
+      line rather than set here: pinning a RuntimeIdentifier in the project makes every ordinary
+      Debug build produce a self-contained copy of the framework, which slows the test loop down
+      for no benefit. x64 because every pinned inference artifact is win_amd64, and pretending
+      otherwise would produce an application that installs and then cannot transcribe.
+    -->
+
+    <!--
+      Trimming is off, and not as a formality. WPF's XAML loading, the SQLite provider's native
+      resolution and NAudio's COM interop are all reflection over types nothing statically
+      references; a trimmed build of this application fails at the first window rather than at
+      build time. Single-file is off for the same class of reason: the app-local Python, the
+      worker package and llama.cpp are separate processes and files that have to be findable
+      beside the executable.
+    -->
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishSingleFile>false</PublishSingleFile>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\EchoForge.Contracts\EchoForge.Contracts.csproj" />
     <ProjectReference Include="..\EchoForge.Core\EchoForge.Core.csproj" />
     <ProjectReference Include="..\EchoForge.Audio.Windows\EchoForge.Audio.Windows.csproj" />
     <ProjectReference Include="..\EchoForge.Infrastructure\EchoForge.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <!--
+    Everything the running application needs that is not a .NET assembly. It travels with the
+    binaries so a published copy never has to find a source tree: the worker package is what the
+    interpreter imports, the manifest is the only list of things that may be downloaded, and the
+    licence texts are a distribution obligation rather than a convenience.
+  -->
+  <ItemGroup>
+    <Content Include="..\..\worker\**\*.py" LinkBase="worker" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\worker\prompts\**\*.txt" LinkBase="worker\prompts" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\worker\requirements-production.txt" LinkBase="worker" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\artifacts\manifest.json" LinkBase="artifacts" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\third_party\licenses\**\*" LinkBase="third_party\licenses" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\third_party\NOTICE.md" LinkBase="third_party" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\third_party\NOTICE.md')" />
   </ItemGroup>
 
 </Project>

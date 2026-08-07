@@ -115,7 +115,60 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public bool HasSummary => Summary is not null;
 
-    /// <summary>Attached once the worker runtime has been located, alongside transcription.</summary>
+    /// <summary>
+    /// Makes setup reachable, whether or not anything is installed.
+    ///
+    /// <para>
+    /// Attached even when the manifest could not be opened, because that is exactly the state a
+    /// user most needs a screen for. Recording keeps working throughout: setup is where somebody
+    /// goes to make transcription and summaries work, not a gate in front of the application.
+    /// </para>
+    /// </summary>
+    public void AttachSetup(
+        EchoForge.Infrastructure.Setup.SetupServices? services,
+        EchoForge.Contracts.Audio.IAudioDeviceCatalog? audio) => Dispatch(() =>
+    {
+        SetupServices = services;
+        SetupAudio = audio;
+
+        OnChanged(nameof(HasSetup));
+        OpenSetupCommand.RaiseCanExecuteChanged();
+    });
+
+    public EchoForge.Infrastructure.Setup.SetupServices? SetupServices { get; private set; }
+
+    internal EchoForge.Contracts.Audio.IAudioDeviceCatalog? SetupAudio { get; private set; }
+
+    public bool HasSetup => SetupServices is not null;
+
+    private System.Windows.Window? _setupWindow;
+
+    /// <summary>Where the window is built, so this view model stays free of WPF windows.</summary>
+    public Func<System.Windows.Window>? OpenSetupWindow { get; set; }
+
+    /// <summary>Opens setup, or brings the one that is already open back to the front.</summary>
+    public RelayCommand OpenSetupCommand => _openSetupCommand ??= new RelayCommand(
+        () =>
+        {
+            if (_setupWindow is { } existing)
+            {
+                existing.Activate();
+                return;
+            }
+
+            if (OpenSetupWindow is not { } factory)
+            {
+                return;
+            }
+
+            _setupWindow = factory();
+            _setupWindow.Closed += (_, _) => _setupWindow = null;
+            _setupWindow.Show();
+        },
+        () => HasSetup && OpenSetupWindow is not null);
+
+    private RelayCommand? _openSetupCommand;
+
     /// <summary>
     /// Makes the meeting library reachable.
     ///

@@ -449,6 +449,14 @@
               ToolTip="Browse, search and export previous recordings"
               Visibility="{Binding HasLibrary, Converter={StaticResource BoolToVis}}" />
 
+      <!--
+        Always available once the manifest has been read, including when nothing is installed:
+        that is exactly the state somebody needs this screen for. Recording works regardless.
+      -->
+      <Button Content="Setup…" Margin="10,0,0,0" Command="{Binding OpenSetupCommand}"
+              ToolTip="What this machine can do, what is installed, and how to install or repair it"
+              Visibility="{Binding HasSetup, Converter={StaticResource BoolToVis}}" />
+
       <TextBlock Style="{StaticResource Label}" VerticalAlignment="Center" Margin="18,0,0,0"
                  Foreground="{StaticResource InkDim}" Text="{Binding ReadinessMessage}" />
 

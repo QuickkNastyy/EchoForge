@@ -1,4 +1,5 @@
 using EchoForge.Contracts.Workers;
+using EchoForge.Infrastructure.Setup;
 
 namespace EchoForge.Infrastructure.Workers;
 
@@ -55,9 +56,16 @@ public sealed record WorkerLaunchOptions
     public bool AllowTestModes { get; init; }
 
     /// <summary>
-    /// The conventional layout: the worker package sits in <c>worker\</c> beside the
-    /// repository root, and Python comes from <see cref="PythonRuntimeLocator"/>.
-    /// Returns <c>null</c> when no suitable interpreter exists.
+    /// The conventional developer layout, where Python comes from
+    /// <see cref="PythonRuntimeLocator"/>. Returns <c>null</c> when no suitable interpreter
+    /// exists.
+    ///
+    /// <para>
+    /// The application does not use this: an installed EchoForge runs
+    /// <see cref="ForAppLocalPython"/> against the interpreter it shipped with. This is what the
+    /// repository's own tests and scripts use, and what a developer gets when they set
+    /// <see cref="PythonRuntimeLocator.OverrideVariable"/>.
+    /// </para>
     /// </summary>
     public static WorkerLaunchOptions? Discover(string workerRoot)
     {
@@ -73,16 +81,39 @@ public sealed record WorkerLaunchOptions
             };
     }
 
+    /// <summary>
+    /// The installed layout: EchoForge's own interpreter, and the worker package it shipped with.
+    ///
+    /// <para>
+    /// No search, no PATH, no launcher. The pinned wheel closure is built for exactly one CPython
+    /// ABI, and a machine that had quietly moved to a newer Python would fail at the first native
+    /// import with a message about tags that means nothing to the person holding the meeting.
+    /// </para>
+    /// </summary>
+    public static WorkerLaunchOptions ForAppLocalPython(string pythonExecutable, string workerRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pythonExecutable);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workerRoot);
+
+        return new WorkerLaunchOptions
+        {
+            PythonExecutable = Path.GetFullPath(pythonExecutable),
+            WorkerRoot = Path.GetFullPath(workerRoot),
+        };
+    }
+
     /// <summary>The environment the child runs with, built rather than inherited wholesale.</summary>
     internal void ApplyEnvironment(IDictionary<string, string?> environment)
     {
         ArgumentNullException.ThrowIfNull(environment);
 
-        // UTF-8 on every stream, so a session title or a path with non-ASCII characters
-        // survives the pipe regardless of the machine's console code page.
+        // Offline first: no worker may reach a model host, and the libraries in the stack do not
+        // agree with that by default. See OfflineEnvironment for what each flag stops.
+        OfflineEnvironment.Apply(environment);
+
+        // The only place the worker package may be imported from, so it cannot pick up a
+        // differently-versioned copy from somewhere else on the machine.
         environment["PYTHONPATH"] = WorkerRoot;
-        environment["PYTHONUTF8"] = "1";
-        environment["PYTHONIOENCODING"] = "utf-8";
 
         if (AllowTestModes)
         {

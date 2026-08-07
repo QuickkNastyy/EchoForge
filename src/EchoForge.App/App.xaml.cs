@@ -14,7 +14,9 @@ using EchoForge.Infrastructure.Recovery;
 using EchoForge.Infrastructure.Sessions;
 using EchoForge.Infrastructure.Settings;
 using EchoForge.App.Library;
+using EchoForge.App.Setup;
 using EchoForge.Infrastructure.Library;
+using EchoForge.Infrastructure.Setup;
 using EchoForge.Infrastructure.Summaries;
 using EchoForge.Infrastructure.Storage;
 using EchoForge.Infrastructure.Workers;
@@ -47,6 +49,8 @@ public partial class App : System.Windows.Application, IDisposable
     private LibraryIndexMaintainer? _indexMaintenance;
     private LibraryViewModel? _library;
     private FileSessionLeaseProvider? _leases;
+    private AppLayout? _layout;
+    private SetupServices? _setup;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -65,7 +69,12 @@ public partial class App : System.Windows.Application, IDisposable
 
         base.OnStartup(e);
 
-        FileSessionStore store = new();
+        // Everything the application reads or writes is resolved here, from the executable and
+        // from the user's profile. Nothing looks for the repository it was built in.
+        _layout = AppLayout.Current;
+        _layout.EnsureDataDirectories();
+
+        FileSessionStore store = new(_layout.SessionsRoot);
         FileSessionLeaseProvider leases = new(store);
         _leases = leases;
         ISettingsStore settings = new JsonSettingsStore();
@@ -173,15 +182,34 @@ public partial class App : System.Windows.Application, IDisposable
     /// </summary>
     private async Task InitialiseProcessingAsync(FileSessionStore store)
     {
-        if (_controller is null || _viewModel is null || MainWindow is not Window window)
+        if (_controller is null || _viewModel is null || _layout is null || MainWindow is not Window window)
         {
             return;
         }
 
-        WorkerLaunchOptions? options = await Task.Run(() =>
-            WorkerLaunchOptions.Discover(Path.Combine(AppContext.BaseDirectory, "worker"))
-            ?? WorkerLaunchOptions.Discover(Path.Combine(RepositoryWorkerRoot(), "worker")))
+        // Composed only when the pinned manifest itself is sound. A manifest that fails validation
+        // permits nothing rather than permitting less: the recorder keeps working, the setup
+        // surface says why, and no download can happen.
+        _setup = await Task.Run(() => SetupServices.TryOpen(out IReadOnlyList<string> problems, _layout))
             .ConfigureAwait(true);
+
+        _viewModel.OpenSetupWindow = () =>
+        {
+            SetupServices services = _setup!;
+            return new SetupWindow(new SetupViewModel(services, _catalog), services, _catalog) { Owner = window };
+        };
+
+        _viewModel.AttachSetup(_setup, _catalog);
+
+        if (_setup is null)
+        {
+            return;
+        }
+
+        // EchoForge's own interpreter and its own worker environment. There is deliberately no
+        // fall back to a Python on the machine: the pinned wheel closure is built for one CPython
+        // ABI, and a missing runtime is something the setup screen can install.
+        WorkerLaunchOptions? options = await Task.Run(_setup.TryResolveWorkerLaunch).ConfigureAwait(true);
 
         if (options is null)
         {
@@ -189,17 +217,9 @@ public partial class App : System.Windows.Application, IDisposable
         }
 
         _transcripts = new FileTranscriptionStore(store);
+        _registry = _setup.Artifacts;
 
-        // Production preparation is composed only when the pinned manifest itself is sound. A
-        // manifest that fails validation permits nothing rather than permitting less: the
-        // placeholder path keeps working and no download can happen.
-        _registry = ArtifactRegistry.TryOpen(
-            Path.Combine(RepositoryWorkerRoot(), "artifacts", "manifest.json"),
-            out IReadOnlyList<string> manifestProblems);
-
-        ProcessingPreparation? preparation = _registry is null
-            ? null
-            : new ProcessingPreparation(store, _registry, new DerivativeBuilder(store));
+        ProcessingPreparation preparation = new(store, _registry, new DerivativeBuilder(store));
 
         _coordinator = new TranscriptionCoordinator(
             store,
@@ -207,8 +227,6 @@ public partial class App : System.Windows.Application, IDisposable
             new WorkerSupervisor(options, new RecordingCaptureGate(_controller)),
             new RecordingCaptureGate(_controller),
             preparation: preparation);
-
-        _ = manifestProblems;
 
         // Recording always has priority, so the coordinator hears about capture the moment the
         // recorder does rather than discovering it on a poll.
@@ -226,9 +244,7 @@ public partial class App : System.Windows.Application, IDisposable
             new WorkerSupervisor(options, new RecordingCaptureGate(_controller)),
             new RecordingCaptureGate(_controller),
             otherJobRunning: () => _coordinator?.IsRunning ?? false,
-            // Null when the manifest did not validate, which leaves the placeholder working and
-            // makes the production backend unavailable rather than unverified.
-            runtime: _registry is null ? null : new LlamaRuntimeStager(_registry));
+            runtime: _setup.Llama);
 
         _viewModel.AttachSummary(new SummaryViewModel(_summaryCoordinator));
 
@@ -236,7 +252,7 @@ public partial class App : System.Windows.Application, IDisposable
         // them, and it is a cache: deleting it costs a rebuild and nothing else.
         _aliases = new FileSpeakerAliasStore(store);
         LibraryProjection projection = new(store, _transcripts, _summaries, _aliases);
-        _libraryIndex = new SqliteLibraryIndex(Path.Combine(store.Root, "library.db"), projection);
+        _libraryIndex = new SqliteLibraryIndex(_layout.IndexPath, projection);
 
         // Keeps the index in step with the folders. Deliberately fire-and-forget: an index update
         // that fails must never be able to undo the transcript activation that triggered it.
@@ -359,26 +375,6 @@ public partial class App : System.Windows.Application, IDisposable
         }
 
         return null;
-    }
-
-    /// <summary>
-    /// The worker package during development, where it sits beside the solution rather than in
-    /// the publish output. Phase 6 replaces both lookups with an app-local runtime directory.
-    /// </summary>
-    private static string RepositoryWorkerRoot()
-    {
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-        while (directory is not null)
-        {
-            if (File.Exists(Path.Combine(directory.FullName, "EchoForge.slnx")))
-            {
-                return directory.FullName;
-            }
-
-            directory = directory.Parent;
-        }
-
-        return AppContext.BaseDirectory;
     }
 
     /// <summary>
