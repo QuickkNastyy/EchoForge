@@ -304,10 +304,19 @@ public sealed class ArtifactRegistryTests : IDisposable
         await registry.EnsureAsync(entry.ArtifactId);
         Assert.Equal(ArtifactStatus.Installed, registry.Status(entry).Status);
 
-        await File.WriteAllBytesAsync(registry.InstallPath(entry), Payload(content.Length, seed: 3));
+        string path = registry.InstallPath(entry);
+        DateTime verifiedAt = File.GetLastWriteTimeUtc(path);
+
+        await File.WriteAllBytesAsync(path, Payload(content.Length, seed: 3));
+
+        // Set the timestamp rather than trusting the rewrite to move it. Two writes inside one
+        // filesystem timestamp tick leave it unchanged, which made this test pass or fail on
+        // how fast the disk was - and the cheap check is precisely what is under test here.
+        File.SetLastWriteTimeUtc(path, verifiedAt.AddSeconds(5));
 
         ArtifactState state = registry.Status(entry);
         Assert.Equal(ArtifactStatus.Invalid, state.Status);
+        Assert.Contains("modified", state.Detail!, StringComparison.Ordinal);
         Assert.Equal(ArtifactStatus.Invalid, (await registry.VerifyInstalledAsync(entry.ArtifactId)).Status);
     }
 
