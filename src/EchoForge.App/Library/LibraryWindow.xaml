@@ -190,10 +190,12 @@
 
         <!-- Reprocessing and deletion, on the meeting rather than on the main window. -->
         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-          <Button Content="Transcribe again" Margin="0,0,8,0"
+          <Button Content="{Binding DataContext.TranscribeActionLabel, RelativeSource={RelativeSource AncestorType=Window}}"
+                  Margin="0,0,8,0"
                   Command="{Binding DataContext.TranscribeAgainCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                   ToolTip="Creates a new transcript version. Earlier versions stay exactly as they are." />
-          <Button Content="Generate summary again" Margin="0,0,8,0"
+          <Button Content="{Binding DataContext.SummarizeActionLabel, RelativeSource={RelativeSource AncestorType=Window}}"
+                  Margin="0,0,8,0"
                   Command="{Binding DataContext.SummarizeAgainCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                   ToolTip="Uses the transcript version selected here, and creates a new summary version." />
           <Button Content="Delete meeting…"
