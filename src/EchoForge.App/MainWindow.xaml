@@ -96,14 +96,36 @@
     <StackPanel Grid.Row="2" Margin="0,0,0,16" IsEnabled="{Binding DevicesEditable}">
       <TextBlock Text="CAPTURE FROM" Style="{StaticResource Label}" Margin="0,0,0,8" />
 
+      <!--
+        A clean row per device: friendly name on the left, the negotiated format right-aligned in
+        the data font, and the track colour carried by the dot beside it — teal for the remote
+        (system) source, amber for you (the microphone). An explicit ItemTemplate is used rather
+        than DisplayMemberPath so the custom ComboBox template can never fall back to the record's
+        own ToString and paint an "AudioEndpointInfo { … }" line.
+      -->
       <Grid Margin="0,0,0,8">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="14" />
           <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
         <Ellipse Grid.Column="0" Width="8" Height="8" Fill="{StaticResource Remote}" VerticalAlignment="Center" />
-        <ComboBox Grid.Column="1" ItemsSource="{Binding RenderDevices}" SelectedItem="{Binding SelectedRender}"
-                  DisplayMemberPath="FriendlyName" />
+        <ComboBox Grid.Column="1" ItemsSource="{Binding RenderDevices}" SelectedItem="{Binding SelectedRender}">
+          <ComboBox.ItemTemplate>
+            <DataTemplate>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding FriendlyName}" Foreground="{StaticResource Ink}"
+                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center"
+                           FontFamily="{StaticResource DataFont}" FontSize="11" Foreground="{StaticResource InkFaint}"
+                           Text="{Binding MixFormat, Converter={StaticResource AudioFormat}}" />
+              </Grid>
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
       </Grid>
 
       <Grid>
@@ -112,8 +134,23 @@
           <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
         <Ellipse Grid.Column="0" Width="8" Height="8" Fill="{StaticResource You}" VerticalAlignment="Center" />
-        <ComboBox Grid.Column="1" ItemsSource="{Binding CaptureDevices}" SelectedItem="{Binding SelectedCapture}"
-                  DisplayMemberPath="FriendlyName" />
+        <ComboBox Grid.Column="1" ItemsSource="{Binding CaptureDevices}" SelectedItem="{Binding SelectedCapture}">
+          <ComboBox.ItemTemplate>
+            <DataTemplate>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding FriendlyName}" Foreground="{StaticResource Ink}"
+                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center"
+                           FontFamily="{StaticResource DataFont}" FontSize="11" Foreground="{StaticResource InkFaint}"
+                           Text="{Binding MixFormat, Converter={StaticResource AudioFormat}}" />
+              </Grid>
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
       </Grid>
     </StackPanel>
 
@@ -288,7 +325,7 @@
               <TextBlock Text="PRODUCTION SPEECH RECOGNITION" Style="{StaticResource Label}" />
 
               <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="{StaticResource InkDim}"
-                         Text="Preparation installs the pinned models, converts the recording to 16 kHz mono, and plans the transcription windows. Recognition itself is not implemented in this build." />
+                         Text="Preparation installs the pinned models, converts the recording to 16 kHz mono, and plans the transcription windows. Choose the faster-whisper backend above to run real speech recognition on it." />
 
               <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{StaticResource Ink}"
                          Text="{Binding ProductionStatus}"

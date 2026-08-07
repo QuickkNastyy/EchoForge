@@ -1,6 +1,7 @@
 <Application x:Class="EchoForge.App.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:app="clr-namespace:EchoForge.App"
              xmlns:setup="clr-namespace:EchoForge.App.Setup"
              ShutdownMode="OnMainWindowClose">
   <Application.Resources>
@@ -8,6 +9,9 @@
     <!-- Setup shows readiness as a glyph as well as a colour, so it survives a screenshot. -->
     <setup:TickConverter x:Key="TickConverter" />
     <setup:ReadyBrushConverter x:Key="ReadyBrushConverter" />
+
+    <!-- The device picker shows the negotiated format as "48 kHz · stereo · 16-bit", never a DTO. -->
+    <app:AudioFormatConverter x:Key="AudioFormat" />
 
     <!--
       Application-wide because more than one window needs it. Defined in a single window's
@@ -71,15 +75,29 @@
                     Background="{TemplateBinding Background}"
                     BorderBrush="{TemplateBinding BorderBrush}"
                     BorderThickness="{TemplateBinding BorderThickness}">
-              <!-- The implicit TextBlock style would otherwise paint this near-white,
-                   which is invisible on the light primary button. -->
+              <Border.Resources>
+                <!--
+                  The button's Content is a string, so the ContentPresenter generates a TextBlock
+                  for it. Left alone, that TextBlock picks up the application-wide implicit TextBlock
+                  style, whose explicit near-white Foreground beats the inherited TextElement one —
+                  which is how the primary (light) button rendered white-on-white until a hover
+                  darkened the chrome. This template-scoped empty style shadows the app one so the
+                  generated text has no explicit Foreground and inherits the button's own, set below.
+                -->
+                <Style TargetType="TextBlock" />
+              </Border.Resources>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
                                 Margin="{TemplateBinding Padding}"
                                 TextElement.Foreground="{TemplateBinding Foreground}" />
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Chrome" Property="Background" Value="#26313B" />
+                <Setter TargetName="Chrome" Property="Opacity" Value="0.88" />
+              </Trigger>
+              <!-- Pressed dims a touch further, so the click is felt on primary and secondary
+                   alike without ever changing the text colour into or out of readability. -->
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="Chrome" Property="Opacity" Value="0.75" />
               </Trigger>
               <Trigger Property="IsEnabled" Value="False">
                 <Setter Property="Opacity" Value="0.4" />
