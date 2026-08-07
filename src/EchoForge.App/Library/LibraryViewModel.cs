@@ -183,6 +183,33 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
 
     public bool CanDeleteHere => _services.Deletion is not null;
 
+    /// <summary>
+    /// What the transcription action should read for the open meeting: the first run is
+    /// <c>Transcribe</c>, and only a meeting that already has a transcript offers to do it
+    /// <c>again</c>. Calling a first-ever transcription "Transcribe again" is exactly the kind of
+    /// small lie that makes a workflow feel untrustworthy.
+    /// </summary>
+    public string TranscribeActionLabel => _open?.HasTranscript == true ? "Transcribe again" : "Transcribe";
+
+    /// <summary>The same rule for the summary: <c>Generate summary</c>, then <c>… again</c>.</summary>
+    public string SummarizeActionLabel => _open?.HasSummary == true ? "Generate summary again" : "Generate summary";
+
+    /// <summary>
+    /// Re-evaluates whether reprocessing is possible right now.
+    ///
+    /// <para>
+    /// The library is composed before it is known whether this machine can process anything, and a
+    /// runtime installed from Setup while the window is open must light the actions up without a
+    /// restart. This is how the composition root tells an already-open library that the answer has
+    /// changed.
+    /// </para>
+    /// </summary>
+    public void ProcessingAvailabilityChanged() => Dispatch(() =>
+    {
+        Changed(nameof(CanReprocessHere));
+        RaiseCommands();
+    });
+
     public string SearchText
     {
         get => _searchText;
@@ -350,6 +377,10 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
 
             Changed();
             Changed(nameof(HasOpenMeeting));
+
+            // The action words follow the newly opened meeting's state, not the last one's.
+            Changed(nameof(TranscribeActionLabel));
+            Changed(nameof(SummarizeActionLabel));
         }
     }
 
@@ -543,6 +574,11 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
         if (OpenMeeting is { } open && string.Equals(open.SessionId, sessionId, StringComparison.Ordinal))
         {
             open.Reload(document.Entry);
+
+            // A first transcript or summary just landed, so the action that produced it should stop
+            // saying "Transcribe" and start saying "Transcribe again".
+            Changed(nameof(TranscribeActionLabel));
+            Changed(nameof(SummarizeActionLabel));
         }
     }
 

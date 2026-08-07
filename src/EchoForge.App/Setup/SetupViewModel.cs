@@ -126,6 +126,18 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
+    /// <summary>
+    /// Raised after an install or repair has settled and the snapshot has been re-read.
+    ///
+    /// <para>
+    /// This is how the composition root learns that a worker runtime it could not find at startup
+    /// may now be present, so it can attach transcription and summarisation without the user having
+    /// to close and reopen the application. It carries no payload: the listener re-evaluates the
+    /// installed runtime itself rather than trusting a claim made here.
+    /// </para>
+    /// </summary>
+    public event EventHandler? ComponentsChanged;
+
     public ObservableCollection<ComponentRow> Components { get; } = [];
 
     public ObservableCollection<CapabilityRow> Capabilities { get; } = [];
@@ -435,6 +447,11 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
             IsBusy = false;
 
             await ReloadSnapshotAsync().ConfigureAwait(true);
+
+            // An install or repair may have put a worker runtime on disk that was not there at
+            // startup. Tell whoever is listening so processing can attach without a restart; the
+            // listener re-checks the runtime itself rather than trusting anything asserted here.
+            ComponentsChanged?.Invoke(this, EventArgs.Empty);
         }
     }
 

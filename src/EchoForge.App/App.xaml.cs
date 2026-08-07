@@ -51,6 +51,9 @@ public partial class App : System.Windows.Application, IDisposable
     private FileSessionLeaseProvider? _leases;
     private AppLayout? _layout;
     private SetupServices? _setup;
+    private FileSessionStore? _store;
+    private CoordinatorReprocessor? _reprocessor;
+    private bool _attachingProcessing;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -75,6 +78,7 @@ public partial class App : System.Windows.Application, IDisposable
         _layout.EnsureDataDirectories();
 
         FileSessionStore store = new(_layout.SessionsRoot);
+        _store = store;
         FileSessionLeaseProvider leases = new(store);
         _leases = leases;
         ISettingsStore settings = new JsonSettingsStore();
@@ -172,12 +176,16 @@ public partial class App : System.Windows.Application, IDisposable
     }
 
     /// <summary>
-    /// Composes the transcription surface, if this machine can run a worker at all.
+    /// Composes the library first, then transcription and summarisation if this machine can run a
+    /// worker.
     ///
     /// <para>
-    /// Transcription is optional composition on purpose. Without a usable Python runtime the
-    /// recorder still works completely and the panel simply does not appear; a missing processing
-    /// dependency must not stop anyone from recording a meeting.
+    /// The order is the point. The meeting library — seeing, opening, playing, searching, exporting
+    /// and deleting recordings — never depends on a Python runtime, a model, or anything Setup
+    /// installs. It is composed unconditionally. Transcription and summarisation are the optional
+    /// half: without a usable worker they simply do not attach yet, and the recorder and the library
+    /// both keep working. When Setup later installs a runtime, <see cref="TryAttachProcessingAsync"/>
+    /// attaches them in place, with no restart.
     /// </para>
     /// </summary>
     private async Task InitialiseProcessingAsync(FileSessionStore store)
@@ -187,78 +195,62 @@ public partial class App : System.Windows.Application, IDisposable
             return;
         }
 
-        // Composed only when the pinned manifest itself is sound. A manifest that fails validation
-        // permits nothing rather than permitting less: the recorder keeps working, the setup
-        // surface says why, and no download can happen.
+        // Open the pinned manifest. A manifest that fails validation permits no downloads and no
+        // processing — but it does not stop the library from opening: a broken manifest is exactly
+        // when somebody most needs to reach their recordings.
         _setup = await Task.Run(() => SetupServices.TryOpen(out IReadOnlyList<string> problems, _layout))
             .ConfigureAwait(true);
 
         _viewModel.OpenSetupWindow = () =>
         {
             SetupServices services = _setup!;
-            return new SetupWindow(new SetupViewModel(services, _catalog), services, _catalog) { Owner = window };
+            SetupViewModel setupViewModel = new(services, _catalog);
+
+            // Installing or repairing a runtime here can make transcription and summarisation
+            // possible on a machine that had neither when it started. Re-evaluate and attach them
+            // in place; nobody should have to close and reopen EchoForge for a download to count.
+            setupViewModel.ComponentsChanged += OnSetupComponentsChanged;
+
+            SetupWindow setupWindow = new(setupViewModel, services, _catalog) { Owner = window };
+            setupWindow.Closed += (_, _) => setupViewModel.ComponentsChanged -= OnSetupComponentsChanged;
+            return setupWindow;
         };
 
         _viewModel.AttachSetup(_setup, _catalog);
 
-        if (_setup is null)
-        {
-            return;
-        }
+        // The library, unconditionally. It reprocesses through a live seam that is empty until a
+        // worker attaches, so a recording is reachable now and "Transcribe again" lights up later.
+        ComposeLibrary(store, window);
 
-        // EchoForge's own interpreter and its own worker environment. There is deliberately no
-        // fall back to a Python on the machine: the pinned wheel closure is built for one CPython
-        // ABI, and a missing runtime is something the setup screen can install.
-        WorkerLaunchOptions? options = await Task.Run(_setup.TryResolveWorkerLaunch).ConfigureAwait(true);
+        // Finishing a recording changes what the library should say about it.
+        _controller.StateChanged += OnRecordingStateChangedForIndex;
 
-        if (options is null)
+        // Attach processing if a worker is already installed. If not, this returns quietly and the
+        // library carries on; Setup can make it available without a restart.
+        await TryAttachProcessingAsync().ConfigureAwait(true);
+    }
+
+    /// <summary>
+    /// Builds the meeting library and its index. Depends on nothing Setup installs: the session
+    /// store, the derivative stores, and a database that is a throwaway cache.
+    /// </summary>
+    private void ComposeLibrary(FileSessionStore store, Window window)
+    {
+        if (_library is not null || _viewModel is null || _layout is null)
         {
             return;
         }
 
         _transcripts = new FileTranscriptionStore(store);
-        _registry = _setup.Artifacts;
-
-        ProcessingPreparation preparation = new(store, _registry, new DerivativeBuilder(store));
-
-        _coordinator = new TranscriptionCoordinator(
-            store,
-            _transcripts,
-            new WorkerSupervisor(options, new RecordingCaptureGate(_controller)),
-            new RecordingCaptureGate(_controller),
-            preparation: preparation);
-
-        // Recording always has priority, so the coordinator hears about capture the moment the
-        // recorder does rather than discovering it on a poll.
-        _controller.StateChanged += OnRecordingStateChangedForProcessing;
-
-        _viewModel.AttachTranscription(new TranscriptionViewModel(_coordinator, new SaveFileExportPrompt(window)));
-
-        // Summarisation shares the transcription coordinator's gate rather than keeping its own:
-        // two coordinators each politely checking their own state would still start two jobs.
         _summaries = new FileSummaryStore(store);
-        _summaryCoordinator = new SummaryCoordinator(
-            store,
-            _summaries,
-            _transcripts,
-            new WorkerSupervisor(options, new RecordingCaptureGate(_controller)),
-            new RecordingCaptureGate(_controller),
-            otherJobRunning: () => _coordinator?.IsRunning ?? false,
-            runtime: _setup.Llama);
-
-        _viewModel.AttachSummary(new SummaryViewModel(_summaryCoordinator));
-
-        // The meeting library. Its index lives beside the sessions rather than inside any one of
-        // them, and it is a cache: deleting it costs a rebuild and nothing else.
         _aliases = new FileSpeakerAliasStore(store);
+
         LibraryProjection projection = new(store, _transcripts, _summaries, _aliases);
         _libraryIndex = new SqliteLibraryIndex(_layout.IndexPath, projection);
 
         // Keeps the index in step with the folders. Deliberately fire-and-forget: an index update
         // that fails must never be able to undo the transcript activation that triggered it.
         _indexMaintenance = new LibraryIndexMaintainer(_libraryIndex);
-        _coordinator.SessionChanged += OnSessionChangedForIndex;
-        _summaryCoordinator.SessionChanged += OnSessionChangedForIndex;
 
         _library = new LibraryViewModel(
             _libraryIndex,
@@ -270,13 +262,10 @@ public partial class App : System.Windows.Application, IDisposable
             {
                 Playback = new PlaybackPreparer(store),
                 Devices = () => new NAudioPlaybackDevice(),
-                Reprocessor = new CoordinatorReprocessor(
-                    _coordinator,
-                    _summaryCoordinator,
-                    // The choices made on the main window, so reprocessing from the library uses
-                    // the same backend the user already picked rather than a second default.
-                    () => _viewModel?.Transcription?.CurrentOptions() ?? new Contracts.Processing.TranscriptionOptions(),
-                    () => _viewModel?.Summary?.CurrentOptions() ?? new Contracts.Summaries.SummaryOptions()),
+                // Reads whatever reprocessor currently exists. Null until a worker attaches and
+                // non-null afterwards, so reprocessing follows the runtime rather than the state
+                // the application happened to start in.
+                Reprocessor = new LiveReprocessor(() => _reprocessor),
                 Deletion = new SessionDeletionService(
                     store,
                     store.Root,
@@ -293,12 +282,107 @@ public partial class App : System.Windows.Application, IDisposable
                 Index = _indexMaintenance,
             });
 
-        // Finishing a recording changes what the library should say about it.
-        _controller.StateChanged += OnRecordingStateChangedForIndex;
-
         _viewModel.AttachLibrary(_library, () => new LibraryWindow(_library) { Owner = window });
+    }
 
-        await Task.Run(() => DiscardOrphanStaging(store)).ConfigureAwait(true);
+    /// <summary>
+    /// Handles the Setup screen reporting that components changed: a runtime it just installed may
+    /// now make processing possible.
+    /// </summary>
+    private void OnSetupComponentsChanged(object? sender, EventArgs e) => _ = TryAttachProcessingAsync();
+
+    /// <summary>
+    /// Attaches transcription and summarisation, once — if a worker can be resolved.
+    ///
+    /// <para>
+    /// Idempotent and safe to call repeatedly, which is what the no-restart path needs: a second
+    /// call after processing is attached does nothing, so there is never a duplicate coordinator, a
+    /// doubled event subscription, or a leaked worker. Called at startup, and again every time Setup
+    /// finishes installing or repairing something.
+    /// </para>
+    /// </summary>
+    private async Task TryAttachProcessingAsync()
+    {
+        if (_controller is null || _viewModel is null || _setup is null || _store is null
+            || MainWindow is not Window window)
+        {
+            return;
+        }
+
+        // Already attached, or an attach is in flight: either way there is nothing to build. The
+        // guard is set synchronously, before the first await, so two rapid notifications cannot
+        // both get past it.
+        if (_coordinator is not null || _attachingProcessing)
+        {
+            return;
+        }
+
+        _attachingProcessing = true;
+
+        try
+        {
+            // EchoForge's own interpreter and worker environment. There is deliberately no fall
+            // back to a Python on the machine: the pinned wheel closure is built for one CPython
+            // ABI, and a missing runtime is something the setup screen can install.
+            WorkerLaunchOptions? options = await Task.Run(_setup.TryResolveWorkerLaunch).ConfigureAwait(true);
+
+            if (options is null)
+            {
+                return;
+            }
+
+            FileSessionStore store = _store;
+            _registry = _setup.Artifacts;
+
+            ProcessingPreparation preparation = new(store, _registry, new DerivativeBuilder(store));
+
+            _coordinator = new TranscriptionCoordinator(
+                store,
+                _transcripts!,
+                new WorkerSupervisor(options, new RecordingCaptureGate(_controller)),
+                new RecordingCaptureGate(_controller),
+                preparation: preparation);
+
+            // Recording always has priority, so the coordinator hears about capture the moment the
+            // recorder does rather than discovering it on a poll.
+            _controller.StateChanged += OnRecordingStateChangedForProcessing;
+
+            _viewModel.AttachTranscription(new TranscriptionViewModel(_coordinator, new SaveFileExportPrompt(window)));
+
+            // Summarisation shares the transcription coordinator's gate rather than keeping its own:
+            // two coordinators each politely checking their own state would still start two jobs.
+            _summaryCoordinator = new SummaryCoordinator(
+                store,
+                _summaries!,
+                _transcripts!,
+                new WorkerSupervisor(options, new RecordingCaptureGate(_controller)),
+                new RecordingCaptureGate(_controller),
+                otherJobRunning: () => _coordinator?.IsRunning ?? false,
+                runtime: _setup.Llama);
+
+            _viewModel.AttachSummary(new SummaryViewModel(_summaryCoordinator));
+
+            // Keep the index in step as processing changes a session's canonical state.
+            _coordinator.SessionChanged += OnSessionChangedForIndex;
+            _summaryCoordinator.SessionChanged += OnSessionChangedForIndex;
+
+            // The library's live reprocessor now has real coordinators to run, using the same
+            // backend choices the main window shows rather than a second default.
+            _reprocessor = new CoordinatorReprocessor(
+                _coordinator,
+                _summaryCoordinator,
+                () => _viewModel?.Transcription?.CurrentOptions() ?? new Contracts.Processing.TranscriptionOptions(),
+                () => _viewModel?.Summary?.CurrentOptions() ?? new Contracts.Summaries.SummaryOptions());
+
+            // Reprocessing actions in an already-open library can enable now that a runtime exists.
+            _library?.ProcessingAvailabilityChanged();
+
+            await Task.Run(() => DiscardOrphanStaging(store)).ConfigureAwait(true);
+        }
+        finally
+        {
+            _attachingProcessing = false;
+        }
     }
 
     private static string Plural(int count, string noun) =>

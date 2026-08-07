@@ -31,6 +31,40 @@ public interface IMeetingReprocessor
 }
 
 /// <summary>
+/// A reprocessor that reads whatever reprocessor currently exists, or none.
+///
+/// <para>
+/// The library is composed at startup, before it is known whether this machine can run a worker at
+/// all: a recording must be reachable, playable and searchable with nothing installed. Reprocessing,
+/// on the other hand, only becomes possible once a runtime is present, which may be after Setup runs.
+/// This indirection lets the library hold one stable reprocessor whose <em>capabilities</em> follow
+/// the runtime, so transcribing again lights up the moment the coordinators attach — without a
+/// second library, and without a restart.
+/// </para>
+/// </summary>
+public sealed class LiveReprocessor(Func<IMeetingReprocessor?> current) : IMeetingReprocessor
+{
+    private readonly Func<IMeetingReprocessor?> _current =
+        current ?? throw new ArgumentNullException(nameof(current));
+
+    public bool CanTranscribe => _current()?.CanTranscribe ?? false;
+
+    public bool CanSummarize => _current()?.CanSummarize ?? false;
+
+    public Task<ReprocessOutcome> TranscribeAgainAsync(string sessionId, CancellationToken cancellationToken = default) =>
+        _current() is { } reprocessor
+            ? reprocessor.TranscribeAgainAsync(sessionId, cancellationToken)
+            : Task.FromResult(ReprocessOutcome.Refused(
+                "unavailable", "Transcription is not set up on this machine yet. Open Setup to install it."));
+
+    public Task<ReprocessOutcome> SummarizeAgainAsync(string sessionId, CancellationToken cancellationToken = default) =>
+        _current() is { } reprocessor
+            ? reprocessor.SummarizeAgainAsync(sessionId, cancellationToken)
+            : Task.FromResult(ReprocessOutcome.Refused(
+                "unavailable", "Summarisation is not set up on this machine yet. Open Setup to install it."));
+}
+
+/// <summary>
 /// Reprocessing through the coordinators that already own it.
 ///
 /// <para>
