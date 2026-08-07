@@ -42,6 +42,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly OperationGate _gate = new();
     private readonly DispatcherTimer _timer;
 
+    // A picture of the recording, never a record of it. Fed from the same refresh that reads the
+    // meters, on the canonical active-time clock, and cleared when a fresh recording begins.
+    private readonly Recording.SpeechActivityHistory _activity = new();
+
     private AudioEndpointInfo? _selectedRender;
     private AudioEndpointInfo? _selectedCapture;
     private string _statusHeadline = "Ready";
@@ -450,6 +454,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public bool HasNotice => !string.IsNullOrWhiteSpace(Notice);
 
+    /// <summary>The two-lane activity history the recording ribbon draws. Presentation only.</summary>
+    public Recording.SpeechActivityHistory RibbonHistory => _activity;
+
+    /// <summary>Bumped every refresh so the ribbon knows to redraw the history it was handed.</summary>
+    public int RibbonRevision { get; private set; }
+
     public string Elapsed { get; private set; } = "00:00:00";
 
     public double YouLevel { get; private set; }
@@ -615,6 +625,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         Notice = null;
 
+        // A new recording starts a fresh ribbon; nothing from the last meeting carries over.
+        _activity.Reset();
+
         await Task.Run(() => _controller.Start(new RecordingRequest(
             render.Id, render.FriendlyName, capture.Id, capture.FriendlyName))).ConfigureAwait(true);
     }
@@ -700,6 +713,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         YouCaption = you is { IsHealthy: false } ? "You — not capturing" : "You";
         RemoteCaption = remote is { IsHealthy: false } ? "Remote — not capturing" : "Remote";
 
+        // Feed the ribbon on the canonical active-time clock, only while capture is genuinely live.
+        // A track with no live status, or an unhealthy one, is recorded as inactive so a lost device
+        // flatlines truthfully rather than holding its last bar.
+        if (_controller.CaptureMayBeLive)
+        {
+            _activity.Add(
+                totals.ActiveDuration.TotalSeconds,
+                YouLevel, you is { IsHealthy: true },
+                RemoteLevel, remote is { IsHealthy: true });
+            RibbonRevision++;
+        }
+
         int youChunks = totals.ChunksPerTrack.GetValueOrDefault(SourceTrack.Microphone);
         int remoteChunks = totals.ChunksPerTrack.GetValueOrDefault(SourceTrack.System);
         ChunkSummary = $"{youChunks} + {remoteChunks}";
@@ -766,6 +791,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private static readonly string[] RefreshedProperties =
     [
         nameof(Elapsed), nameof(YouLevel), nameof(RemoteLevel), nameof(YouCaption), nameof(RemoteCaption),
+        nameof(RibbonRevision),
         nameof(ChunkSummary), nameof(QueueSummary), nameof(FreeSpace), nameof(StorageRate),
         nameof(IsRecording), nameof(IsPaused), nameof(IsDegraded), nameof(IndicatorVisible),
         nameof(DevicesEditable), nameof(CanStart), nameof(IsBusy), nameof(TrayText), nameof(StatusHeadline),

@@ -1,6 +1,7 @@
 <Window x:Class="EchoForge.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:rec="clr-namespace:EchoForge.App.Recording"
         Title="EchoForge" Height="760" Width="880" MinHeight="560" MinWidth="720"
         Background="{StaticResource Surface}"
         FontFamily="{StaticResource UiFont}"
@@ -177,6 +178,29 @@
         <ProgressBar Grid.Column="1" Style="{StaticResource Meter}"
                      Foreground="{StaticResource Remote}" Value="{Binding RemoteLevel, Mode=OneWay}" />
       </Grid>
+
+      <!--
+        The signature element: a two-lane speech-density ribbon over a time ruler, drawn from the
+        canonical activity history. You is the amber top lane, Remote the teal bottom lane; silence
+        is flat, a lost track flatlines in red. It is presentation only and never affects capture.
+        The labels sit outside the drawn surface so the control can stay a single render pass.
+      -->
+      <Border Margin="0,12,0,0" CornerRadius="6" Padding="10,9,12,8"
+              Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="46" />
+            <ColumnDefinition Width="*" />
+          </Grid.ColumnDefinitions>
+          <StackPanel Grid.Column="0" VerticalAlignment="Center">
+            <TextBlock Text="YOU" Style="{StaticResource Label}" Foreground="{StaticResource You}" />
+            <TextBlock Text="REM" Style="{StaticResource Label}" Foreground="{StaticResource Remote}" Margin="0,34,0,0" />
+          </StackPanel>
+          <rec:SpeechRibbon Grid.Column="1" Height="96" MinWidth="120"
+                            History="{Binding RibbonHistory}"
+                            Revision="{Binding RibbonRevision}" />
+        </Grid>
+      </Border>
     </StackPanel>
 
     <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
