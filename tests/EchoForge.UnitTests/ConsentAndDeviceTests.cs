@@ -140,6 +140,11 @@ public sealed class ConsentAndDeviceTests : IDisposable
         SpinUntil(() => _controller.State == SessionState.Recording);
         _controller.Stop();
 
+        // The recording was stopped underneath the view model, which has to notice before it will
+        // start another one. Executing into a command that is not ready yet does nothing at all,
+        // silently, and the test would then be asking why consent was not requested.
+        SpinUntil(() => vm.StartCommand.CanExecute(null));
+
         vm.StartCommand.Execute(null);
         SpinUntil(() => _consent.Asked >= 2);
 
@@ -219,12 +224,18 @@ public sealed class ConsentAndDeviceTests : IDisposable
         Assert.Equal(1.38, gigabytesPerHour, 2);
     }
 
-    private static void SpinUntil(Func<bool> condition)
+    private static void SpinUntil(
+        Func<bool> condition,
+        [System.Runtime.CompilerServices.CallerArgumentExpression(nameof(condition))] string? description = null)
     {
         DateTime deadline = DateTime.UtcNow.AddSeconds(5);
         while (!condition() && DateTime.UtcNow < deadline)
         {
             Thread.Sleep(5);
         }
+
+        // Returning quietly after the deadline turns a stall into a confusing assertion failure
+        // somewhere further down, about a count rather than about the wait that never finished.
+        Assert.True(condition(), $"timed out waiting for: {description}");
     }
 }

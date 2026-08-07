@@ -528,20 +528,50 @@ public sealed class DerivativePipelineTests : IDisposable
         const long ceiling = 6 * 1024 * 1024;
         Assert.True(sourceBytes > ceiling * 2, "the fixture is too small to prove anything");
 
-        long baseline = GC.GetTotalMemory(forceFullCollection: true);
-        long peak = baseline;
+        // GC.GetTotalMemory is process-wide, and the rest of the suite is running in the same
+        // process at the same time. Their allocations land in this reading and can only push it
+        // up, so a single sample is an upper bound on what the builder holds rather than a
+        // measurement of it - which is why this test passed alone and failed intermittently in
+        // the full run. Taking the lowest of several readings removes the noise without weakening
+        // what is asserted: a builder that really held the whole meeting could not produce a low
+        // reading, however quiet the rest of the process happened to be.
+        long best = long.MaxValue;
 
-        DerivativeBuilder builder = Builder();
+        for (int attempt = 0; attempt < 3 && best >= ceiling; attempt++)
+        {
+            // A built derivative is reused, and a reused one processes nothing. Each attempt
+            // starts from nothing so it measures the same work as the first.
+            string built = DerivativeBuilder.DerivativeDirectory(_sessions.Resolve(SessionId), new DerivativeOptions());
+            if (Directory.Exists(built))
+            {
+                Directory.Delete(built, recursive: true);
+            }
 
-        // forceFullCollection, so what is measured is what the builder is still holding rather
-        // than garbage that simply has not been collected yet.
-        builder.Progress += (_, _) => peak = Math.Max(peak, GC.GetTotalMemory(forceFullCollection: true));
+            long baseline = GC.GetTotalMemory(forceFullCollection: true);
+            long peak = baseline;
+            int samples = 0;
 
-        Assert.True((await builder.BuildAsync(request)).Succeeded);
+            DerivativeBuilder builder = Builder();
 
-        long growth = peak - baseline;
+            // forceFullCollection, so what is measured is what the builder is still holding
+            // rather than garbage that simply has not been collected yet.
+            builder.Progress += (_, _) =>
+            {
+                samples++;
+                peak = Math.Max(peak, GC.GetTotalMemory(forceFullCollection: true));
+            };
+
+            Assert.True((await builder.BuildAsync(request)).Succeeded);
+
+            // An attempt that reused an earlier build would report almost no growth and pass
+            // for the wrong reason.
+            Assert.True(samples > 0, $"attempt {attempt} did no work");
+
+            best = Math.Min(best, peak - baseline);
+        }
+
         Assert.True(
-            growth < ceiling,
-            $"live heap grew by {growth} bytes while processing {sourceBytes} bytes of source");
+            best < ceiling,
+            $"live heap grew by {best} bytes while processing {sourceBytes} bytes of source");
     }
 }
