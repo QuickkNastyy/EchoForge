@@ -215,7 +215,10 @@ public partial class App : System.Windows.Application, IDisposable
             _transcripts,
             new WorkerSupervisor(options, new RecordingCaptureGate(_controller)),
             new RecordingCaptureGate(_controller),
-            otherJobRunning: () => _coordinator?.IsRunning ?? false);
+            otherJobRunning: () => _coordinator?.IsRunning ?? false,
+            // Null when the manifest did not validate, which leaves the placeholder working and
+            // makes the production backend unavailable rather than unverified.
+            runtime: _registry is null ? null : new LlamaRuntimeStager(_registry));
 
         _viewModel.AttachSummary(new SummaryViewModel(_summaryCoordinator));
 

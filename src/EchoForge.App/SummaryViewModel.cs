@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Windows.Threading;
+using EchoForge.Contracts.Artifacts;
 using EchoForge.Contracts.Summaries;
 using EchoForge.Contracts.Transcripts;
 using EchoForge.Infrastructure.Summaries;
@@ -41,12 +42,20 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
     private SummaryState _state = SummaryState.Empty;
     private string? _notice;
     private string? _error;
+    private bool _useProductionModel;
+    private double _installPercent;
+    private bool _installing;
 
     public SummaryViewModel(SummaryCoordinator coordinator)
     {
         _coordinator = coordinator ?? throw new ArgumentNullException(nameof(coordinator));
 
         GenerateCommand = new AsyncRelayCommand(GenerateAsync, _gate, () => CanGenerate, m => Error = m);
+        InstallModelCommand = new AsyncRelayCommand(InstallModelAsync, _gate, () => CanInstallModel, m => Error = m);
+
+        // Preferred whenever it is actually here. Defaulting to it when it is not would make the
+        // first click fail for a reason the user never chose.
+        _useProductionModel = coordinator.ProductionAvailable;
         GenerateAgainCommand = new AsyncRelayCommand(GenerateAsync, _gate, () => CanGenerateAgain, m => Error = m);
         CancelCommand = new AsyncRelayCommand(CancelAsync, _gate, () => CanCancel, m => Error = m);
 
@@ -63,6 +72,80 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
     public AsyncRelayCommand GenerateAgainCommand { get; }
 
     public AsyncRelayCommand CancelCommand { get; }
+
+    public AsyncRelayCommand InstallModelCommand { get; }
+
+    // -- which summariser ---------------------------------------------------------------------
+
+    /// <summary>
+    /// True to run the local language model, false to run the deterministic placeholder.
+    ///
+    /// <para>
+    /// Offered as a choice rather than decided silently, because the two produce genuinely
+    /// different things and somebody who has just downloaded seven gigabytes is owed a clear
+    /// answer about which one they are reading.
+    /// </para>
+    /// </summary>
+    public bool UseProductionModel
+    {
+        get => _useProductionModel;
+        set
+        {
+            if (_useProductionModel == value)
+            {
+                return;
+            }
+
+            _useProductionModel = value;
+            Refresh();
+        }
+    }
+
+    public bool ProductionAvailable => _coordinator.ProductionAvailable;
+
+    /// <summary>Which summariser the next run would actually use. Never a guess.</summary>
+    public string BackendText =>
+        UseProductionModel && ProductionAvailable
+            ? "Local model (Gemma 4 12B, on this machine)"
+            : "Deterministic placeholder (quotes the transcript, understands nothing)";
+
+    /// <summary>What the local model still needs, in one line the panel can show.</summary>
+    public string ModelStatusText
+    {
+        get
+        {
+            if (_installing)
+            {
+                return string.Create(CultureInfo.InvariantCulture,
+                    $"Downloading and verifying the local summary model - {_installPercent:F0}%");
+            }
+
+            if (_coordinator.RuntimeStatus() is not { } status)
+            {
+                return "No verified summary model is configured in this build.";
+            }
+
+            if (status.Ready)
+            {
+                return string.Create(CultureInfo.InvariantCulture,
+                    $"Local summary model ready ({status.BytesRequired / 1_000_000_000.0:F1} GB, {status.ProfileId}).");
+            }
+
+            return status.BytesInstalled > 0
+                ? string.Create(CultureInfo.InvariantCulture,
+                    $"{status.Description} {status.BytesInstalled / 1_000_000_000.0:F1} of {status.BytesRequired / 1_000_000_000.0:F1} GB so far.")
+                : string.Create(CultureInfo.InvariantCulture,
+                    $"{status.Description} It is a {status.BytesRequired / 1_000_000_000.0:F1} GB download and then runs entirely on this machine.");
+        }
+    }
+
+    public bool CanInstallModel =>
+        !_installing && !ProductionAvailable && !_recordingActive && !IsWorking && !_shuttingDown &&
+        _coordinator.RuntimeStatus() is { AnythingToDownload: true };
+
+    public double InstallPercent => _installPercent;
+
+    public bool IsInstallingModel => _installing;
 
     public ObservableCollection<SummaryRevisionOption> Revisions { get; } = [];
 
@@ -221,8 +304,15 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
 
         // Chunking walks the whole transcript and the worker launch blocks; neither belongs on
         // the thread that paints the window.
+        SummaryOptions options = new()
+        {
+            Backend = UseProductionModel && ProductionAvailable
+                ? SummaryOptions.ProductionBackend
+                : SummaryOptions.MockBackend,
+        };
+
         SummaryRunResult result = await Task
-            .Run(() => _coordinator.SummarizeAsync(sessionId))
+            .Run(() => _coordinator.SummarizeAsync(sessionId, options))
             .ConfigureAwait(true);
 
         if (result.Succeeded)
@@ -241,6 +331,48 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
         ProgressPercent = result.Succeeded ? 100 : 0;
         ProgressDescription = string.Empty;
         Refresh();
+    }
+
+    /// <summary>
+    /// Downloads and unpacks the local model. Seven gigabytes, so it is never implicit.
+    ///
+    /// <para>
+    /// Off the UI thread, like everything else here. This is the thread painting the recording
+    /// indicator, and a download that blocked it would freeze a recording in progress.
+    /// </para>
+    /// </summary>
+    private async Task InstallModelAsync()
+    {
+        Error = null;
+        Notice = null;
+        _installing = true;
+        _installPercent = 0;
+        Refresh();
+
+        Progress<ArtifactProgressEventArgs> progress = new(update => Dispatch(() =>
+        {
+            _installPercent = Math.Round(update.Fraction * 100, 1);
+            OnChanged(nameof(InstallPercent));
+            OnChanged(nameof(ModelStatusText));
+        }));
+
+        try
+        {
+            bool installed = await Task
+                .Run(() => _coordinator.InstallProductionAsync(progress: progress))
+                .ConfigureAwait(true);
+
+            Notice = installed
+                ? "The local summary model is ready. Summaries are now generated on this machine by a real model."
+                : "The summary model could not be installed. Nothing was changed, and the placeholder still works.";
+
+            _useProductionModel = installed || _useProductionModel;
+        }
+        finally
+        {
+            _installing = false;
+            Refresh();
+        }
     }
 
     private Task CancelAsync()
@@ -280,6 +412,7 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
     {
         SummaryCoordinator.RepairingStage =>
             "The first summary was not supported by the transcript — generating it once more",
+        "preparing" => "Loading the local model",
         "merging" => "Bringing what was found together",
         "validating" => "Checking every claim against the transcript",
         "writing_output" => "Saving",
@@ -344,6 +477,9 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
         nameof(IsPlaceholderBackend), nameof(PlaceholderWarning), nameof(IsStale), nameof(StaleNotice),
         nameof(SelectedRevision), nameof(CanGenerate), nameof(CanGenerateAgain), nameof(CanCancel),
         nameof(ProgressPercent), nameof(ProgressDescription),
+        nameof(UseProductionModel), nameof(ProductionAvailable), nameof(BackendText),
+        nameof(ModelStatusText), nameof(CanInstallModel), nameof(IsInstallingModel),
+        nameof(InstallPercent),
     ];
 
     private void RaiseCommands()
@@ -351,6 +487,7 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
         GenerateCommand.RaiseCanExecuteChanged();
         GenerateAgainCommand.RaiseCanExecuteChanged();
         CancelCommand.RaiseCanExecuteChanged();
+        InstallModelCommand.RaiseCanExecuteChanged();
     }
 
     private static void Dispatch(Action action)
