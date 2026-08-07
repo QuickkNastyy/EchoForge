@@ -122,7 +122,7 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
 
             if (_coordinator.RuntimeStatus() is not { } status)
             {
-                return "No verified summary model is configured in this build.";
+                return "No verified summary model is installed yet. Install it below to summarise with the local model.";
             }
 
             if (status.Ready)
