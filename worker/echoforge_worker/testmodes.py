@@ -39,6 +39,12 @@ HANG: Final[str] = "hang"
 MALFORMED_SUMMARY: Final[str] = "malformed_summary"
 TRUNCATED_SUMMARY: Final[str] = "truncated_summary"
 
+#: The same two faults, but only on the first generation. These are what a re-ask that works
+#: looks like; their permanent siblings above are what one that does not looks like. Both
+#: outcomes have to be reachable, or "repaired once" and "refused twice" cannot be told apart.
+MALFORMED_SUMMARY_ONCE: Final[str] = "malformed_summary_once"
+TRUNCATED_SUMMARY_ONCE: Final[str] = "truncated_summary_once"
+
 KNOWN_MODES: Final[frozenset[str]] = frozenset(
     {
         NORMAL,
@@ -55,6 +61,8 @@ KNOWN_MODES: Final[frozenset[str]] = frozenset(
         HANG,
         MALFORMED_SUMMARY,
         TRUNCATED_SUMMARY,
+        MALFORMED_SUMMARY_ONCE,
+        TRUNCATED_SUMMARY_ONCE,
     }
 )
 
@@ -70,16 +78,26 @@ class DeliberateCrash(RuntimeError):
 class FaultInjector:
     """Applies one requested fault, or nothing at all."""
 
-    def __init__(self, mode: str | None, delay_seconds: float | None, allowed: bool) -> None:
+    def __init__(
+        self,
+        mode: str | None,
+        delay_seconds: float | None,
+        allowed: bool,
+        repair_attempt: int = 0,
+    ) -> None:
         self.mode = mode if (allowed and mode in KNOWN_MODES and mode != NORMAL) else None
         self.delay_seconds = delay_seconds
+        self.repair_attempt = repair_attempt
         self.requested_but_refused = bool(mode) and mode != NORMAL and not allowed
 
     @staticmethod
     def from_environment(
-        mode: str | None, delay_seconds: float | None, env: Mapping[str, str]
+        mode: str | None,
+        delay_seconds: float | None,
+        env: Mapping[str, str],
+        repair_attempt: int = 0,
     ) -> FaultInjector:
-        return FaultInjector(mode, delay_seconds, env.get(ALLOW_VARIABLE) == "1")
+        return FaultInjector(mode, delay_seconds, env.get(ALLOW_VARIABLE) == "1", repair_attempt)
 
     @property
     def active(self) -> bool:
@@ -133,7 +151,13 @@ class FaultInjector:
         Distinct from corrupting the result message: a summary that is malformed on disk is
         what the host's repair-once path exists for, and it has to be produced somehow.
         """
-        if self.mode == MALFORMED_SUMMARY:
+        # The "once" modes damage only the first generation, so the host's single re-ask has
+        # something to succeed at. Their permanent siblings damage every attempt, so a repair
+        # that cannot work is equally reachable.
+        if self.mode in (MALFORMED_SUMMARY_ONCE, TRUNCATED_SUMMARY_ONCE) and self.repair_attempt > 0:
+            return summary
+
+        if self.mode in (MALFORMED_SUMMARY, MALFORMED_SUMMARY_ONCE):
             corrupted = dict(summary)
             # A decision citing a segment the transcript does not contain. Schema-shaped,
             # entirely unsupported, and exactly what the evidence validator is for.
@@ -157,7 +181,7 @@ class FaultInjector:
             ]
             return corrupted
 
-        if self.mode == TRUNCATED_SUMMARY:
+        if self.mode in (TRUNCATED_SUMMARY, TRUNCATED_SUMMARY_ONCE):
             # Every required top-level field after the model block is gone.
             return {
                 "schema_version": 1,

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using EchoForge.Contracts.Processing;
@@ -240,25 +241,7 @@ public sealed class SummaryCoordinator : IDisposable
         using CancellationTokenSource linked =
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, running.Cancellation.Token);
 
-        SummaryRequest request = new()
-        {
-            SessionId = running.SessionId,
-            SummaryRevision = attempt.Revision,
-            TranscriptRevision = transcript.TranscriptRevision,
-            TranscriptSha256 = transcriptDigest,
-            TranscriptPath = transcriptPath,
-            SessionRoot = paths.Root,
-            OutputPath = attempt.StagingPath,
-            CreatedAtUtc = Now,
-            MeetingDate = options.MeetingDate?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
-            PromptVersion = options.PromptVersion,
-            InferOwners = options.InferOwners,
-            InferDueDates = options.InferDueDates,
-            Backend = options.Backend,
-            Chunks = TranscriptChunker.Plan(transcript, options),
-            TestMode = options.TestMode,
-            TestDelaySeconds = options.TestDelaySeconds,
-        };
+        IReadOnlyList<SummaryChunk> chunks = TranscriptChunker.Plan(transcript, options);
 
         _summaries.MarkStarted(attempt, Now);
         StateChanged?.Invoke(this, EventArgs.Empty);
@@ -270,22 +253,59 @@ public sealed class SummaryCoordinator : IDisposable
                 running.SessionId, update.Stage, update.CompletedUnits, update.TotalUnits));
         });
 
-        WorkerRunResult worker = await _supervisor
-            .SummarizeAsync(attempt.JobId, request, progress, linked.Token)
-            .ConfigureAwait(false);
+        SummaryRejection? rejected = null;
 
-        switch (worker.Outcome)
+        // At most one repair, and the loop is the only place that decides so. A worker cannot
+        // re-ask itself, and a rejection cannot lower the bar it failed to clear.
+        for (int repairAttempt = 0; repairAttempt <= SummaryValidator.MaxRepairAttempts; repairAttempt++)
         {
-            case WorkerOutcome.Succeeded:
-                return Activate(attempt, transcript, worker);
-
-            case WorkerOutcome.Cancelled or WorkerOutcome.Busy:
-                _summaries.MarkCancelled(attempt, Now);
-                return new SummaryRunResult(ProcessingStageState.Cancelled, null, null,
-                    "Summarising was cancelled. Your transcript and any earlier summary are unchanged.");
-
-            default:
+            if (repairAttempt > 0)
             {
+                progress.Report(new ProgressMessage
+                {
+                    JobId = attempt.JobId,
+                    Stage = RepairingStage,
+                    CompletedUnits = 0,
+                    TotalUnits = chunks.Count,
+                });
+            }
+
+            SummaryRequest request = new()
+            {
+                SessionId = running.SessionId,
+                SummaryRevision = attempt.Revision,
+                TranscriptRevision = transcript.TranscriptRevision,
+                TranscriptSha256 = transcriptDigest,
+                TranscriptPath = transcriptPath,
+                SessionRoot = paths.Root,
+                OutputPath = attempt.StagingPath,
+                CreatedAtUtc = Now,
+                MeetingDate = options.MeetingDate?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+                PromptVersion = options.PromptVersion,
+                InferOwners = options.InferOwners,
+                InferDueDates = options.InferDueDates,
+                Backend = options.Backend,
+                Chunks = chunks,
+                SynthesisGroupSize = options.SynthesisGroupSize,
+                RepairAttempt = repairAttempt,
+                RejectionReasons = rejected?.Problems ?? [],
+                TestMode = options.TestMode,
+                TestDelaySeconds = options.TestDelaySeconds,
+            };
+
+            WorkerRunResult worker = await _supervisor
+                .SummarizeAsync(attempt.JobId, request, progress, linked.Token)
+                .ConfigureAwait(false);
+
+            if (worker.Outcome is WorkerOutcome.Cancelled or WorkerOutcome.Busy)
+            {
+                return Cancelled(attempt);
+            }
+
+            if (worker.Outcome != WorkerOutcome.Succeeded)
+            {
+                // A crashed or timed-out worker is a broken run, not a badly worded answer.
+                // Re-asking it would be retrying the failure, which is not what repair is for.
                 string code = worker.Outcome switch
                 {
                     WorkerOutcome.TimedOut => "timeout",
@@ -298,8 +318,50 @@ public sealed class SummaryCoordinator : IDisposable
                 _summaries.MarkFailed(attempt, code, worker.UserMessage, Now);
                 return new SummaryRunResult(ProcessingStageState.Failed, null, code, worker.UserMessage);
             }
+
+            SummaryAcceptance acceptance = Accept(attempt, transcript, worker, repairAttempt);
+            if (acceptance.Result is { } settled)
+            {
+                return settled;
+            }
+
+            rejected = acceptance.Rejection!;
+
+            if (!rejected.Repairable)
+            {
+                break;
+            }
+
+            if (linked.IsCancellationRequested)
+            {
+                return Cancelled(attempt);
+            }
         }
+
+        return Reject(attempt, rejected!);
     }
+
+    /// <summary>The stage the UI shows while the one re-ask is in flight.</summary>
+    public const string RepairingStage = "repairing";
+
+    private SummaryRunResult Cancelled(SummaryAttempt attempt)
+    {
+        _summaries.MarkCancelled(attempt, Now);
+        return new SummaryRunResult(ProcessingStageState.Cancelled, null, null,
+            "Summarising was cancelled. Your transcript and any earlier summary are unchanged.");
+    }
+
+
+    /// <summary>Why one attempt's output was refused, and whether re-asking could help.</summary>
+    /// <param name="Repairable">
+    /// True for an answer that was badly formed or unsupported, which a re-ask might get right.
+    /// False for a refusal that has nothing to do with what the model said — a digest mismatch or
+    /// a revision that already exists will not be fixed by generating better prose.
+    /// </param>
+    private sealed record SummaryRejection(string Code, bool Repairable, IReadOnlyList<string> Problems);
+
+    /// <summary>A settled result, or the reason there is not one yet.</summary>
+    private sealed record SummaryAcceptance(SummaryRunResult? Result, SummaryRejection? Rejection);
 
     /// <summary>
     /// Validates the staged summary against the transcript, then activates it.
@@ -309,8 +371,17 @@ public sealed class SummaryCoordinator : IDisposable
     /// so it is the last point a refusal costs nothing. A document that cites a segment the
     /// transcript does not contain never reaches disk under a revision name.
     /// </para>
+    ///
+    /// <para>
+    /// The checks here are identical on a first attempt and on a repair. That is the whole
+    /// discipline: a re-ask is another chance to answer, never a lower bar to clear.
+    /// </para>
     /// </summary>
-    private SummaryRunResult Activate(SummaryAttempt attempt, TranscriptDocument transcript, WorkerRunResult worker)
+    private SummaryAcceptance Accept(
+        SummaryAttempt attempt,
+        TranscriptDocument transcript,
+        WorkerRunResult worker,
+        int repairAttempt)
     {
         SummaryDocument? summary;
         try
@@ -320,42 +391,75 @@ public sealed class SummaryCoordinator : IDisposable
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            return Reject(attempt, "summary_unreadable");
+            return Refused("summary_unreadable", true, [$"the summary could not be read ({ex.GetType().Name})"]);
         }
 
         if (summary is null)
         {
-            return Reject(attempt, "summary_unreadable");
+            return Refused("summary_unreadable", true, ["the summary file held nothing"]);
         }
 
         SummaryVerdict verdict = SummaryValidator.Validate(summary, transcript);
         if (!verdict.IsValid)
         {
-            return Reject(attempt, "summary_invalid");
+            return Refused("summary_invalid", true, verdict.Problems);
+        }
+
+        // The worker is told which attempt it is on; a document disagreeing about that is a
+        // document from somewhere other than the run being settled.
+        if (summary.RepairAttempt != repairAttempt)
+        {
+            return Refused("summary_invalid", true,
+                [$"the summary reports repair attempt {summary.RepairAttempt.ToString(CultureInfo.InvariantCulture)}, but this was attempt {repairAttempt.ToString(CultureInfo.InvariantCulture)}"]);
         }
 
         SummaryActivation activation = _summaries.Activate(attempt, worker.Output!.Sha256, summary, Now);
         if (!activation.Activated)
         {
-            return Reject(attempt, "activation_refused");
+            return Refused("activation_refused", false, [activation.Refusal ?? "the summary could not be activated"]);
         }
 
         StateChanged?.Invoke(this, EventArgs.Empty);
 
-        return new SummaryRunResult(
-            ProcessingStageState.Succeeded,
-            activation.Revision!.Revision,
-            null,
-            summary.Model.ProducesSummaries
-                ? "Summary ready."
-                : "Summary ready. This run used the deterministic placeholder, which groups and quotes what was said rather than summarising it.");
+        string ready = summary.Model.ProducesSummaries
+            ? "Summary ready."
+            : "Summary ready. This run used the deterministic placeholder, which groups and quotes what was said rather than summarising it.";
+
+        if (repairAttempt > 0)
+        {
+            ready += " The first attempt was not supported by the transcript and was refused, so it was generated again.";
+        }
+
+        return new SummaryAcceptance(
+            new SummaryRunResult(ProcessingStageState.Succeeded, activation.Revision!.Revision, null, ready),
+            null);
+
+        static SummaryAcceptance Refused(string code, bool repairable, IReadOnlyList<string> problems) =>
+            new(null, new SummaryRejection(code, repairable, Bounded(problems)));
     }
 
-    private SummaryRunResult Reject(SummaryAttempt attempt, string code)
+    /// <summary>
+    /// The rejection reasons a re-ask is told about, capped.
+    ///
+    /// <para>
+    /// A summary that got everything wrong produces a problem per item, and sending all of them
+    /// would let a bad answer decide how big the next request is.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string> Bounded(IReadOnlyList<string> problems) =>
+        [.. problems.Take(10).Select(problem => problem.Length <= 300 ? problem : problem[..300])];
+
+    private SummaryRunResult Reject(SummaryAttempt attempt, SummaryRejection rejection)
     {
-        const string message =
-            "The summary EchoForge received was not supported by the transcript, so nothing was changed. " +
-            "Your transcript and any earlier summary are untouched.";
+        // Named so the difference is visible afterwards: refused once is a bad answer, refused
+        // twice is a backend that could not produce a supported one.
+        string code = rejection.Repairable ? rejection.Code + "_after_repair" : rejection.Code;
+
+        string message = rejection.Repairable
+            ? "The summary EchoForge received was not supported by the transcript. It was generated once more and " +
+              "was still not supported, so nothing was changed. Your transcript and any earlier summary are untouched."
+            : "The summary EchoForge received could not be stored, so nothing was changed. Your transcript and any " +
+              "earlier summary are untouched.";
 
         _summaries.MarkFailed(attempt, code, message, Now);
         return new SummaryRunResult(ProcessingStageState.Failed, null, code, message);

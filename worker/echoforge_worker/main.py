@@ -166,14 +166,17 @@ class WorkerSession:
         """
         from .summarize import (
             build_summary,
-            deduplicate,
             read_transcript,
             resolve_summary_backend,
             slice_chunk,
+            synthesize,
         )
 
         faults = FaultInjector.from_environment(
-            request.test_mode, request.test_delay_seconds, self._env
+            request.test_mode,
+            request.test_delay_seconds,
+            self._env,
+            repair_attempt=request.repair_attempt,
         )
         if faults.requested_but_refused:
             self._writer.send(
@@ -209,11 +212,24 @@ class WorkerSession:
 
             self._check_cancelled()
             self._emit_progress(Stage.MERGING)
-            merged = deduplicate(candidates)
+
+            def folded_a_level(level: int, groups: int, remaining: int) -> None:
+                # A fold over a long meeting is several passes, and silence during them looks
+                # like a stall. The check is here too so a cancel is noticed between levels.
+                self._check_cancelled()
+                self._emit_progress(Stage.MERGING)
+
+            synthesis = synthesize(
+                candidates,
+                backend,
+                request,
+                group_size=request.synthesis_group_size,
+                on_level=folded_a_level,
+            )
 
             self._check_cancelled()
             self._emit_progress(Stage.VALIDATING)
-            summary = build_summary(request, document, segments, merged, backend)
+            summary = build_summary(request, document, segments, synthesis.candidates, backend, synthesis)
 
             self._check_cancelled()
             self._emit_progress(Stage.WRITING_OUTPUT)

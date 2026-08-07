@@ -76,6 +76,14 @@ class SummaryRequest:
     infer_owners: bool = False
     infer_due_dates: bool = False
     chunks: tuple[SummaryChunk, ...] = ()
+    #: How many candidates one synthesis group may hold before the fold recurses.
+    synthesis_group_size: int = 0
+    #: 0 on a first generation, 1 on the single re-ask the host is allowed. Nothing higher
+    #: is legal, and the host - not this worker - is what enforces the bound.
+    repair_attempt: int = 0
+    #: Why the previous attempt was refused. Sent so a re-ask knows what to avoid; it never
+    #: relaxes what the answer must satisfy.
+    rejection_reasons: tuple[str, ...] = ()
     test_mode: str | None = None
     test_delay_seconds: float | None = None
 
@@ -125,6 +133,9 @@ class SummaryRequest:
             infer_owners=bool(obj.get("infer_owners", False)),
             infer_due_dates=bool(obj.get("infer_due_dates", False)),
             chunks=tuple(chunks),
+            synthesis_group_size=int(obj.get("synthesis_group_size", 0) or 0),
+            repair_attempt=int(obj.get("repair_attempt", 0) or 0),
+            rejection_reasons=tuple(str(reason) for reason in (obj.get("rejection_reasons") or [])),
             test_mode=obj.get("test_mode") if isinstance(obj.get("test_mode"), str) else None,
             test_delay_seconds=obj.get("test_delay_seconds"),
         )
@@ -178,6 +189,17 @@ class SummaryBackend(ABC):
     @abstractmethod
     def extract(self, chunk: Any, segments: Sequence[TranscriptSegment], request: Any) -> list[Candidate]:
         """Candidates for one chunk. Identity and validation happen afterwards."""
+
+    def synthesize(self, group: Sequence[Candidate], request: Any) -> list[Candidate]:
+        """Fold one group of candidates into a smaller one.
+
+        The default is deduplication, which is the only reduction that can be performed without
+        understanding anything. A real model overrides this to compress several statements of one
+        fact into a single sentence - but it may still only merge: the fold may not invent a
+        citation, may not raise a certainty, and may not drop a fact. ``synthesize`` below
+        enforces all three rather than trusting whatever produced the result.
+        """
+        return deduplicate(group)
 
 
 class MockSummaryBackend(SummaryBackend):
@@ -448,12 +470,156 @@ def _normalise(text: str) -> str:
     return re.sub(r"\s+", " ", folded).strip()
 
 
+#: How many candidates one fold may consider at once. A real model's group has to fit in its
+#: context; the placeholder has no such limit, so this is what makes the recursion reachable and
+#: testable before the model that needs it exists.
+DEFAULT_SYNTHESIS_GROUP_SIZE: Final[int] = 200
+
+#: A backstop, not a budget. The fold shrinks strictly or stops, so this can only be reached by a
+#: backend that misbehaves - and reaching it returns everything and says so rather than truncating.
+SYNTHESIS_LEVEL_CAP: Final[int] = 8
+
+
+@dataclass(frozen=True, slots=True)
+class SynthesisOutcome:
+    """What a fold did, so the host can record it and a reader can see it happened."""
+
+    candidates: list[Candidate]
+    levels: int
+    groups: int
+    merged: int
+    reached_level_cap: bool
+
+
+def synthesize(
+    candidates: Sequence[Candidate],
+    backend: SummaryBackend,
+    request: Any = None,
+    group_size: int = 0,
+    level_cap: int = SYNTHESIS_LEVEL_CAP,
+    on_level: Callable[[int, int, int], None] | None = None,
+) -> SynthesisOutcome:
+    """Fold candidates down recursively until one group holds them all.
+
+    A long meeting produces more extracted facts than a single pass can consider at once, and
+    merging them is itself an operation with a size limit. So the merge is hierarchical: sort,
+    cut into groups, fold each group, then fold the results of that, until one group is left.
+
+    Cross-group duplicates get their chance because folding changes group membership - two
+    statements that landed in different groups at one level can meet at the next.
+
+    **Nothing is ever dropped to make things fit.** The fold stops when one group remains, when a
+    level merges nothing, or at the level cap - and in every one of those cases it returns every
+    candidate it still holds. Silent truncation is how a summary quietly loses the decision the
+    meeting was about.
+    """
+    size = group_size if group_size >= 2 else DEFAULT_SYNTHESIS_GROUP_SIZE
+
+    current = list(candidates)
+    started_with = len(current)
+    levels = 0
+    groups = 0
+    reached_cap = False
+
+    while True:
+        current.sort(key=lambda candidate: candidate.sort_key())
+        batches = [current[at : at + size] for at in range(0, len(current), size)] or [[]]
+
+        folded: list[Candidate] = []
+        for batch in batches:
+            result = list(backend.synthesize(batch, request))
+            _check_fold(batch, result)
+            folded.extend(result)
+
+        levels += 1
+        groups += len(batches)
+
+        if on_level is not None:
+            on_level(levels, len(batches), len(folded))
+
+        # One group means everything was considered together: this was the final fold.
+        if len(batches) == 1:
+            current = folded
+            break
+
+        # Nothing merged, so another level would cost time and change nothing.
+        if len(folded) >= len(current):
+            current = folded
+            break
+
+        current = folded
+
+        if levels >= level_cap:
+            reached_cap = True
+            break
+
+    return SynthesisOutcome(
+        candidates=current,
+        levels=levels,
+        groups=groups,
+        merged=started_with - len(current),
+        reached_level_cap=reached_cap,
+    )
+
+
+def _check_fold(before: Sequence[Candidate], after: Sequence[Candidate]) -> None:
+    """Refuse a fold that did anything other than merge.
+
+    Checked rather than trusted, because this is exactly where a language model would be asked to
+    "condense" and would helpfully produce a cleaner, more confident claim than the one it was
+    given. A synthesis pass that promoted an inference to explicit, or cited a segment none of its
+    inputs cited, would manufacture support that never existed - and it would be invisible, because
+    the output would still be perfectly well-formed.
+    """
+    if len(after) > len(before):
+        raise WorkerFailure(
+            ErrorCode.INTERNAL_ERROR,
+            Stage.MERGING,
+            f"synthesis returned {len(after)} candidates from {len(before)}; a fold may only merge",
+        )
+
+    allowed_segments = {segment_id for candidate in before for segment_id in candidate.segment_ids}
+    known = {(candidate.kind, _normalise(candidate.text)) for candidate in before}
+
+    for candidate in after:
+        invented = set(candidate.segment_ids) - allowed_segments
+        if invented:
+            raise WorkerFailure(
+                ErrorCode.INTERNAL_ERROR,
+                Stage.MERGING,
+                f"synthesis cited {sorted(invented)!r}, which none of its inputs cited",
+            )
+
+        if (candidate.kind, _normalise(candidate.text)) not in known:
+            raise WorkerFailure(
+                ErrorCode.INTERNAL_ERROR,
+                Stage.MERGING,
+                "synthesis produced a claim none of its inputs made",
+            )
+
+    if _count_explicit(after) > _count_explicit(before):
+        raise WorkerFailure(
+            ErrorCode.INTERNAL_ERROR,
+            Stage.MERGING,
+            "synthesis raised a certainty; explicit, inferred and unknown are not a scale to climb",
+        )
+
+
+def _count_explicit(candidates: Sequence[Candidate]) -> int:
+    return sum(
+        1
+        for candidate in candidates
+        if EXPLICIT in (candidate.certainty, candidate.owner_status, candidate.due_date_status)
+    )
+
+
 def build_summary(
     request: Any,
     document: dict[str, Any],
     segments: Sequence[TranscriptSegment],
     candidates: Sequence[Candidate],
     backend: SummaryBackend,
+    synthesis: SynthesisOutcome | None = None,
 ) -> dict[str, Any]:
     """Assemble the canonical summary, citing only segments that exist.
 
@@ -538,6 +704,12 @@ def build_summary(
         f"from {len(segments)} transcript segments."
     )
 
+    if synthesis is not None and synthesis.levels > 1:
+        overview += (
+            f" The extracted facts were folded together over {synthesis.levels} passes, "
+            "because there were more of them than one pass considers at once."
+        )
+
     return {
         "schema_version": 1,
         "session_id": request.session_id,
@@ -548,6 +720,17 @@ def build_summary(
         "meeting_date": request.meeting_date,
         "prompt_version": request.prompt_version,
         "model": backend.describe(),
+        # 0 on a first generation, 1 when this document is the one bounded re-ask. Recorded so a
+        # reader can tell that the first answer was refused rather than never having existed.
+        "repair_attempt": int(getattr(request, "repair_attempt", 0) or 0),
+        "synthesis": None
+        if synthesis is None
+        else {
+            "levels": synthesis.levels,
+            "groups": synthesis.groups,
+            "merged_items": synthesis.merged,
+            "reached_level_cap": synthesis.reached_level_cap,
+        },
         "title": "Meeting summary (placeholder)",
         "overview": overview,
         "key_points": buckets["key_points"],

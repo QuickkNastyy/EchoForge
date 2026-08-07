@@ -32,6 +32,19 @@ public static class SummaryValidator
 {
     private const double Tolerance = 1e-6;
 
+    /// <summary>
+    /// One re-ask, and only one.
+    ///
+    /// <para>
+    /// A model that produced an unsupported answer will often produce a supported one when told
+    /// what was wrong with it, and asking once is worth it. Asking repeatedly is how a generator
+    /// eventually stumbles onto output that satisfies the checks without satisfying the
+    /// transcript, and how a job acquires an unbounded running time. A failed repair fails the
+    /// attempt; it never relaxes what the answer had to be.
+    /// </para>
+    /// </summary>
+    public const int MaxRepairAttempts = 1;
+
     public static SummaryVerdict Validate(SummaryDocument summary, TranscriptDocument transcript)
     {
         ArgumentNullException.ThrowIfNull(summary);
@@ -63,6 +76,34 @@ public static class SummaryValidator
         if (string.IsNullOrWhiteSpace(summary.PromptVersion))
         {
             problems.Add("no prompt version was recorded");
+        }
+
+        // The bound is checked here as well as enforced by the coordinator, because a document
+        // claiming a third attempt is evidence that something re-asked without being asked to.
+        if (summary.RepairAttempt is < 0 or > MaxRepairAttempts)
+        {
+            problems.Add(Invariant(
+                $"the summary reports repair attempt {summary.RepairAttempt}, and at most {MaxRepairAttempts} is allowed"));
+        }
+
+        if (summary.Synthesis is { } synthesis)
+        {
+            if (synthesis.Levels < 1)
+            {
+                problems.Add(Invariant($"the synthesis records {synthesis.Levels} passes, and every summary is folded at least once"));
+            }
+
+            // Every pass folds at least one group, so fewer groups than passes did not happen.
+            if (synthesis.Groups < synthesis.Levels)
+            {
+                problems.Add(Invariant(
+                    $"the synthesis records {synthesis.Groups} groups across {synthesis.Levels} passes"));
+            }
+
+            if (synthesis.MergedItems < 0)
+            {
+                problems.Add("the synthesis reports a negative number of merged items");
+            }
         }
 
         // The allow-list. Anything cited that is not in here does not exist.

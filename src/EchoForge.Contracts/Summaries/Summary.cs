@@ -188,6 +188,25 @@ public sealed record SummaryModel(
     [property: JsonPropertyName("worker_version")] string WorkerVersion);
 
 /// <summary>
+/// How the extracted facts were folded together.
+///
+/// <para>
+/// A meeting long enough to exceed one pass is merged hierarchically, and the shape of that fold
+/// is recorded rather than left implicit: a reader who wonders why two similar decisions both
+/// survived is owed the answer that they were never considered side by side.
+/// </para>
+/// </summary>
+/// <param name="ReachedLevelCap">
+/// True when the fold stopped at its backstop. It stops holding everything it had — nothing is
+/// dropped to make the result fit — so this is a note about effort, not about completeness.
+/// </param>
+public sealed record SummarySynthesis(
+    [property: JsonPropertyName("levels")] int Levels,
+    [property: JsonPropertyName("groups")] int Groups,
+    [property: JsonPropertyName("merged_items")] int MergedItems,
+    [property: JsonPropertyName("reached_level_cap")] bool ReachedLevelCap);
+
+/// <summary>
 /// One immutable summary revision.
 ///
 /// <para>
@@ -225,6 +244,21 @@ public sealed record SummaryDocument
 
     [JsonPropertyName("model")]
     public required SummaryModel Model { get; init; }
+
+    /// <summary>
+    /// 0 when this was generated first time, 1 when it came from the one bounded re-ask.
+    ///
+    /// <para>
+    /// Anything above 1 means the bound was not honoured, which the validator refuses. A repair
+    /// is a second chance at answering, never a second standard to be judged by.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("repair_attempt")]
+    public int RepairAttempt { get; init; }
+
+    /// <summary>Null for documents written before the fold was recorded.</summary>
+    [JsonPropertyName("synthesis")]
+    public SummarySynthesis? Synthesis { get; init; }
 
     [JsonPropertyName("title")]
     public string Title { get; init; } = string.Empty;

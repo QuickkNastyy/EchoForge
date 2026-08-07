@@ -52,6 +52,30 @@
     "prompt_version": { "type": "string", "minLength": 1 },
     "model": { "$ref": "#/$defs/model" },
 
+    "repair_attempt": {
+      "description": "0 when this document was generated first time, 1 when the first answer was refused and it was generated once more. At most one re-ask is allowed: a model told what was wrong with an unsupported answer will often produce a supported one, but asking repeatedly is how a generator eventually stumbles onto output that satisfies the checks without satisfying the transcript. A repair is another chance to answer, never a lower bar to clear - the same validator judges both.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0
+    },
+
+    "synthesis": {
+      "description": "How the extracted facts were folded together. A meeting long enough to exceed one pass is merged hierarchically, and the shape of that fold is recorded rather than left implicit: a reader who wonders why two near-identical decisions both survived is owed the answer that they were never considered side by side. Null in documents written before the fold was recorded.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["levels", "groups", "merged_items", "reached_level_cap"],
+      "properties": {
+        "levels": { "description": "Passes over the facts. 1 for a meeting that fitted in one.", "type": "integer", "minimum": 1 },
+        "groups": { "description": "Groups folded across all passes. Never fewer than levels.", "type": "integer", "minimum": 1 },
+        "merged_items": { "type": "integer", "minimum": 0 },
+        "reached_level_cap": {
+          "description": "True when the fold stopped at its backstop. It stops holding everything it had - nothing is ever dropped to make the result fit - so this is a note about effort, not about completeness.",
+          "type": "boolean"
+        }
+      }
+    },
+
     "title": { "type": "string" },
     "overview": { "type": "string" },
 

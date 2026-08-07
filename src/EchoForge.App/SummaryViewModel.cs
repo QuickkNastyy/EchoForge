@@ -10,7 +10,12 @@ using EchoForge.Infrastructure.Summaries;
 namespace EchoForge.App;
 
 /// <summary>One selectable summary revision.</summary>
-public sealed record SummaryRevisionOption(int Revision, string Label, bool ProducesSummaries, bool IsStale);
+public sealed record SummaryRevisionOption(
+    int Revision,
+    string Label,
+    bool ProducesSummaries,
+    bool IsStale,
+    bool WasRepaired);
 
 /// <summary>
 /// The summary surface.
@@ -256,13 +261,32 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
         }
 
         ProgressPercent = Math.Round(e.Fraction * 100, 1);
-        ProgressDescription = e.TotalUnits <= 0
-            ? "Working"
-            : string.Create(CultureInfo.InvariantCulture, $"Reading the transcript — part {e.CompletedUnits} of {e.TotalUnits}");
+        ProgressDescription = Describe(e);
 
         OnChanged(nameof(ProgressPercent));
         OnChanged(nameof(ProgressDescription));
     });
+
+    /// <summary>
+    /// What the progress bar says it is doing.
+    ///
+    /// <para>
+    /// The repair is named rather than hidden behind a generic "working". A user who watches the
+    /// same job appear to start over deserves to know it was refused and is being asked again,
+    /// not to wonder whether something is stuck.
+    /// </para>
+    /// </summary>
+    private static string Describe(SummaryProgressEventArgs e) => e.Stage switch
+    {
+        SummaryCoordinator.RepairingStage =>
+            "The first summary was not supported by the transcript — generating it once more",
+        "merging" => "Bringing what was found together",
+        "validating" => "Checking every claim against the transcript",
+        "writing_output" => "Saving",
+        _ => e.TotalUnits <= 0
+            ? "Working"
+            : string.Create(CultureInfo.InvariantCulture, $"Reading the transcript — part {e.CompletedUnits} of {e.TotalUnits}"),
+    };
 
     private void Refresh()
     {
@@ -296,9 +320,10 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
                     r.Revision,
                     string.Create(
                         CultureInfo.InvariantCulture,
-                        $"Version {r.Revision} · {r.CreatedUtc.ToLocalTime():d MMM HH:mm} · transcript v{r.TranscriptRevision}{(r.ProducesSummaries ? string.Empty : " · placeholder")}"),
+                        $"Version {r.Revision} · {r.CreatedUtc.ToLocalTime():d MMM HH:mm} · transcript v{r.TranscriptRevision}{(r.ProducesSummaries ? string.Empty : " · placeholder")}{(r.WasRepaired ? " · regenerated after a refusal" : string.Empty)}"),
                     r.ProducesSummaries,
-                    r.IsStaleAgainst(_transcriptRevision)))
+                    r.IsStaleAgainst(_transcriptRevision),
+                    r.WasRepaired))
         ];
 
         if (Revisions.SequenceEqual(wanted))

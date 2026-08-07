@@ -364,6 +364,8 @@ public sealed class FileSummaryStore(ISessionStore sessions)
                 DecisionCount = summary.Decisions.Count,
                 ActionCount = summary.ActionItems.Count,
                 EvidenceValidated = true,
+                RepairAttempt = summary.RepairAttempt,
+                SynthesisLevels = summary.Synthesis?.Levels ?? 0,
             };
 
             // Identities, digests and counts. No prose: the journal is a recovery ledger, and a
@@ -384,7 +386,9 @@ public sealed class FileSummaryStore(ISessionStore sessions)
                 ("produces_summaries", record.ProducesSummaries ? "true" : "false"),
                 ("decisions", Invariant(record.DecisionCount)),
                 ("actions", Invariant(record.ActionCount)),
-                ("evidence_validated", "true")));
+                ("evidence_validated", "true"),
+                ("repair_attempt", Invariant(record.RepairAttempt)),
+                ("synthesis_levels", Invariant(record.SynthesisLevels))));
 
             WriteProjection(paths, Read(attempt.SessionId));
             return new SummaryActivation(record, null);
@@ -614,6 +618,8 @@ public sealed class FileSummaryStore(ISessionStore sessions)
             DecisionCount = entry.IntField("decisions") ?? 0,
             ActionCount = entry.IntField("actions") ?? 0,
             EvidenceValidated = entry.Field("evidence_validated") == "true",
+            RepairAttempt = entry.IntField("repair_attempt") ?? 0,
+            SynthesisLevels = entry.IntField("synthesis_levels") ?? 0,
         };
     }
 

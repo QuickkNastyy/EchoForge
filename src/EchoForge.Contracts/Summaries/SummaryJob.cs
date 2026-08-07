@@ -25,6 +25,16 @@ public sealed record SummaryOptions
     public int OverlapSegments { get; init; } = 3;
 
     /// <summary>
+    /// How many extracted facts one synthesis pass considers at once.
+    ///
+    /// <para>
+    /// A long meeting yields more facts than fit in one context, and merging them is itself an
+    /// operation with a size limit — so the merge recurses. This is the width of one fold.
+    /// </para>
+    /// </summary>
+    public int SynthesisGroupSize { get; init; } = 200;
+
+    /// <summary>
     /// Off by default, deliberately. Guessing who owns an action is the failure mode that turns a
     /// useful draft into a misleading one, and the plan requires it to be opt-in.
     /// </summary>
@@ -126,6 +136,27 @@ public sealed record SummaryRequest
     [JsonPropertyName("chunks")]
     public IReadOnlyList<SummaryChunk> Chunks { get; init; } = [];
 
+    [JsonPropertyName("synthesis_group_size")]
+    public int SynthesisGroupSize { get; init; } = 200;
+
+    /// <summary>
+    /// 0 for a first generation, 1 for the single re-ask that is allowed after a refusal.
+    ///
+    /// <para>
+    /// The bound lives on the host, not in the worker: a worker that decided for itself how many
+    /// times to try again would be the one component with no ceiling on how long it can run.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("repair_attempt")]
+    public int RepairAttempt { get; init; }
+
+    /// <summary>
+    /// Why the previous attempt was refused. Sent so the re-ask knows what went wrong; it never
+    /// changes what the answer has to satisfy, which is the same validator either way.
+    /// </summary>
+    [JsonPropertyName("rejection_reasons")]
+    public IReadOnlyList<string> RejectionReasons { get; init; } = [];
+
     [JsonPropertyName("test_mode")]
     public string? TestMode { get; init; }
 
@@ -187,6 +218,19 @@ public sealed record SummaryRevisionRecord
     /// </summary>
     [JsonPropertyName("evidence_validated")]
     public bool EvidenceValidated { get; init; }
+
+    /// <summary>
+    /// 1 when this revision came from the one bounded re-ask rather than the first generation.
+    /// Recorded because "the first answer was refused" is worth being able to see afterwards.
+    /// </summary>
+    [JsonPropertyName("repair_attempt")]
+    public int RepairAttempt { get; init; }
+
+    /// <summary>How many synthesis passes the facts were folded through. 1 for a short meeting.</summary>
+    [JsonPropertyName("synthesis_levels")]
+    public int SynthesisLevels { get; init; }
+
+    public bool WasRepaired => RepairAttempt > 0;
 
     [JsonIgnore]
     public bool FileExists { get; init; } = true;

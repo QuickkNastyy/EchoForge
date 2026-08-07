@@ -637,6 +637,48 @@ public sealed class SummaryTests : IDisposable
         return coordinator;
     }
 
+    /// <summary>
+    /// Puts a real activated transcript revision in place, so a summarisation run has something
+    /// to be judged against rather than a fixture that only looks like one.
+    /// </summary>
+    private void PlantTranscript(params TranscriptSegment[] segments)
+    {
+        TranscriptionAttempt attempt = _transcripts.BeginAttempt(
+            SessionId, "job-transcript", new string('a', 64), new TranscriptionOptions(), Tick());
+
+        TranscriptDocument transcript = Transcript(segments) with { TranscriptRevision = attempt.Revision };
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(transcript, TranscriptDocument.Json);
+
+        Directory.CreateDirectory(Path.GetDirectoryName(attempt.StagingPath)!);
+        File.WriteAllBytes(attempt.StagingPath, payload);
+
+        ActivationOutcome outcome = _transcripts.Activate(
+            new ActivationRequest(attempt, Convert.ToHexStringLower(SHA256.HashData(payload)), transcript, 1, null),
+            Tick());
+
+        Assert.True(outcome.Activated, outcome.Refusal);
+    }
+
+    /// <summary>A meeting the placeholder can find decisions and actions in.</summary>
+    private static TranscriptSegment[] MeetingSegments() =>
+    [
+        Segment(1, "Good morning everyone", 0),
+        Segment(2, "We will ship on Friday", 10),
+        Segment(3, "Alex will prepare the deck", 20),
+        Segment(4, "I am worried about the vendor risk", 30),
+    ];
+
+    private static async Task<(SummaryRunResult Result, IReadOnlyList<string> Stages)> Summarise(
+        SummaryCoordinator coordinator,
+        string? testMode = null)
+    {
+        List<string> stages = [];
+        coordinator.ProgressChanged += (_, e) => stages.Add(e.Stage);
+
+        SummaryRunResult result = await coordinator.SummarizeAsync(SessionId, new SummaryOptions { TestMode = testMode });
+        return (result, stages);
+    }
+
     [Fact]
     public async Task ASessionWithNoTranscriptIsRefused()
     {
@@ -668,6 +710,250 @@ public sealed class SummaryTests : IDisposable
 
         Assert.Equal("busy", result.FailureCode);
         Assert.Contains("Only one runs at a time", result.Message, StringComparison.Ordinal);
+    }
+
+    // -- the one bounded repair -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task AGoodSummaryIsActivatedWithoutAnyRepair()
+    {
+        WorkerTestEnvironment.CreateRecordedSession(_sessions, SessionId);
+        PlantTranscript(MeetingSegments());
+
+        (SummaryRunResult result, IReadOnlyList<string> stages) = await Summarise(Coordinator());
+
+        Assert.True(result.Succeeded, result.Message);
+        Assert.Equal(1, result.Revision);
+        Assert.DoesNotContain(SummaryCoordinator.RepairingStage, stages);
+
+        SummaryDocument summary = _summaries.ReadSummary(SessionId, 1)!;
+        Assert.Equal(0, summary.RepairAttempt);
+    }
+
+    [Fact]
+    public async Task AnUnsupportedSummaryIsGeneratedOnceMoreAndTheSecondAnswerIsActivated()
+    {
+        WorkerTestEnvironment.CreateRecordedSession(_sessions, SessionId);
+        PlantTranscript(MeetingSegments());
+
+        // The first generation cites a segment the transcript does not contain; the re-ask does not.
+        (SummaryRunResult result, IReadOnlyList<string> stages) = await Summarise(Coordinator(), "malformed_summary_once");
+
+        Assert.True(result.Succeeded, result.Message);
+        Assert.Equal(1, result.Revision);
+        Assert.Contains("refused", result.Message, StringComparison.Ordinal);
+        Assert.Single(stages, stage => stage == SummaryCoordinator.RepairingStage);
+
+        SummaryRevisionRecord record = _summaries.Read(SessionId).Selected!;
+        Assert.Equal(1, record.RepairAttempt);
+        Assert.True(record.WasRepaired);
+    }
+
+    [Fact]
+    public async Task ATruncatedSummaryIsAlsoWorthOneReAsk()
+    {
+        WorkerTestEnvironment.CreateRecordedSession(_sessions, SessionId);
+        PlantTranscript(MeetingSegments());
+
+        (SummaryRunResult result, _) = await Summarise(Coordinator(), "truncated_summary_once");
+
+        Assert.True(result.Succeeded, result.Message);
+        Assert.Equal(1, _summaries.ReadSummary(SessionId, 1)!.RepairAttempt);
+    }
+
+    [Fact]
+    public async Task ARepairThatIsStillUnsupportedFailsRatherThanBeingAccepted()
+    {
+        WorkerTestEnvironment.CreateRecordedSession(_sessions, SessionId);
+        PlantTranscript(MeetingSegments());
+
+        // Malformed every time, so the re-ask cannot succeed.
+        (SummaryRunResult result, IReadOnlyList<string> stages) = await Summarise(Coordinator(), "malformed_summary");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("summary_invalid_after_repair", result.FailureCode);
+
+        // Exactly one re-ask. Retrying until something passes is how a generator eventually
+        // stumbles onto output that satisfies the checks without satisfying the transcript.
+        Assert.Single(stages, stage => stage == SummaryCoordinator.RepairingStage);
+
+        // Nothing was activated, and nothing was left behind.
+        Assert.Empty(_summaries.Read(SessionId).Revisions);
+        Assert.False(File.Exists(_summaries.PathFor(SessionId, 1)));
+    }
+
+    [Fact]
+    public async Task ASummaryThatStaysUnreadableFailsAfterItsOneReAsk()
+    {
+        WorkerTestEnvironment.CreateRecordedSession(_sessions, SessionId);
+        PlantTranscript(MeetingSegments());
+
+        (SummaryRunResult result, IReadOnlyList<string> stages) = await Summarise(Coordinator(), "truncated_summary");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("summary_unreadable_after_repair", result.FailureCode);
+        Assert.Single(stages, stage => stage == SummaryCoordinator.RepairingStage);
+        Assert.Empty(_summaries.Read(SessionId).Revisions);
+    }
+
+    [Fact]
+    public async Task AFailedRepairLeavesTheEarlierSummaryExactlyWhereItWas()
+    {
+        WorkerTestEnvironment.CreateRecordedSession(_sessions, SessionId);
+        PlantTranscript(MeetingSegments());
+
+        SummaryCoordinator coordinator = Coordinator();
+        Assert.True((await Summarise(coordinator)).Result.Succeeded);
+        byte[] first = File.ReadAllBytes(_summaries.PathFor(SessionId, 1));
+
+        (SummaryRunResult result, _) = await Summarise(coordinator, "malformed_summary");
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("untouched", result.Message, StringComparison.Ordinal);
+
+        // The failure cost nothing: same selection, same bytes.
+        SummaryState state = _summaries.Read(SessionId);
+        Assert.Equal(1, state.SelectedRevision);
+        Assert.Single(state.Revisions);
+        Assert.Equal(first, File.ReadAllBytes(_summaries.PathFor(SessionId, 1)));
+    }
+
+    [Fact]
+    public void ARepairIsNotAllowedToLoosenAnything()
+    {
+        TranscriptDocument transcript = Transcript(Segment(1, "We will ship on Friday", 10));
+
+        SummaryDocument repaired = Summary(decisions:
+        [
+            Decision("decision-001", "ship on Friday", SupportStatuses.Explicit, new SummaryEvidence
+            {
+                TranscriptRevision = 1,
+                SegmentId = "segment-999999",
+                SourceTrack = "microphone",
+                StartSeconds = 10,
+                EndSeconds = 13,
+                DisplayTimestamp = "00:00:10",
+            }),
+        ]) with { RepairAttempt = 1 };
+
+        // The same citation that was refused on the first attempt is refused on the second.
+        Assert.False(SummaryValidator.Validate(repaired, transcript).IsValid);
+    }
+
+    [Fact]
+    public void ASummaryClaimingMoreRepairsThanAreAllowedIsRefused()
+    {
+        TranscriptDocument transcript = Transcript(Segment(1, "We will ship on Friday", 10));
+
+        SummaryVerdict verdict = SummaryValidator.Validate(Summary() with { RepairAttempt = 2 }, transcript);
+
+        Assert.False(verdict.IsValid);
+        Assert.Contains(verdict.Problems, problem => problem.Contains("repair attempt 2", StringComparison.Ordinal));
+    }
+
+    // -- recursive synthesis -----------------------------------------------------------------------------
+
+    [Fact]
+    public async Task AGeneratedSummaryRecordsHowItsFactsWereFolded()
+    {
+        WorkerTestEnvironment.CreateRecordedSession(_sessions, SessionId);
+        PlantTranscript(MeetingSegments());
+
+        Assert.True((await Summarise(Coordinator())).Result.Succeeded);
+
+        SummarySynthesis fold = _summaries.ReadSummary(SessionId, 1)!.Synthesis!;
+
+        Assert.True(fold.Levels >= 1);
+        Assert.True(fold.Groups >= fold.Levels);
+        Assert.False(fold.ReachedLevelCap);
+    }
+
+    /// <summary>Sixty distinct marked decisions, in session order.</summary>
+    private static TranscriptSegment[] LongMeeting() =>
+    [
+        .. Enumerable.Range(1, 60).Select(i => Segment(
+            i,
+            $"We will ship item {i.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
+            i * 5))
+    ];
+
+    [Fact]
+    public async Task ALongMeetingIsFoldedOverMoreThanOnePassAndKeepsEveryDecision()
+    {
+        WorkerTestEnvironment.CreateRecordedSession(_sessions, SessionId);
+        PlantTranscript(LongMeeting());
+
+        // Small chunks with overlap, so most decisions are extracted twice and there is real
+        // merging to do; and a fold too narrow to consider them all at once, which is the case
+        // the recursion exists for.
+        SummaryRunResult result = await Coordinator().SummarizeAsync(
+            SessionId,
+            new SummaryOptions { ChunkCharacters = 120, OverlapSegments = 1, SynthesisGroupSize = 4 });
+
+        Assert.True(result.Succeeded, result.Message);
+
+        SummaryDocument summary = _summaries.ReadSummary(SessionId, 1)!;
+
+        Assert.True(summary.Synthesis!.Levels > 1, $"folded in {summary.Synthesis.Levels} pass(es)");
+        Assert.True(summary.Synthesis.MergedItems > 0);
+
+        // Every decision survives the fold exactly once: none lost to make the result fit, and
+        // none duplicated by having been seen in two chunks.
+        Assert.Equal(60, summary.Decisions.Count);
+        Assert.Equal(60, summary.Decisions.Select(d => d.Text).Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
+    public async Task AFoldWithNothingLeftToMergeStopsRatherThanDiscarding()
+    {
+        WorkerTestEnvironment.CreateRecordedSession(_sessions, SessionId);
+        PlantTranscript(LongMeeting());
+
+        // Sixty decisions that are not duplicates of each other, and a fold four wide. There is
+        // no merge available, so no number of passes would make them fit — and the answer to
+        // that is to return all sixty, never to keep the first few.
+        SummaryRunResult result = await Coordinator().SummarizeAsync(
+            SessionId, new SummaryOptions { SynthesisGroupSize = 4 });
+
+        Assert.True(result.Succeeded, result.Message);
+
+        SummaryDocument summary = _summaries.ReadSummary(SessionId, 1)!;
+
+        Assert.Equal(1, summary.Synthesis!.Levels);
+        Assert.Equal(0, summary.Synthesis.MergedItems);
+        Assert.Equal(60, summary.Decisions.Count);
+    }
+
+    [Fact]
+    public void ASynthesisThatCouldNotHaveHappenedIsRefused()
+    {
+        TranscriptDocument transcript = Transcript(Segment(1, "We will ship on Friday", 10));
+
+        // Every pass folds at least one group, so fewer groups than passes did not happen.
+        SummaryVerdict verdict = SummaryValidator.Validate(
+            Summary() with { Synthesis = new SummarySynthesis(Levels: 3, Groups: 1, MergedItems: 0, ReachedLevelCap: false) },
+            transcript);
+
+        Assert.False(verdict.IsValid);
+
+        Assert.False(SummaryValidator.Validate(
+            Summary() with { Synthesis = new SummarySynthesis(0, 0, 0, false) }, transcript).IsValid);
+    }
+
+    [Fact]
+    public async Task TheJournalRemembersTheFoldAndTheRepairAcrossARestart()
+    {
+        WorkerTestEnvironment.CreateRecordedSession(_sessions, SessionId);
+        PlantTranscript(MeetingSegments());
+
+        Assert.True((await Summarise(Coordinator(), "malformed_summary_once")).Result.Succeeded);
+
+        // A fresh store, reading nothing but the journal and the files.
+        SummaryRevisionRecord record = new FileSummaryStore(new FileSessionStore(_temp.Path))
+            .Read(SessionId).Selected!;
+
+        Assert.Equal(1, record.RepairAttempt);
+        Assert.True(record.SynthesisLevels >= 1);
     }
 
     // -- the surface -----------------------------------------------------------------------------------
@@ -720,6 +1006,53 @@ public sealed class SummaryTests : IDisposable
         Assert.True(clock.Elapsed < TimeSpan.FromMilliseconds(250), $"Execute blocked for {clock.Elapsed}");
 
         await Task.Delay(200);
+    }
+
+    [Fact]
+    public async Task TheProgressLineNamesTheRepairRatherThanLookingLikeAStall()
+    {
+        WorkerTestEnvironment.CreateRecordedSession(_sessions, SessionId);
+        PlantTranscript(MeetingSegments());
+
+        SummaryCoordinator coordinator = Coordinator();
+        List<string> descriptions = [];
+        coordinator.ProgressChanged += (_, _) => { };
+
+        SummaryViewModel viewModel = new(coordinator);
+        _disposables.Add(viewModel);
+        viewModel.UpdateHost(SessionId, 1, false, true, false);
+
+        viewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(SummaryViewModel.ProgressDescription))
+            {
+                descriptions.Add(viewModel.ProgressDescription);
+            }
+        };
+
+        await coordinator.SummarizeAsync(SessionId, new SummaryOptions { TestMode = "malformed_summary_once" });
+
+        // A user watching the same job appear to start over is owed the reason.
+        Assert.Contains(descriptions, text => text.Contains("once more", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ARepairedRevisionSaysSoInTheVersionList()
+    {
+        WorkerTestEnvironment.CreateRecordedSession(_sessions, SessionId);
+        PlantTranscript(MeetingSegments());
+
+        SummaryCoordinator coordinator = Coordinator();
+        Assert.True((await Summarise(coordinator, "malformed_summary_once")).Result.Succeeded);
+
+        SummaryViewModel viewModel = new(coordinator);
+        _disposables.Add(viewModel);
+        viewModel.UpdateHost(SessionId, 1, false, true, false);
+
+        SummaryRevisionOption option = Assert.Single(viewModel.Revisions);
+
+        Assert.True(option.WasRepaired);
+        Assert.Contains("refusal", option.Label, StringComparison.Ordinal);
     }
 
     private sealed class SwitchableGate : ICaptureActivityGate

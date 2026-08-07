@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Callable, Sequence
 
 import pytest
 from conftest import hello_line, run_worker
@@ -27,6 +28,7 @@ from echoforge_worker.summarize import (
     read_transcript,
     resolve_summary_backend,
     slice_chunk,
+    synthesize,
 )
 
 
@@ -371,6 +373,233 @@ def test_a_transcript_with_nothing_notable_produces_an_empty_but_valid_summary(t
     assert summary["action_items"] == []
     assert summary["schema_version"] == 1
     assert summary["model"]["produces_summaries"] is False
+
+
+# -- recursive synthesis ----------------------------------------------------------------------
+
+
+def fact(kind: str, text: str, segment: int, at: float, chunk_index: int = 0, certainty: str = EXPLICIT) -> Candidate:
+    return Candidate(
+        kind=kind,
+        text=text,
+        certainty=certainty,
+        segment_ids=[f"segment-{segment:06d}"],
+        chunk_index=chunk_index,
+        first_time=at,
+    )
+
+
+def test_a_meeting_small_enough_folds_in_a_single_pass() -> None:
+    facts = [fact("decision", "ship on Friday", 1, 10.0), fact("action", "prepare the deck", 2, 20.0)]
+
+    outcome = synthesize(facts, MockSummaryBackend(), group_size=200)
+
+    assert outcome.levels == 1
+    assert outcome.groups == 1
+    assert len(outcome.candidates) == 2
+
+
+def test_one_pass_over_a_small_meeting_is_exactly_the_old_deduplication() -> None:
+    facts = [
+        fact("decision", "ship on Friday", 2, 10.0, chunk_index=0),
+        fact("decision", "ship on Friday", 2, 10.0, chunk_index=1),
+        fact("action", "prepare the deck", 3, 20.0),
+    ]
+
+    folded = synthesize(list(facts), MockSummaryBackend(), group_size=200).candidates
+    deduped = deduplicate(list(facts))
+
+    # The fold is a generalisation of deduplication, not a replacement for it: when everything
+    # fits in one group the two must not be able to disagree.
+    assert [(c.kind, c.text, c.segment_ids) for c in folded] == [
+        (c.kind, c.text, c.segment_ids) for c in deduped
+    ]
+
+
+def test_more_facts_than_one_group_holds_are_folded_over_several_passes() -> None:
+    facts = [
+        fact("decision", "ship on Friday", 2, 10.0, chunk_index=0),
+        fact("decision", "ship on Friday", 2, 10.0, chunk_index=1),
+        fact("decision", "cut the scope", 5, 50.0, chunk_index=0),
+        fact("decision", "cut the scope", 5, 50.0, chunk_index=1),
+    ]
+
+    outcome = synthesize(facts, MockSummaryBackend(), group_size=2)
+
+    assert outcome.levels > 1
+    assert len(outcome.candidates) == 2
+    assert outcome.merged == 2
+
+
+def test_two_statements_split_across_groups_still_meet_at_a_later_level() -> None:
+    facts = [
+        fact("decision", "ship on Friday", 2, 10.0, chunk_index=0),
+        fact("decision", "ship on Friday", 2, 10.0, chunk_index=1),
+        fact("decision", "cut the scope", 5, 50.0, chunk_index=0),
+        fact("decision", "cut the scope", 5, 50.0, chunk_index=1),
+    ]
+
+    # Groups of three put the two halves of "cut the scope" on opposite sides of a boundary,
+    # so one pass cannot merge them.
+    one_pass = sum(len(MockSummaryBackend().synthesize(facts[at : at + 3], None)) for at in (0, 3))
+    assert one_pass == 3
+
+    # Folding again re-cuts the groups, and what the boundary separated meets.
+    assert len(synthesize(facts, MockSummaryBackend(), group_size=3).candidates) == 2
+
+
+def test_the_fold_never_drops_a_fact() -> None:
+    facts = [fact("decision", f"decision number {i}", i, float(i)) for i in range(1, 41)]
+
+    outcome = synthesize(facts, MockSummaryBackend(), group_size=3)
+
+    # Forty distinct decisions, none of them duplicates of each other. A fold that made them
+    # fit by discarding some would be the worst possible way for this to work.
+    assert len(outcome.candidates) == 40
+    assert {c.text for c in outcome.candidates} == {f"decision number {i}" for i in range(1, 41)}
+
+
+def test_the_level_cap_returns_everything_rather_than_truncating() -> None:
+    facts = [fact("decision", "ship on Friday", 1, 10.0, chunk_index=i) for i in range(8)]
+
+    outcome = synthesize(facts, MockSummaryBackend(), group_size=2, level_cap=2)
+
+    assert outcome.reached_level_cap is True
+    # Stopped early, but stopped holding everything it had rather than dropping the remainder.
+    assert len(outcome.candidates) == 2
+
+
+def test_the_same_facts_always_fold_the_same_way() -> None:
+    facts = [
+        fact("decision", "ship on Friday", 2, 10.0, chunk_index=0),
+        fact("action", "prepare the deck", 3, 20.0),
+        fact("risk", "the vendor might slip", 4, 30.0),
+        fact("decision", "ship on Friday", 2, 10.0, chunk_index=1),
+    ]
+
+    first = synthesize(list(facts), MockSummaryBackend(), group_size=2)
+    second = synthesize(list(facts), MockSummaryBackend(), group_size=2)
+
+    assert [(c.kind, c.text, c.segment_ids) for c in first.candidates] == [
+        (c.kind, c.text, c.segment_ids) for c in second.candidates
+    ]
+    assert (first.levels, first.groups) == (second.levels, second.groups)
+
+
+class _MisbehavingBackend(MockSummaryBackend):
+    """A backend whose fold does something other than merge. Every kind is refused."""
+
+    def __init__(self, produce: Callable[[Sequence[Candidate]], list[Candidate]]) -> None:
+        self._produce = produce
+
+    def synthesize(self, group, request):  # noqa: ANN001, ANN201 - matches the seam
+        return self._produce(group)
+
+
+def test_a_fold_that_cites_a_segment_none_of_its_inputs_cited_is_refused() -> None:
+    facts = [fact("decision", "ship on Friday", 1, 10.0)]
+
+    def invent(group):
+        return [Candidate(kind="decision", text="ship on Friday", certainty=EXPLICIT, segment_ids=["segment-999999"])]
+
+    with pytest.raises(Exception) as failure:
+        synthesize(facts, _MisbehavingBackend(invent), group_size=2)
+
+    assert "none of its inputs cited" in str(failure.value)
+
+
+def test_a_fold_that_makes_a_claim_none_of_its_inputs_made_is_refused() -> None:
+    facts = [fact("decision", "ship on Friday", 1, 10.0)]
+
+    def embellish(group):
+        return [Candidate(
+            kind="decision", text="ship on Friday, definitely", certainty=EXPLICIT,
+            segment_ids=["segment-000001"],
+        )]
+
+    with pytest.raises(Exception) as failure:
+        synthesize(facts, _MisbehavingBackend(embellish), group_size=2)
+
+    assert "none of its inputs made" in str(failure.value)
+
+
+def test_a_fold_that_raises_a_certainty_is_refused() -> None:
+    facts = [fact("decision", "ship on Friday", 1, 10.0, certainty=INFERRED)]
+
+    def promote(group):
+        return [Candidate(
+            kind="decision", text="ship on Friday", certainty=EXPLICIT, segment_ids=["segment-000001"],
+        )]
+
+    with pytest.raises(Exception) as failure:
+        synthesize(facts, _MisbehavingBackend(promote), group_size=2)
+
+    # Explicit, inferred and unknown are not a scale a synthesis pass may climb.
+    assert "raised a certainty" in str(failure.value)
+
+
+def test_a_fold_that_returns_more_than_it_was_given_is_refused() -> None:
+    facts = [fact("decision", "ship on Friday", 1, 10.0)]
+
+    with pytest.raises(Exception) as failure:
+        synthesize(facts, _MisbehavingBackend(lambda group: list(group) * 2), group_size=2)
+
+    assert "may only merge" in str(failure.value)
+
+
+def test_the_document_records_how_it_was_folded(tmp_path) -> None:
+    path = write_transcript(tmp_path, [segment(1, "We will ship on Friday")])
+    document, parsed = read_transcript(path)
+    request = request_for(tmp_path, path, [])
+
+    outcome = synthesize(
+        [fact("decision", "We will ship on Friday", 1, 0.0)], MockSummaryBackend(), group_size=200
+    )
+    summary = build_summary(request, document, parsed, outcome.candidates, MockSummaryBackend(), outcome)
+
+    assert summary["synthesis"]["levels"] == 1
+    assert summary["synthesis"]["reached_level_cap"] is False
+    assert summary["repair_attempt"] == 0
+
+
+# -- the bounded re-ask -----------------------------------------------------------------------
+
+
+def test_a_repair_attempt_is_recorded_in_the_document_it_produced(tmp_path) -> None:
+    path = write_transcript(tmp_path, [segment(1, "We will ship on Friday")])
+    document, parsed = read_transcript(path)
+
+    request = request_for(tmp_path, path, [], repair_attempt=1, rejection_reasons=("cited a segment that does not exist",))
+    summary = build_summary(request, document, parsed, [], MockSummaryBackend())
+
+    # A reader can tell that the first answer was refused rather than never having existed.
+    assert summary["repair_attempt"] == 1
+
+
+def test_the_once_modes_damage_only_the_first_generation() -> None:
+    from echoforge_worker.testmodes import FaultInjector
+
+    intact = {"schema_version": 1, "decisions": [], "session_id": "s", "summary_revision": 1}
+
+    first = FaultInjector("malformed_summary_once", None, allowed=True, repair_attempt=0)
+    assert first.corrupt_summary(intact)["decisions"] != []
+
+    # The re-ask is what the host's one repair attempt is for, so it has to be able to succeed.
+    again = FaultInjector("malformed_summary_once", None, allowed=True, repair_attempt=1)
+    assert again.corrupt_summary(intact) == intact
+
+
+def test_the_permanent_modes_damage_every_generation() -> None:
+    from echoforge_worker.testmodes import FaultInjector
+
+    intact = {"schema_version": 1, "decisions": [], "session_id": "s", "summary_revision": 1}
+
+    for attempt in (0, 1):
+        injector = FaultInjector("malformed_summary", None, allowed=True, repair_attempt=attempt)
+        assert injector.corrupt_summary(intact)["decisions"] != []
+
+        truncating = FaultInjector("truncated_summary", None, allowed=True, repair_attempt=attempt)
+        assert "decisions" not in truncating.corrupt_summary(intact)
 
 
 # -- the job over the wire ---------------------------------------------------------------------
