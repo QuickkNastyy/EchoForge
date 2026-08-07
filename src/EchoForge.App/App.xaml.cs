@@ -11,6 +11,8 @@ using EchoForge.Infrastructure.Processing;
 using EchoForge.Infrastructure.Recovery;
 using EchoForge.Infrastructure.Sessions;
 using EchoForge.Infrastructure.Settings;
+using EchoForge.App.Library;
+using EchoForge.Infrastructure.Library;
 using EchoForge.Infrastructure.Summaries;
 using EchoForge.Infrastructure.Storage;
 using EchoForge.Infrastructure.Workers;
@@ -38,6 +40,9 @@ public partial class App : System.Windows.Application, IDisposable
     private ArtifactRegistry? _registry;
     private FileSummaryStore? _summaries;
     private SummaryCoordinator? _summaryCoordinator;
+    private FileSpeakerAliasStore? _aliases;
+    private SqliteLibraryIndex? _libraryIndex;
+    private LibraryViewModel? _library;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -221,6 +226,15 @@ public partial class App : System.Windows.Application, IDisposable
             runtime: _registry is null ? null : new LlamaRuntimeStager(_registry));
 
         _viewModel.AttachSummary(new SummaryViewModel(_summaryCoordinator));
+
+        // The meeting library. Its index lives beside the sessions rather than inside any one of
+        // them, and it is a cache: deleting it costs a rebuild and nothing else.
+        _aliases = new FileSpeakerAliasStore(store);
+        LibraryProjection projection = new(store, _transcripts, _summaries, _aliases);
+        _libraryIndex = new SqliteLibraryIndex(Path.Combine(store.Root, "library.db"), projection);
+        _library = new LibraryViewModel(_libraryIndex, projection, _transcripts, _summaries, _aliases);
+
+        _viewModel.AttachLibrary(_library, () => new LibraryWindow(_library) { Owner = window });
 
         await Task.Run(() => DiscardOrphanStaging(store)).ConfigureAwait(true);
     }

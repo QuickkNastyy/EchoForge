@@ -226,17 +226,27 @@ public static class SummaryExporter
         }
 
         StringBuilder escaped = new(text.Length + 8);
+        bool atStart = true;
 
         foreach (char character in text)
         {
-            if (character is '\\' or '`' or '*' or '_' or '{' or '}' or '[' or ']' or '(' or ')'
-                or '#' or '+' or '-' or '.' or '!' or '|' or '<' or '>')
+            // Significant wherever they appear: these turn text into emphasis, code or a link.
+            bool always = character is '\\' or '`' or '*' or '_' or '[' or ']' or '<' or '>' or '|';
+
+            // Significant only at the start of a line, where they would begin a heading, a list
+            // or a quote. Escaping these everywhere is what turns a model id like gemma-4-12b
+            // into gemma\-4\-12b for no benefit: a hyphen mid-sentence is just a hyphen.
+            bool structural = atStart && character is '#' or '-' or '+' or '=';
+
+            if (always || structural)
             {
                 escaped.Append('\\');
             }
 
             // Newlines inside one item would break the list structure it sits in.
             escaped.Append(character is '\r' or '\n' ? ' ' : character);
+
+            atStart = false;
         }
 
         return escaped.ToString();

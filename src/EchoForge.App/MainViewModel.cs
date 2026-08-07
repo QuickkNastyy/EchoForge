@@ -116,6 +116,59 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public bool HasSummary => Summary is not null;
 
     /// <summary>Attached once the worker runtime has been located, alongside transcription.</summary>
+    /// <summary>
+    /// Makes the meeting library reachable.
+    ///
+    /// <para>
+    /// Attached rather than constructed here for the same reason transcription is: the library
+    /// needs an index, and building one reads every session on disk. The recorder must never wait
+    /// on that, so it arrives when it is ready and the button appears then.
+    /// </para>
+    /// </summary>
+    public void AttachLibrary(EchoForge.App.Library.LibraryViewModel library, Func<System.Windows.Window> open) => Dispatch(() =>
+    {
+        ArgumentNullException.ThrowIfNull(library);
+        ArgumentNullException.ThrowIfNull(open);
+
+        Library = library;
+        _openLibrary = open;
+
+        OnChanged(nameof(HasLibrary));
+        OpenLibraryCommand.RaiseCanExecuteChanged();
+    });
+
+    public EchoForge.App.Library.LibraryViewModel? Library { get; private set; }
+
+    public bool HasLibrary => Library is not null;
+
+    private Func<System.Windows.Window>? _openLibrary;
+    private System.Windows.Window? _libraryWindow;
+
+    /// <summary>Opens the library, or brings the one that is already open back to the front.</summary>
+    public RelayCommand OpenLibraryCommand => _openLibraryCommand ??= new RelayCommand(
+        () =>
+        {
+            if (_libraryWindow is { } existing)
+            {
+                existing.Activate();
+                return;
+            }
+
+            if (_openLibrary is not { } factory)
+            {
+                return;
+            }
+
+            _libraryWindow = factory();
+            _libraryWindow.Closed += (_, _) => _libraryWindow = null;
+            _libraryWindow.Show();
+
+            _ = Library?.InitializeAsync();
+        },
+        () => HasLibrary);
+
+    private RelayCommand? _openLibraryCommand;
+
     public void AttachSummary(SummaryViewModel summary) => Dispatch(() =>
     {
         ArgumentNullException.ThrowIfNull(summary);

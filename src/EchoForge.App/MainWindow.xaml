@@ -449,6 +449,10 @@
 
       <Button Content="Refresh devices" Command="{Binding RefreshDevicesCommand}" />
 
+      <Button Content="Meetings…" Margin="10,0,0,0" Command="{Binding OpenLibraryCommand}"
+              ToolTip="Browse, search and export previous recordings"
+              Visibility="{Binding HasLibrary, Converter={StaticResource BoolToVis}}" />
+
       <TextBlock Style="{StaticResource Label}" VerticalAlignment="Center" Margin="18,0,0,0"
                  Foreground="{StaticResource InkDim}" Text="{Binding ReadinessMessage}" />
 
