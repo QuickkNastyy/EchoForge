@@ -274,6 +274,31 @@ public sealed class LibraryPlaybackUiTests : IDisposable
         harness.Dispose();
     }
 
+    [Fact]
+    public async Task OnlyOneMeetingIsEverOpen()
+    {
+        _fixture.AddSession("01JONE", "One");
+        _fixture.AddSession("01JTWO", "Two");
+
+        LibraryViewModel library = await OpenLibraryAsync();
+
+        library.SelectedMeeting = library.Meetings[0];
+        MeetingViewModel first = library.OpenMeeting!;
+
+        library.SelectedMeeting = library.Meetings[1];
+        MeetingViewModel second = library.OpenMeeting!;
+
+        // A new one, and the previous one closed with its transport.
+        Assert.NotSame(first, second);
+
+        // Closing the window releases the transport without throwing the library away.
+        library.CloseOpenMeeting();
+
+        Assert.Null(library.OpenMeeting);
+        Assert.Null(library.SelectedMeeting);
+        Assert.Equal(2, library.Meetings.Count);
+    }
+
     // -- date filtering in the library -----------------------------------------------------------
 
     [Fact]

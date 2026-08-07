@@ -25,6 +25,10 @@ public partial class LibraryWindow : Window
 
         InitializeComponent();
         DataContext = library;
+
+        // The view model outlives this window so reopening the library is instant. The transport
+        // must not: closing the window releases the audio device and the prepared file.
+        Closed += (_, _) => _library.CloseOpenMeeting();
     }
 
     /// <summary>Opens the meeting a result came from and scrolls to the line it matched.</summary>

@@ -5,6 +5,13 @@
   <Application.Resources>
 
     <!--
+      Application-wide because more than one window needs it. Defined in a single window's
+      resources it was present for that window and missing for the library one — a lookup that
+      throws when the window is opened rather than when it is written.
+    -->
+    <BooleanToVisibilityConverter x:Key="BoolToVis" />
+
+    <!--
       Colour is information, never decoration. Amber is always You, teal is always Remote,
       red means capture and appears nowhere else. Everything else is achromatic graphite.
     -->

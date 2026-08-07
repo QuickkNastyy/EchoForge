@@ -6,10 +6,6 @@
         FontFamily="{StaticResource UiFont}"
         WindowStartupLocation="CenterScreen">
 
-  <Window.Resources>
-    <BooleanToVisibilityConverter x:Key="BoolToVis" />
-  </Window.Resources>
-
   <Grid Margin="26,20,26,22">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" />

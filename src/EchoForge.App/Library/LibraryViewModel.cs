@@ -323,6 +323,17 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
 
     private void OnMeetingChanged(object? sender, string sessionId) => _services.Index?.Invalidate(sessionId);
 
+    /// <summary>
+    /// Closes whatever meeting is open, and with it the audio device it held.
+    ///
+    /// <para>
+    /// Called when the library window closes. The view model outlives the window so reopening it
+    /// is instant, but an output device claimed for a window nobody can see is not something to
+    /// hold onto for that.
+    /// </para>
+    /// </summary>
+    public void CloseOpenMeeting() => SelectedMeeting = null;
+
     public MeetingViewModel? OpenMeeting
     {
         get => _open;
