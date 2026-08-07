@@ -7,6 +7,7 @@ using EchoForge.Contracts.Summaries;
 using EchoForge.Contracts.Transcripts;
 using EchoForge.Core.Exports;
 using EchoForge.Core.Library;
+using EchoForge.Core.ManualCopy;
 using EchoForge.Infrastructure.Library;
 using EchoForge.Infrastructure.Processing;
 using EchoForge.Infrastructure.Summaries;
@@ -493,6 +494,37 @@ public sealed class MeetingViewModel : INotifyPropertyChanged, IDisposable
             destination,
             overwrite);
     }
+
+    /// <summary>
+    /// Composes a manual handoff from the transcript revision this meeting currently shows, and
+    /// nothing else.
+    ///
+    /// <para>
+    /// The revision is <c>_transcript</c>, which is always the selected one, so a handoff cannot copy
+    /// a different version from the one the UI names. Presentation aliases are applied for the speaker
+    /// labels; the immutable transcript and its segment IDs are untouched. A local summary is included
+    /// only when the options ask for it. No network request is made, here or below this call.
+    /// </para>
+    /// </summary>
+    public ManualHandoffResult BuildManualHandoff(ManualHandoffOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        if (_transcript is not { } transcript)
+        {
+            return ManualHandoffResult.Fail("no_transcript", "There is no transcript to copy.");
+        }
+
+        return ManualHandoffComposer.Compose(
+            transcript,
+            _aliases.Read(SessionId),
+            options,
+            options.IncludeSummaryReference ? _summary?.Overview : null);
+    }
+
+    /// <summary>A safe filename for saving a handoff, carrying the session and revision.</summary>
+    public string SuggestManualHandoffFileName() =>
+        _transcript is { } transcript ? ManualHandoffComposer.SuggestFileName(transcript) : "handoff.md";
 
     public ExportResult ExportSummary(SummaryExportFormat format, string destination, bool overwrite = false)
     {

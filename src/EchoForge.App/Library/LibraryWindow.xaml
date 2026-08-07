@@ -213,6 +213,7 @@
                 <ComboBox MinWidth="80" ItemsSource="{Binding TranscriptRevisions}"
                           SelectedItem="{Binding SelectedTranscriptRevision, Mode=TwoWay}" />
                 <Button Content="Export…" Margin="12,0,0,0" Click="OnExportTranscript" />
+                <Button Content="Copy for ChatGPT / Claude…" Margin="8,0,0,0" Click="OnCopyForAssistant" />
               </StackPanel>
             </StackPanel>
 

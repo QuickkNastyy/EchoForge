@@ -1,0 +1,51 @@
+<Window x:Class="EchoForge.App.Library.ManualHandoffWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Copy for ChatGPT / Claude" Height="640" Width="760"
+        WindowStartupLocation="CenterOwner"
+        Background="{StaticResource Surface}" Foreground="{StaticResource Ink}">
+
+  <DockPanel Margin="16">
+
+    <!-- Privacy boundary, stated before anything is copied. -->
+    <Border DockPanel.Dock="Top" Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}"
+            BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
+      <TextBlock Text="{Binding PrivacyNotice}" TextWrapping="Wrap" Foreground="{StaticResource InkDim}" />
+    </Border>
+
+    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+      <TextBlock Text="{Binding ScopeText}" Style="{StaticResource Label}" />
+      <TextBlock Text="{Binding CountsText}" Style="{StaticResource Label}" Margin="0,4,0,0" />
+      <CheckBox Content="Include EchoForge's own local summary as reference (off by default)"
+                Foreground="{StaticResource Ink}" Margin="0,8,0,0"
+                IsChecked="{Binding IncludeSummaryReference, Mode=TwoWay}" />
+    </StackPanel>
+
+    <!-- Actions -->
+    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+      <TextBlock Text="{Binding StatusMessage}" Foreground="{StaticResource InkDim}"
+                 VerticalAlignment="Center" Margin="0,0,16,0"
+                 Visibility="{Binding HasStatus, Converter={StaticResource BoolToVis}}" />
+      <Button Content="Close" Margin="0,0,8,0" Click="OnClose" IsCancel="True" />
+      <Button Content="Save to file…" Margin="0,0,8,0" Click="OnSave" />
+      <Button Content="Copy to clipboard" Click="OnCopy" IsEnabled="{Binding CanCopy}"
+              Style="{StaticResource PrimaryButton}" />
+    </StackPanel>
+
+    <TextBlock DockPanel.Dock="Top" Style="{StaticResource Label}" Margin="0,0,0,4"
+               Text="This is exactly what will be copied. Edit or delete lines to leave anything out — the transcript on disk is not changed." />
+
+    <!--
+      The editable preview is the redaction aid: everything that will be copied is here, and nothing
+      is hidden. Editing changes only the clipboard/file payload.
+    -->
+    <Border Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="6">
+      <TextBox Text="{Binding PreviewText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+               AcceptsReturn="True" AcceptsTab="False" TextWrapping="NoWrap"
+               VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+               FontFamily="{StaticResource DataFont}" FontSize="12"
+               Background="Transparent" Foreground="{StaticResource Ink}"
+               BorderThickness="0" Padding="10" SpellCheck.IsEnabled="False" />
+    </Border>
+  </DockPanel>
+</Window>

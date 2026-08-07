@@ -221,6 +221,34 @@ public partial class LibraryWindow : Window
         Report(meeting.ExportTranscript(format, dialog.FileName, overwrite: true));
     }
 
+    private void OnCopyForAssistant(object sender, RoutedEventArgs e)
+    {
+        if (_library.OpenMeeting is not { } meeting)
+        {
+            return;
+        }
+
+        if (!meeting.HasTranscript)
+        {
+            System.Windows.MessageBox.Show(
+                this,
+                "There is no transcript to copy yet.",
+                "EchoForge",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        // The dialog composes a preview and copies nothing until the user asks it to.
+        ManualHandoffViewModel model = new(
+            meeting.BuildManualHandoff,
+            new WpfClipboardWriter(),
+            meeting.SuggestManualHandoffFileName());
+
+        ManualHandoffWindow window = new(model) { Owner = this };
+        window.ShowDialog();
+    }
+
     private void OnExportSummary(object sender, RoutedEventArgs e)
     {
         if (_library.OpenMeeting is not { } meeting)
