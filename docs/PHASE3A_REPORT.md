@@ -61,6 +61,60 @@ The plan asks for 8K–12K *tokens*; this measures characters. The placeholder h
 a character budget is stable and wrong in a predictable direction. A real tokenizer arrives with
 the model that needs one.
 
+## Recursive synthesis
+
+A long meeting yields more extracted facts than one pass can consider, and *merging them is itself
+an operation with a size limit*. So the merge recurses: sort, cut into groups of
+`SynthesisGroupSize`, fold each group, then fold those results, until one group holds everything.
+Cross-group duplicates get their chance because folding changes group membership — two statements
+that landed either side of a boundary meet at the next level.
+
+**Nothing is ever dropped to make the result fit.** The fold stops when one group remains, when a
+level merges nothing, or at the level cap, and in every one of those cases it returns everything it
+still holds. Sixty decisions that are not duplicates of each other cannot be folded into four, and
+the answer to that is to return all sixty — never to keep the first few. Two tests hold both halves:
+one proves multi-level folding removes the duplicates that chunk overlap created, the other proves a
+fold with nothing left to merge stops at one pass with all sixty intact.
+
+`SummaryBackend.synthesize` is the seam a real model overrides to compress several statements of one
+fact into a sentence. It may still only merge, and that is **checked rather than trusted**: a fold
+that cites a segment none of its inputs cited, makes a claim none of its inputs made, returns more
+than it was given, or raises a certainty is refused. This is exactly where a model asked to
+"condense" would helpfully produce a cleaner, more confident claim than the one it was handed — and
+it would be invisible, because the output would still be perfectly well-formed.
+
+The shape of the fold is recorded in the document and against the revision, so a reader who wonders
+why two near-identical decisions both survived is owed the answer that they were never considered
+side by side.
+
+## One bounded repair
+
+A model told what was wrong with an unsupported answer will often produce a supported one, and
+asking once is worth it. Asking repeatedly is how a generator eventually stumbles onto output that
+satisfies the checks without satisfying the transcript, and how a job acquires an unbounded running
+time. So: **exactly one re-ask**, and the loop that decides that lives on the host. A worker cannot
+re-ask itself.
+
+The validator that judges the repair is the same object, called the same way, as the one that
+refused the first attempt. A repair is another chance to answer, never a lower bar to clear — a test
+asserts the citation refused on the first attempt is still refused on a document marked as repaired,
+and the validator refuses any document claiming more than one attempt at all.
+
+What is repaired is a *badly formed or unsupported answer*: unreadable JSON, or a document the
+evidence rules reject. A crashed or timed-out worker is a broken run rather than a bad answer, and
+re-running it would be retrying the failure. An activation refusal — a digest mismatch, a revision
+that already exists — has nothing to do with what the model said and is not repairable either.
+
+Terminal codes name the difference, because refused once is a bad answer and refused twice is a
+backend that cannot produce a supported one: `summary_invalid_after_repair` and
+`summary_unreadable_after_repair`. A failed repair activates nothing, and a test proves the earlier
+revision keeps its selection and its exact bytes.
+
+The re-ask is visible. The progress line says the first summary was not supported and is being
+generated once more, rather than showing a job that appears to silently start over; and the version
+list marks a revision that came from a repair. Two worker test modes make both outcomes reachable:
+`malformed_summary_once` damages only the first generation, its permanent sibling damages every one.
+
 ## Deterministic backend
 
 `mock-summary` reads the real transcript, classifies segments by marker phrases, quotes what was
@@ -131,8 +185,8 @@ touches the UI thread; a test asserts the command returns in under 250 ms.
 | Check | Result |
 |---|---|
 | `dotnet build -c Debug --warnaserror` | 0 warnings, 0 errors |
-| `dotnet test` | **506 passed**, 0 failed, 0 skipped |
-| `scripts/run-worker-tests.ps1 -Frozen` | **144 passed** |
+| `dotnet test` | **521 passed**, 0 failed, 0 skipped |
+| `scripts/run-worker-tests.ps1 -Frozen` | **159 passed** |
 | `scripts/verify-models.ps1` | PASS, 30 entries |
 | Application launch | window opens with the summary panel, Generate summary, and the placeholder warning |
 
@@ -154,15 +208,14 @@ together document both halves.
 3. Prompt files (`extract-v1`, `synthesize-v1`, `repair-v1`) and schema-constrained generation.
 4. A `gemma` backend behind the existing `SummaryBackend` interface. The schema, validator,
    chunker, storage, coordinator and UI do not change when it arrives.
-5. **Recursive synthesis** for meetings whose validated digests still exceed 32K. The current
-   pipeline extracts and merges per chunk; the hierarchical fold is not implemented.
-6. **The one bounded malformed-JSON repair attempt.** The worker can produce malformed output and
-   the host refuses it correctly, but the single re-ask has not been written — a malformed summary
-   currently fails rather than being retried once.
-7. GPU OOM handling: reduced operational context and re-chunking, then partial offload.
-8. The two-corpus quality gate — a 3–5 meeting development set and a held-out 10–20 meeting release
+5. A real tokenizer, so the chunk budget is the plan's 8K–12K tokens rather than a character
+   estimate standing in for them.
+6. GPU OOM handling: reduced operational context and re-chunking, then partial offload.
+7. The two-corpus quality gate — a 3–5 meeting development set and a held-out 10–20 meeting release
    set, with the Gemma-versus-Ministral bake-off. That needs annotated real meetings and is the
    Phase 3 acceptance gate; nothing synthetic substitutes for it.
 
-Items 5 and 6 are the two places this pass stopped short of the full pipeline description, and both
-are named as unimplemented rather than approximated.
+Recursive synthesis and the bounded repair attempt were the two places an earlier pass stopped
+short; both are now implemented and tested above, and neither changes when the model arrives.
+`synthesize` is the seam a real backend overrides; the repair loop does not know what generated the
+answer it refused.
