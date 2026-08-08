@@ -14,16 +14,6 @@ using EchoForge.Core.Storage;
 namespace EchoForge.App;
 
 /// <summary>
-/// Asks the user to confirm before each recording starts. Abstracted so the view model's consent
-/// behaviour can be tested without showing a dialog.
-/// </summary>
-public interface IConsentPrompt
-{
-    /// <summary>Returns true only on an affirmative action. Cancelling must return false.</summary>
-    Task<bool> ConfirmAsync();
-}
-
-/// <summary>
 /// Observes the recorder and issues commands to it.
 ///
 /// <para>
@@ -38,7 +28,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly RecordingController _controller;
     private readonly IAudioDeviceCatalog _catalog;
     private readonly ISettingsStore _settings;
-    private readonly IConsentPrompt _consent;
     private readonly OperationGate _gate = new();
     private readonly DispatcherTimer _timer;
 
@@ -59,19 +48,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         RecordingController controller,
         IAudioDeviceCatalog catalog,
         ISettingsStore settings,
-        IConsentPrompt consent,
         string? recoverySummary = null,
         Func<Contracts.Audio.IDeviceLevelMonitor>? levelMonitor = null)
     {
         ArgumentNullException.ThrowIfNull(controller);
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(settings);
-        ArgumentNullException.ThrowIfNull(consent);
 
         _controller = controller;
         _catalog = catalog;
         _settings = settings;
-        _consent = consent;
         _levelMonitorFactory = levelMonitor;
 
         StartCommand = new AsyncRelayCommand(StartAsync, _gate, () => CanStart, m => Notice = m);
@@ -401,7 +387,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>
     /// The red indicator. Bound to whether a capture source may still be live, not to whether
     /// Stop has been requested — so it stays lit while the capture threads are winding down and
-    /// only clears once they have genuinely stopped.
+    /// only clears once they have genuinely stopped. It reports capture state and nothing else.
     /// </summary>
     public bool IndicatorVisible => _controller.CaptureMayBeLive;
 
@@ -601,6 +587,31 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public string StorageRate { get; private set; } = "—";
 
+    /// <summary>How much this session has put on disk so far.</summary>
+    public string Written { get; private set; } = "0 MB";
+
+    /// <summary>
+    /// How long the free space would last at the rate the selected formats actually cost.
+    ///
+    /// <para>
+    /// Hours remaining rather than bytes remaining, because hours is the question — nobody plans a
+    /// meeting in gigabytes. Derived from the same per-second estimate the rate figure uses, so the
+    /// two can never tell different stories.
+    /// </para>
+    /// </summary>
+    public string Headroom { get; private set; } = "—";
+
+    /// <summary>
+    /// True once there is a session worth reporting bytes and chunks for.
+    ///
+    /// <para>
+    /// At rest the useful facts are how much room there is and how long it lasts; during a
+    /// recording they are what has been written, how fast, what is left, and how many chunks are
+    /// down. Showing four figures that all read zero before anything starts is noise.
+    /// </para>
+    /// </summary>
+    public bool ShowCaptureFacts => IsRecording || IsPaused;
+
     public string QueueSummary { get; private set; } = "—";
 
     /// <summary>
@@ -735,10 +746,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    /// <summary>
-    /// Confirms consent, then starts. Clicking Start is not itself consent: the reminder is shown
-    /// before every recording and requires an affirmative answer.
-    /// </summary>
+    /// <summary>Starts on the selected pair of endpoints. Start means start.</summary>
     private async Task StartAsync()
     {
         if (SelectedRender is null || SelectedCapture is null)
@@ -747,22 +755,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        if (!await _consent.ConfirmAsync().ConfigureAwait(true))
-        {
-            Notice = "Recording cancelled.";
-            return;
-        }
-
         AudioEndpointInfo render = SelectedRender;
         AudioEndpointInfo capture = SelectedCapture;
 
-        // Remember the devices, and that the user has seen the responsibility notice. This is
-        // never a stored claim that meeting participants consented.
+        // Remember the pair, so the next session opens on the same two devices.
         _settings.Save(_settings.Load() with
         {
             RenderEndpointId = render.Id,
             CaptureEndpointId = capture.Id,
-            ConsentAcknowledged = true,
         });
 
         Notice = null;
@@ -891,11 +891,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             : $"queue {status.Tracks.Max(t => t.QueuedFrames)} · dropped {status.Tracks.Sum(t => t.DroppedFrames)}";
 
         DiskStatus disk = _controller.Disk();
-        FreeSpace = $"{disk.AvailableGigabytes:0.0} GB free";
+        FreeSpace = $"{disk.AvailableGigabytes:0.0} GB";
 
         // Rate from the formats actually being captured, not a constant.
-        double gigabytesPerHour = _controller.EstimatedBytesPerSecond() * 3600.0 / 1_000_000_000.0;
+        double bytesPerSecond = _controller.EstimatedBytesPerSecond();
+        double gigabytesPerHour = bytesPerSecond * 3600.0 / 1_000_000_000.0;
         StorageRate = $"{gigabytesPerHour:0.00} GB/hr";
+
+        Written = Bytes(totals.BytesWritten);
+        Headroom = bytesPerSecond <= 0
+            ? "—"
+            : Hours(disk.AvailableBytes / bytesPerSecond / 3600.0);
 
         StatusHeadline = _controller.Phase switch
         {
@@ -932,6 +938,23 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         RaiseCommands();
     }
 
+    /// <summary>Bytes as a person reads them, in the same units the disk figures use.</summary>
+    private static string Bytes(long bytes) => bytes >= 1_000_000_000
+        ? string.Create(CultureInfo.InvariantCulture, $"{bytes / 1_000_000_000.0:0.00} GB")
+        : string.Create(CultureInfo.InvariantCulture, $"{bytes / 1_000_000.0:0} MB");
+
+    /// <summary>
+    /// Headroom, rounded to something worth saying. Past a hundred hours the exact figure stops
+    /// meaning anything, so it stops pretending to be exact.
+    /// </summary>
+    private static string Hours(double hours) => hours switch
+    {
+        >= 999 => "≈ 999+ hr",
+        >= 100 => string.Create(CultureInfo.InvariantCulture, $"≈ {Math.Round(hours / 10) * 10:0} hr"),
+        >= 1 => string.Create(CultureInfo.InvariantCulture, $"≈ {hours:0} hr"),
+        _ => string.Create(CultureInfo.InvariantCulture, $"≈ {hours * 60:0} min"),
+    };
+
     private string DescribeSessionState() =>
         _controller.State switch
         {
@@ -950,6 +973,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         nameof(Elapsed), nameof(YouLevel), nameof(RemoteLevel), nameof(YouCaption), nameof(RemoteCaption),
         nameof(RibbonRevision),
         nameof(ChunkSummary), nameof(QueueSummary), nameof(FreeSpace), nameof(StorageRate),
+        nameof(Written), nameof(Headroom), nameof(ShowCaptureFacts),
         nameof(IsRecording), nameof(IsPaused), nameof(IsDegraded), nameof(IndicatorVisible),
         nameof(YouLost), nameof(RemoteLost), nameof(DegradedHeadline), nameof(DegradedDetail),
         nameof(DevicesEditable), nameof(CanStart), nameof(IsBusy), nameof(TrayText), nameof(StatusHeadline),

@@ -50,7 +50,7 @@ public static class AppWindow
     ///
     /// <para>
     /// The recorder binds this to whether a capture device may still be live, so the red indicator
-    /// the consent notice promises is on the title bar as well, and is gone the moment capture is.
+    /// is on the title bar as well, and is gone the moment capture is.
     /// </para>
     /// </summary>
     public static readonly DependencyProperty AccentProperty = DependencyProperty.RegisterAttached(

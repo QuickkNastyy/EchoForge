@@ -10,9 +10,6 @@ public sealed record AppSettings
 
     public string? CaptureEndpointId { get; init; }
 
-    /// <summary>Whether the consent reminder has been acknowledged at least once.</summary>
-    public bool ConsentAcknowledged { get; init; }
-
     /// <summary>Keep the compact recorder above other windows while capturing.</summary>
     public bool KeepRecorderOnTop { get; init; } = true;
 

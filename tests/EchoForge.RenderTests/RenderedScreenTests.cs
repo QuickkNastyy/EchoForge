@@ -265,7 +265,7 @@ internal sealed class RecorderHarness : IDisposable
     /// <summary>Ready, with both endpoints auto-selected and the processing panels attached.</summary>
     public MainViewModel Ready()
     {
-        MainViewModel model = new(_controller, new FakeDeviceCatalog(), new FakeSettingsStore(), new FakeConsentPrompt());
+        MainViewModel model = new(_controller, new FakeDeviceCatalog(), new FakeSettingsStore());
         _owned.Add(model);
         model.MarkReady();
         Attach(model);
@@ -291,7 +291,7 @@ internal sealed class RecorderHarness : IDisposable
             },
         };
 
-        MainViewModel model = new(_controller, new FakeDeviceCatalog(), settings, new FakeConsentPrompt());
+        MainViewModel model = new(_controller, new FakeDeviceCatalog(), settings);
         _owned.Add(model);
         model.MarkReady();
         Attach(model);
@@ -321,6 +321,9 @@ internal sealed class RecorderHarness : IDisposable
                 true);
         }
 
+        // The view model reads the recorder on a 200 ms timer, so give it a tick before the
+        // shutter opens; otherwise the clock and the byte counts photograph as zero.
+        UiThread.Wait(Task.Delay(400));
         return model;
     }
 
@@ -619,7 +622,7 @@ internal sealed class Screen : IDisposable
             // A picker's chevron toggle and other purely decorative parts carry no label; what
             // they draw is checked where the control itself is checked.
             string label = Label(button);
-            if (label.Length == 0)
+            if (label.Length == 0 || !MostlyOnScreen(button))
             {
                 continue;
             }
@@ -975,6 +978,20 @@ internal sealed class Screen : IDisposable
             Rect b = BoundsOf(e);
             return b.Right > 0 && b.Bottom > 0 && b.Left < Width && b.Top < Height;
         });
+
+    /// <summary>
+    /// Enough of an element is inside its scrolling viewport to be judged on what it draws.
+    ///
+    /// <para>
+    /// A button whose top two pixels peek above the bottom of a scroller really does show no
+    /// label, and saying so would be a complaint about scrolling rather than about rendering.
+    /// </para>
+    /// </summary>
+    private bool MostlyOnScreen(FrameworkElement element)
+    {
+        Rect clipped = BoundsOf(element);
+        return !clipped.IsEmpty && clipped.Height >= element.ActualHeight * 0.7;
+    }
 
     private bool Shown(DependencyObject element)
     {

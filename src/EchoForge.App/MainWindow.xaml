@@ -5,7 +5,7 @@
         xmlns:rec="clr-namespace:EchoForge.App.Recording"
         Style="{StaticResource AppWindow}"
         Title="{Binding WindowTitle, FallbackValue=EchoForge}"
-        Height="760" Width="980" MinHeight="620" MinWidth="820"
+        Height="820" Width="1120" MinHeight="620" MinWidth="820"
         WindowStyle="None" AllowsTransparency="False"
         app:AppWindow.Accent="{Binding IndicatorVisible, Converter={StaticResource RecordingAccent}}"
         WindowStartupLocation="CenterScreen">
@@ -104,18 +104,41 @@
                    TextOptions.TextFormattingMode="Ideal" TextOptions.TextRenderingMode="ClearType" />
       </StackPanel>
 
-      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+      <!--
+        The facts worth knowing, which are different before and during a recording. At rest that is
+        how much room there is and how long it lasts; once capture is running it is what has been
+        written, how fast, what remains, and how many chunks are down. Four figures all reading
+        zero before anything has started is noise, so they are not shown until they mean something.
+      -->
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"
+                  Visibility="{Binding ShowCaptureFacts, Converter={StaticResource InvBoolToVis}}">
         <StackPanel Margin="0,0,26,0">
-          <TextBlock Text="CHUNKS" Style="{StaticResource Label}" HorizontalAlignment="Right" />
-          <TextBlock Text="{Binding ChunkSummary}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
+          <TextBlock Text="FREE SPACE" Style="{StaticResource Label}" HorizontalAlignment="Right" />
+          <TextBlock Text="{Binding FreeSpace}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
         </StackPanel>
-        <StackPanel Margin="0,0,26,0">
+        <StackPanel>
+          <TextBlock Text="HEADROOM" Style="{StaticResource Label}" HorizontalAlignment="Right" />
+          <TextBlock Text="{Binding Headroom}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
+        </StackPanel>
+      </StackPanel>
+
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"
+                  Visibility="{Binding ShowCaptureFacts, Converter={StaticResource BoolToVis}}">
+        <StackPanel Margin="0,0,24,0">
+          <TextBlock Text="WRITTEN" Style="{StaticResource Label}" HorizontalAlignment="Right" />
+          <TextBlock Text="{Binding Written}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
+        </StackPanel>
+        <StackPanel Margin="0,0,24,0">
           <TextBlock Text="RATE" Style="{StaticResource Label}" HorizontalAlignment="Right" />
           <TextBlock Text="{Binding StorageRate}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
         </StackPanel>
-        <StackPanel>
-          <TextBlock Text="DISK" Style="{StaticResource Label}" HorizontalAlignment="Right" />
+        <StackPanel Margin="0,0,24,0">
+          <TextBlock Text="FREE" Style="{StaticResource Label}" HorizontalAlignment="Right" />
           <TextBlock Text="{Binding FreeSpace}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
+        </StackPanel>
+        <StackPanel>
+          <TextBlock Text="CHUNKS" Style="{StaticResource Label}" HorizontalAlignment="Right" />
+          <TextBlock Text="{Binding ChunkSummary}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
         </StackPanel>
       </StackPanel>
     </Grid>
@@ -302,23 +325,19 @@
       </Border>
     </StackPanel>
 
-    <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-      <StackPanel>
-
-        <!-- Consent. EchoForge never starts on its own. -->
-        <Border CornerRadius="6" Padding="14,12"
-                Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1">
-          <StackPanel>
-            <TextBlock Text="Everyone in this meeting should know it's being recorded."
-                       FontWeight="SemiBold" TextWrapping="Wrap" />
-            <TextBlock Margin="0,5,0,0" TextWrapping="Wrap" Foreground="{StaticResource InkDim}"
-                       Text="EchoForge shows a red indicator the whole time and never starts on its own. Recording law varies by jurisdiction and by where each participant is; obtaining consent is your responsibility." />
-            <TextBlock Margin="0,9,0,0" Style="{StaticResource Label}" Text="{Binding QueueSummary}" />
-          </StackPanel>
-        </Border>
+    <ScrollViewer x:Name="ProcessingScroller" Grid.Row="4"
+                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <!--
+        Transcription and summary sit side by side, as the design pairs them, and stack when the
+        window is too narrow for two readable columns. They are two independent jobs against the
+        same recording, and seeing both at once is the point: one is usually waiting on the other.
+      -->
+      <UniformGrid Rows="1" Margin="0,0,0,4"
+                   Columns="{Binding ActualWidth, ElementName=ProcessingScroller,
+                             Converter={StaticResource ColumnsForWidth}}">
 
         <!-- Transcription. Post-recording only: recording always has priority. -->
-        <Border Margin="0,12,0,0" CornerRadius="6" Padding="14,12"
+        <Border Margin="0,0,6,0" CornerRadius="6" Padding="14,12"
                 Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1"
                 Visibility="{Binding HasTranscription, Converter={StaticResource BoolToVis}}">
           <StackPanel DataContext="{Binding Transcription}">
@@ -357,24 +376,24 @@
                        Visibility="{Binding HasNotice, Converter={StaticResource BoolToVis}}" />
 
             <!-- What to run, and how. The backend label always says whether it recognises speech. -->
-            <Grid Margin="0,12,0,0">
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-              </Grid.ColumnDefinitions>
-
-              <ComboBox Grid.Column="0" Style="{StaticResource OptionPicker}"
+            <!--
+              Wrapped rather than gridded. Paired with the summary panel these three sit in half a
+              window, and three fixed columns squeezed the backend name down to a few characters —
+              and that is the one of the three whose whole job is to say, in words, whether it
+              recognises speech at all.
+            -->
+            <WrapPanel Margin="0,12,-8,0">
+              <ComboBox Margin="0,0,8,8" MinWidth="248" Style="{StaticResource OptionPicker}"
                         ItemsSource="{Binding Backends}" SelectedItem="{Binding SelectedBackend}" />
 
-              <ComboBox Grid.Column="1" Margin="10,0,0,0" MinWidth="200" Style="{StaticResource OptionPicker}"
+              <ComboBox Margin="0,0,8,8" MinWidth="212" Style="{StaticResource OptionPicker}"
                         ItemsSource="{Binding ComputeProfiles}" SelectedItem="{Binding SelectedComputeProfile}"
                         IsEnabled="{Binding IsProductionSelected}" />
 
-              <ComboBox Grid.Column="2" Margin="10,0,0,0" MinWidth="160" Style="{StaticResource OptionPicker}"
+              <ComboBox Margin="0,0,8,8" MinWidth="164" Style="{StaticResource OptionPicker}"
                         ItemsSource="{Binding Languages}" SelectedItem="{Binding SelectedLanguage}"
                         IsEnabled="{Binding IsProductionSelected}" />
-            </Grid>
+            </WrapPanel>
 
             <Grid Margin="0,8,0,0" IsEnabled="{Binding IsProductionSelected}">
               <Grid.ColumnDefinitions>
@@ -393,8 +412,8 @@
               <TextBlock Text="{Binding FallbackNotice}" TextWrapping="Wrap" Foreground="{StaticResource Ink}" />
             </Border>
 
-            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-              <Button Content="Transcribe" Command="{Binding TranscribeCommand}" Margin="0,0,10,0">
+            <WrapPanel Margin="0,12,-8,0">
+              <Button Content="Transcribe" Command="{Binding TranscribeCommand}" Margin="0,0,8,8">
                 <Button.Style>
                   <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
                     <Style.Triggers>
@@ -405,32 +424,26 @@
                   </Style>
                 </Button.Style>
               </Button>
-              <Button Content="Transcribe again" Command="{Binding TranscribeAgainCommand}" Margin="0,0,10,0"
+              <Button Content="Transcribe again" Command="{Binding TranscribeAgainCommand}" Margin="0,0,8,8"
                       Visibility="{Binding HasTranscript, Converter={StaticResource BoolToVis}}" />
-              <Button Content="Cancel" Command="{Binding CancelCommand}" Margin="0,0,10,0"
+              <Button Content="Cancel" Command="{Binding CancelCommand}" Margin="0,0,8,8"
                       Visibility="{Binding IsWorking, Converter={StaticResource BoolToVis}}" />
-            </StackPanel>
+            </WrapPanel>
 
             <!-- Previous versions and export. Only meaningful once something was activated. -->
             <StackPanel Margin="0,12,0,0"
                         Visibility="{Binding HasTranscript, Converter={StaticResource BoolToVis}}">
               <TextBlock Text="{Binding TranscriptSummary}" Style="{StaticResource Label}" />
 
-              <Grid Margin="0,8,0,0">
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="*" />
-                  <ColumnDefinition Width="Auto" />
-                  <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-
-                <ComboBox Grid.Column="0" Style="{StaticResource OptionPicker}"
+              <WrapPanel Margin="0,8,-8,0">
+                <ComboBox Margin="0,0,8,8" MinWidth="212" Style="{StaticResource OptionPicker}"
                           ItemsSource="{Binding Revisions}" SelectedItem="{Binding SelectedRevision}" />
 
-                <ComboBox Grid.Column="1" Margin="10,0,0,0" MinWidth="150" Style="{StaticResource OptionPicker}"
+                <ComboBox Margin="0,0,8,8" MinWidth="156" Style="{StaticResource OptionPicker}"
                           ItemsSource="{Binding ExportFormats}" SelectedItem="{Binding SelectedExportFormat}" />
 
-                <Button Grid.Column="2" Margin="10,0,0,0" Content="Export…" Command="{Binding ExportCommand}" />
-              </Grid>
+                <Button Margin="0,0,8,8" Content="Export…" Command="{Binding ExportCommand}" />
+              </WrapPanel>
 
               <TextBlock Margin="0,8,0,0" Style="{StaticResource Label}" Foreground="{StaticResource InkFaint}"
                          Text="{Binding BackendSummary}" TextWrapping="Wrap" />
@@ -454,17 +467,18 @@
               <TextBlock Margin="0,4,0,0" Style="{StaticResource Label}" Foreground="{StaticResource Remote}"
                          Text="{Binding ProductionPlanSummary}" />
 
-              <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+              <WrapPanel Margin="0,10,-8,0">
                 <Button Content="Check and prepare audio" Command="{Binding PrepareProductionCommand}"
-                        Margin="0,0,10,0" />
-                <Button Content="Download models and prepare" Command="{Binding InstallModelsCommand}" />
-              </StackPanel>
+                        Margin="0,0,8,8" />
+                <Button Content="Download models and prepare" Command="{Binding InstallModelsCommand}"
+                        Margin="0,0,8,8" />
+              </WrapPanel>
             </StackPanel>
           </StackPanel>
         </Border>
 
         <!-- Summary. A separate stage with its own revisions, from one exact transcript version. -->
-        <Border Margin="0,12,0,0" CornerRadius="6" Padding="14,12"
+        <Border Margin="6,0,0,0" CornerRadius="6" Padding="14,12"
                 Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1"
                 Visibility="{Binding HasSummary, Converter={StaticResource BoolToVis}}">
           <StackPanel DataContext="{Binding Summary}">
@@ -530,8 +544,8 @@
                        Text="{Binding Notice}"
                        Visibility="{Binding HasNotice, Converter={StaticResource BoolToVis}}" />
 
-            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-              <Button Content="Generate summary" Command="{Binding GenerateCommand}" Margin="0,0,10,0">
+            <WrapPanel Margin="0,12,-8,0">
+              <Button Content="Generate summary" Command="{Binding GenerateCommand}" Margin="0,0,8,8">
                 <Button.Style>
                   <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
                     <Style.Triggers>
@@ -543,12 +557,12 @@
                 </Button.Style>
               </Button>
 
-              <Button Content="Generate again" Command="{Binding GenerateAgainCommand}" Margin="0,0,10,0"
+              <Button Content="Generate again" Command="{Binding GenerateAgainCommand}" Margin="0,0,8,8"
                       Visibility="{Binding HasSummary, Converter={StaticResource BoolToVis}}" />
 
-              <Button Content="Cancel" Command="{Binding CancelCommand}" Margin="0,0,10,0"
+              <Button Content="Cancel" Command="{Binding CancelCommand}" Margin="0,0,8,8"
                       Visibility="{Binding IsWorking, Converter={StaticResource BoolToVis}}" />
-            </StackPanel>
+            </WrapPanel>
 
             <StackPanel Margin="0,12,0,0"
                         Visibility="{Binding HasSummary, Converter={StaticResource BoolToVis}}">
@@ -558,7 +572,7 @@
             </StackPanel>
           </StackPanel>
         </Border>
-      </StackPanel>
+      </UniformGrid>
     </ScrollViewer>
 
     <!-- Controls -->
@@ -631,6 +645,10 @@
 
       <TextBlock Style="{StaticResource Label}" VerticalAlignment="Center" Margin="18,0,0,0"
                  Text="Chunks · 60 s · PCM16 · separate tracks" />
+
+      <TextBlock Style="{StaticResource Label}" VerticalAlignment="Center" Margin="18,0,0,0"
+                 Foreground="{StaticResource InkFaint}" Text="{Binding QueueSummary}"
+                 Visibility="{Binding ShowCaptureFacts, Converter={StaticResource BoolToVis}}" />
     </StackPanel>
     </Grid>
   </Grid>

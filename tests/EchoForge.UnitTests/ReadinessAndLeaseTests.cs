@@ -20,7 +20,6 @@ public sealed class ReadinessAndLeaseTests : IDisposable
     private readonly FakeDiskSpaceProbe _disk = new();
     private readonly FakeDeviceCatalog _catalog = new();
     private readonly FakeSettingsStore _settings = new();
-    private readonly FakeConsentPrompt _consent = new();
     private readonly FileSessionStore _store;
     private readonly FileSessionLeaseProvider _leases;
 
@@ -43,7 +42,7 @@ public sealed class ReadinessAndLeaseTests : IDisposable
     public void StartIsDisabledUntilRecoveryFinishes()
     {
         using RecordingController controller = NewController();
-        using MainViewModel vm = new(controller, _catalog, _settings, _consent);
+        using MainViewModel vm = new(controller, _catalog, _settings);
 
         Assert.False(vm.IsReady);
         Assert.False(vm.CanStart);
@@ -55,7 +54,7 @@ public sealed class ReadinessAndLeaseTests : IDisposable
     public void StartIsEnabledOnceRecoveryFinishes()
     {
         using RecordingController controller = NewController();
-        using MainViewModel vm = new(controller, _catalog, _settings, _consent);
+        using MainViewModel vm = new(controller, _catalog, _settings);
 
         vm.MarkReady();
 
@@ -69,7 +68,7 @@ public sealed class ReadinessAndLeaseTests : IDisposable
     public void RecoveryFailureStillUnlocksTheAppButWarns()
     {
         using RecordingController controller = NewController();
-        using MainViewModel vm = new(controller, _catalog, _settings, _consent);
+        using MainViewModel vm = new(controller, _catalog, _settings);
 
         vm.MarkReady(warning: "EchoForge could not finish checking earlier recordings.");
 
@@ -83,12 +82,14 @@ public sealed class ReadinessAndLeaseTests : IDisposable
     public void PressingStartBeforeReadinessDoesNothing()
     {
         using RecordingController controller = NewController();
-        using MainViewModel vm = new(controller, _catalog, _settings, _consent);
+        using MainViewModel vm = new(controller, _catalog, _settings);
 
         vm.StartCommand.Execute(null);
         Thread.Sleep(100);
 
-        Assert.Equal(0, _consent.Asked);
+        // Recovery is still walking the session folders. Starting now could have the recorder and
+        // the scan touching the same session, so the button does nothing at all until it finishes.
+        Assert.False(vm.CanStart);
         Assert.Equal(SessionState.New, controller.State);
         Assert.Empty(_engines.Created);
     }

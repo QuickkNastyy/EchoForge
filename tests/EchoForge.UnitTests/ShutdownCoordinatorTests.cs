@@ -35,7 +35,6 @@ public sealed class ShutdownCoordinatorTests : IDisposable
     private readonly FakeDiskSpaceProbe _disk = new();
     private readonly FakeDeviceCatalog _catalog = new();
     private readonly FakeSettingsStore _settings = new();
-    private readonly FakeConsentPrompt _consent = new();
     private readonly FakeShutdownPrompt _prompt = new();
     private readonly List<string> _errors = [];
     private readonly FileSessionStore _store;
@@ -55,7 +54,7 @@ public sealed class ShutdownCoordinatorTests : IDisposable
 
     private MainViewModel NewViewModel()
     {
-        MainViewModel vm = new(_controller, _catalog, _settings, _consent);
+        MainViewModel vm = new(_controller, _catalog, _settings);
         vm.MarkReady();
         return vm;
     }
@@ -136,7 +135,7 @@ public sealed class ShutdownCoordinatorTests : IDisposable
         // A store whose terminal write fails makes finalization throw.
         BrokenStore broken = new(_store);
         using RecordingController controller = new(broken, _engines, _clock, _disk);
-        using MainViewModel vm = new(controller, _catalog, _settings, _consent);
+        using MainViewModel vm = new(controller, _catalog, _settings);
         vm.MarkReady();
 
         controller.Start(Request);

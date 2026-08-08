@@ -39,20 +39,6 @@ public sealed class FakeSettingsStore : ISettingsStore
     public void Save(AppSettings settings) => Current = settings;
 }
 
-/// <summary>A consent prompt whose answer the test chooses, and which counts how often it ran.</summary>
-public sealed class FakeConsentPrompt : IConsentPrompt
-{
-    public bool Answer { get; set; } = true;
-
-    public int Asked { get; private set; }
-
-    public Task<bool> ConfirmAsync()
-    {
-        Asked++;
-        return Task.FromResult(Answer);
-    }
-}
-
 public sealed class ConsentAndDeviceTests : IDisposable
 {
     private readonly TempDirectory _temp = new();
@@ -61,7 +47,6 @@ public sealed class ConsentAndDeviceTests : IDisposable
     private readonly FakeDiskSpaceProbe _disk = new();
     private readonly FakeDeviceCatalog _catalog = new();
     private readonly FakeSettingsStore _settings = new();
-    private readonly FakeConsentPrompt _consent = new();
     private readonly FileSessionStore _store;
     private readonly RecordingController _controller;
 
@@ -78,79 +63,72 @@ public sealed class ConsentAndDeviceTests : IDisposable
     }
 
     /// <summary>
-    /// These tests are about consent and device selection, so the readiness gate is opened up
-    /// front. Gating itself is covered by <see cref="ReadinessAndLeaseTests"/>.
+    /// These tests are about starting and about device selection, so the readiness gate is opened
+    /// up front. Gating itself is covered by <see cref="ReadinessAndLeaseTests"/>.
     /// </summary>
     private MainViewModel NewViewModel()
     {
-        MainViewModel vm = new(_controller, _catalog, _settings, _consent);
+        MainViewModel vm = new(_controller, _catalog, _settings);
         vm.MarkReady();
         return vm;
     }
 
+    /// <summary>
+    /// Start starts. There is no confirmation step between the button and the recorder, and the
+    /// pair of endpoints is remembered so the next session opens on the same two devices.
+    /// </summary>
     [Fact]
-    public void ClickingStartIsNotItselfConsent()
+    public void StartBeginsRecordingAndRemembersTheDevices()
     {
         using MainViewModel vm = NewViewModel();
-        _consent.Answer = false;
-
-        vm.StartCommand.Execute(null);
-        SpinUntil(() => _consent.Asked > 0);
-
-        Assert.Equal(1, _consent.Asked);
-        Assert.Equal(SessionState.New, _controller.State);
-        Assert.False(vm.IsRecording);
-    }
-
-    [Fact]
-    public void CancellingConsentLeavesTheRecorderUntouchedAndSaysSo()
-    {
-        using MainViewModel vm = NewViewModel();
-        _consent.Answer = false;
-
-        vm.StartCommand.Execute(null);
-        SpinUntil(() => vm.Notice is not null);
-
-        Assert.Contains("cancelled", vm.Notice, StringComparison.OrdinalIgnoreCase);
-        Assert.Empty(_engines.Created);
-        Assert.Null(_settings.Current.RenderEndpointId);
-    }
-
-    [Fact]
-    public void AcceptingConsentStartsTheRecording()
-    {
-        using MainViewModel vm = NewViewModel();
-        _consent.Answer = true;
 
         vm.StartCommand.Execute(null);
         SpinUntil(() => _controller.State == SessionState.Recording);
 
-        Assert.Equal(1, _consent.Asked);
         Assert.Equal(SessionState.Recording, _controller.State);
         Assert.Equal("render-id", _settings.Current.RenderEndpointId);
         Assert.Equal("capture-id", _settings.Current.CaptureEndpointId);
     }
 
+    /// <summary>
+    /// A recording still cannot begin without a pair of endpoints, and says which is missing
+    /// rather than starting on something it picked itself.
+    /// </summary>
     [Fact]
-    public void ConsentIsAskedAgainForEveryRecording()
+    public void StartRefusesWithoutBothEndpointsAndSaysSo()
+    {
+        using MainViewModel vm = NewViewModel();
+        vm.SelectedCapture = null;
+
+        Assert.False(vm.CanStart);
+        Assert.False(vm.StartCommand.CanExecute(null));
+
+        vm.StartCommand.Execute(null);
+
+        Assert.Empty(_engines.Created);
+        Assert.Equal(SessionState.New, _controller.State);
+    }
+
+    /// <summary>
+    /// The red indicator reports capture and only capture: lit while a device may still be live,
+    /// and out once the capture threads have genuinely stopped.
+    /// </summary>
+    [Fact]
+    public void TheIndicatorFollowsCaptureRatherThanTheStopRequest()
     {
         using MainViewModel vm = NewViewModel();
 
+        Assert.False(vm.IndicatorVisible);
+
         vm.StartCommand.Execute(null);
         SpinUntil(() => _controller.State == SessionState.Recording);
+
+        Assert.True(vm.IndicatorVisible);
+
         _controller.Stop();
+        SpinUntil(() => !_controller.CaptureMayBeLive);
 
-        // The recording was stopped underneath the view model, which has to notice before it will
-        // start another one. Executing into a command that is not ready yet does nothing at all,
-        // silently, and the test would then be asking why consent was not requested.
-        SpinUntil(() => vm.StartCommand.CanExecute(null));
-
-        vm.StartCommand.Execute(null);
-        SpinUntil(() => _consent.Asked >= 2);
-
-        // A remembered preference must not bypass the per-recording reminder.
-        Assert.True(_settings.Current.ConsentAcknowledged);
-        Assert.Equal(2, _consent.Asked);
+        Assert.False(vm.IndicatorVisible);
     }
 
     [Fact]

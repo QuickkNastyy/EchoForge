@@ -32,6 +32,9 @@
     <!-- "2 recordings · 1h 13m" on a day heading, summed from the rows in that day. -->
     <lib:DayTotalConverter x:Key="DayTotal" />
 
+    <!-- Side by side while there is room for two readable columns; stacked below that. -->
+    <app:ColumnsForWidthConverter x:Key="ColumnsForWidth" />
+
     <!--
       Application-wide because more than one window needs it. Defined in a single window's
       resources it was present for that window and missing for the library one — a lookup that
@@ -355,7 +358,9 @@
     <Style TargetType="ComboBox">
       <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
       <Setter Property="FontSize" Value="13" />
-      <Setter Property="Padding" Value="10,7" />
+      <!-- The right inset is the chevron's lane. Without it a long option runs underneath the
+           arrow instead of ellipsizing before it. -->
+      <Setter Property="Padding" Value="11,7,30,7" />
       <Setter Property="Background" Value="{StaticResource Raised}" />
       <Setter Property="Foreground" Value="{StaticResource Ink}" />
       <Setter Property="BorderBrush" Value="{StaticResource Line}" />
@@ -745,8 +750,8 @@
                 <Border DockPanel.Dock="Top" Height="37" Background="{StaticResource Raised}"
                         BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
                   <DockPanel>
-                    <!-- Red while a capture device is live, and never otherwise: the indicator
-                         the consent notice promises is on the window bar as well as the screen. -->
+                    <!-- Red while a capture device is live, and never otherwise, so the
+                         red indicator is on the window bar as well as the screen. -->
                     <Border Width="11" Height="11" Margin="14,0,0,0" VerticalAlignment="Center"
                             CornerRadius="2" BorderThickness="2"
                             BorderBrush="{Binding (app:AppWindow.Accent), RelativeSource={RelativeSource TemplatedParent},

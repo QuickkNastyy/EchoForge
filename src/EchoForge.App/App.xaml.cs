@@ -105,7 +105,7 @@ public partial class App : System.Windows.Application, IDisposable
 
         MainWindow window = new();
         _viewModel = new MainViewModel(
-            _controller, _catalog, settings, new DialogConsentPrompt(window),
+            _controller, _catalog, settings,
             levelMonitor: () => new DeviceLevelMonitor(_catalog));
         window.DataContext = _viewModel;
         MainWindow = window;
@@ -589,33 +589,6 @@ public partial class App : System.Windows.Application, IDisposable
         }
 
         GC.SuppressFinalize(this);
-    }
-}
-
-/// <summary>
-/// Shows the per-recording consent reminder as a modal dialog.
-///
-/// <para>
-/// The architecture requires a reminder before <em>every</em> recording. Clicking Start is not
-/// consent; this asks for an affirmative answer each time, and cancelling is a real cancel.
-/// </para>
-/// </summary>
-public sealed class DialogConsentPrompt(Window owner) : IConsentPrompt
-{
-    public Task<bool> ConfirmAsync()
-    {
-        MessageBoxResult answer = System.Windows.MessageBox.Show(
-            owner,
-            "Everyone in this meeting should know it's being recorded.\n\n" +
-            "Recording law varies by jurisdiction and by where each participant is. " +
-            "Obtaining the consent required for this meeting is your responsibility.\n\n" +
-            "Start recording now?",
-            "Before you record",
-            MessageBoxButton.OKCancel,
-            MessageBoxImage.Information,
-            MessageBoxResult.Cancel);
-
-        return Task.FromResult(answer == MessageBoxResult.OK);
     }
 }
 
