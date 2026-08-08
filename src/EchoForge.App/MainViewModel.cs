@@ -52,12 +52,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string? _notice;
     private bool _disposed;
 
+    private readonly Func<Contracts.Audio.IDeviceLevelMonitor>? _levelMonitorFactory;
+    private Contracts.Audio.IDeviceLevelMonitor? _monitor;
+
     public MainViewModel(
         RecordingController controller,
         IAudioDeviceCatalog catalog,
         ISettingsStore settings,
         IConsentPrompt consent,
-        string? recoverySummary = null)
+        string? recoverySummary = null,
+        Func<Contracts.Audio.IDeviceLevelMonitor>? levelMonitor = null)
     {
         ArgumentNullException.ThrowIfNull(controller);
         ArgumentNullException.ThrowIfNull(catalog);
@@ -68,6 +72,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _catalog = catalog;
         _settings = settings;
         _consent = consent;
+        _levelMonitorFactory = levelMonitor;
 
         StartCommand = new AsyncRelayCommand(StartAsync, _gate, () => CanStart, m => Notice = m);
         PauseCommand = new AsyncRelayCommand(PauseAsync, _gate, () => IsRecording, m => Notice = m);
@@ -75,6 +80,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         StopCommand = new AsyncRelayCommand(StopAsync, _gate, () => IsRecording || IsPaused, m => Notice = m);
         RefreshDevicesCommand = new AsyncRelayCommand(
             () => Task.Run(RefreshDevices), _gate, () => DevicesEditable, m => Notice = m);
+        TestDevicesCommand = new RelayCommand(ToggleDeviceTest, () => IsTesting || CanStart);
         ContinueRecoveredCommand = new AsyncRelayCommand(
             ContinueRecoveredAsync, _gate, () => IsReady && HasPendingContinuation && !IsRecording, m => Notice = m);
         FinishRecoveredCommand = new AsyncRelayCommand(
@@ -272,6 +278,94 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public AsyncRelayCommand StopCommand { get; }
 
     public AsyncRelayCommand RefreshDevicesCommand { get; }
+
+    public RelayCommand TestDevicesCommand { get; }
+
+    /// <summary>True when this build can test devices (the monitor factory was supplied).</summary>
+    public bool HasDeviceTest => _levelMonitorFactory is not null;
+
+    /// <summary>True while the non-recording device test is open.</summary>
+    public bool IsTesting { get; private set; }
+
+    public string TestButtonLabel => IsTesting ? "Stop test" : "Test devices";
+
+    public double TestYouLevel => IsTesting ? (_monitor?.YouLevel ?? 0) : 0;
+
+    public double TestRemoteLevel => IsTesting ? (_monitor?.RemoteLevel ?? 0) : 0;
+
+    /// <summary>A plain report of what the test found, per track.</summary>
+    public string TestStatus
+    {
+        get
+        {
+            if (!IsTesting || _monitor is null)
+            {
+                return string.Empty;
+            }
+
+            string you = _monitor.YouWorking ? "microphone working"
+                : _monitor.YouFault is not null ? "microphone could not open"
+                : "waiting for your microphone…";
+            string remote = _monitor.RemoteWorking ? "system audio working"
+                : _monitor.RemoteFault is not null ? "system audio could not open"
+                : "waiting for system audio… (play something to see it)";
+            return you + " · " + remote;
+        }
+    }
+
+    /// <summary>
+    /// Starts or stops the device test. It opens the selected endpoints only to show their levels;
+    /// it writes nothing, creates no session, and never becomes a recording.
+    /// </summary>
+    private void ToggleDeviceTest()
+    {
+        if (IsTesting)
+        {
+            StopDeviceTest();
+            return;
+        }
+
+        if (_levelMonitorFactory is null || SelectedRender is null || SelectedCapture is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _monitor = _levelMonitorFactory();
+            _monitor.Start(SelectedCapture.Id, SelectedRender.Id);
+            IsTesting = true;
+            Notice = null;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException)
+        {
+            StopDeviceTest();
+            Notice = "The device test could not open those devices.";
+            return;
+        }
+
+        RaiseTestState();
+        RaiseCommands();
+    }
+
+    private void StopDeviceTest()
+    {
+        _monitor?.Stop();
+        _monitor?.Dispose();
+        _monitor = null;
+        IsTesting = false;
+        RaiseTestState();
+        RaiseCommands();
+    }
+
+    private void RaiseTestState()
+    {
+        foreach (string name in (string[])
+            [nameof(IsTesting), nameof(TestButtonLabel), nameof(TestYouLevel), nameof(TestRemoteLevel), nameof(TestStatus)])
+        {
+            OnChanged(name);
+        }
+    }
 
     public AsyncRelayCommand ContinueRecoveredCommand { get; }
 
@@ -644,6 +738,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         Notice = null;
 
+        // A recording pins the devices, so the test — which was only borrowing them to show levels —
+        // stops first. It never wrote anything, so there is nothing to finalize.
+        StopDeviceTest();
+
         // A new recording starts a fresh ribbon; nothing from the last meeting carries over.
         _activity.Reset();
 
@@ -749,6 +847,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             RibbonRevision++;
         }
 
+        // While the device test is open, its meters come from the monitor, not the recorder.
+        if (IsTesting)
+        {
+            RaiseTestState();
+        }
+
         int youChunks = totals.ChunksPerTrack.GetValueOrDefault(SourceTrack.Microphone);
         int remoteChunks = totals.ChunksPerTrack.GetValueOrDefault(SourceTrack.System);
         ChunkSummary = $"{youChunks} + {remoteChunks}";
@@ -843,6 +947,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         ResumeCommand.RaiseCanExecuteChanged();
         StopCommand.RaiseCanExecuteChanged();
         RefreshDevicesCommand.RaiseCanExecuteChanged();
+        TestDevicesCommand.RaiseCanExecuteChanged();
         ContinueRecoveredCommand.RaiseCanExecuteChanged();
         FinishRecoveredCommand.RaiseCanExecuteChanged();
     }
@@ -859,6 +964,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         _disposed = true;
         _timer.Stop();
+        StopDeviceTest();
         _controller.StateChanged -= OnControllerStateChanged;
         _controller.Notice -= OnControllerNotice;
         Transcription?.Dispose();

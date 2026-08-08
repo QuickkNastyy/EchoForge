@@ -97,7 +97,9 @@ public partial class App : System.Windows.Application, IDisposable
             leases: leases);
 
         MainWindow window = new();
-        _viewModel = new MainViewModel(_controller, _catalog, settings, new DialogConsentPrompt(window));
+        _viewModel = new MainViewModel(
+            _controller, _catalog, settings, new DialogConsentPrompt(window),
+            levelMonitor: () => new DeviceLevelMonitor(_catalog));
         window.DataContext = _viewModel;
         MainWindow = window;
 

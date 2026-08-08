@@ -263,6 +263,38 @@
                             Revision="{Binding RibbonRevision}" />
         </Grid>
       </Border>
+
+      <!-- Device test: live levels with no recording. Open both endpoints, speak, play something. -->
+      <Border Margin="0,12,0,0" CornerRadius="6" Padding="12,10"
+              Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1"
+              Visibility="{Binding IsTesting, Converter={StaticResource BoolToVis}}">
+        <StackPanel>
+          <TextBlock Text="TESTING DEVICES — nothing is being recorded" Style="{StaticResource Label}"
+                     Foreground="{StaticResource InkDim}" Margin="0,0,0,8" />
+          <Grid Margin="0,0,0,6">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="64" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="You" Style="{StaticResource Label}" Foreground="{StaticResource You}"
+                       VerticalAlignment="Center" />
+            <ProgressBar Grid.Column="1" Style="{StaticResource Meter}" Foreground="{StaticResource You}"
+                         Value="{Binding TestYouLevel, Mode=OneWay}" />
+          </Grid>
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="64" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="Remote" Style="{StaticResource Label}" Foreground="{StaticResource Remote}"
+                       VerticalAlignment="Center" />
+            <ProgressBar Grid.Column="1" Style="{StaticResource Meter}" Foreground="{StaticResource Remote}"
+                         Value="{Binding TestRemoteLevel, Mode=OneWay}" />
+          </Grid>
+          <TextBlock Text="{Binding TestStatus}" TextWrapping="Wrap" Margin="0,8,0,0"
+                     Foreground="{StaticResource InkDim}" />
+        </StackPanel>
+      </Border>
     </StackPanel>
 
     <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
@@ -583,6 +615,10 @@
           </Style>
         </Button.Style>
       </Button>
+
+      <Button Content="{Binding TestButtonLabel}" Command="{Binding TestDevicesCommand}" Margin="0,0,10,0"
+              ToolTip="Open both devices to check their levels. This records nothing."
+              Visibility="{Binding HasDeviceTest, Converter={StaticResource BoolToVis}}" />
 
       <Button Content="Refresh devices" Command="{Binding RefreshDevicesCommand}" />
 

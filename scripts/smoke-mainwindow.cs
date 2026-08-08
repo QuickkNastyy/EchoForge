@@ -68,6 +68,9 @@ Thread ui = new(() =>
         bool oldFooter = tree.OfType<Button>().Any(b => b.Content is "Meetings…" or "Setup…");
         Check(!oldFooter, "the old Meetings…/Setup… footer buttons are gone");
 
+        bool hasTest = tree.OfType<Button>().Any(b => b.ToolTip is string t && t.Contains("records nothing", StringComparison.Ordinal));
+        Check(hasTest, "the Test devices action is present");
+
         // The compact recorder loads against the real resources and carries its two meters.
         EchoForge.App.CompactRecorderWindow compact = new();
         List<DependencyObject> compactTree = [.. LogicalDescendants(compact)];
