@@ -234,6 +234,41 @@ public sealed class ProductionTranscriptionTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// The Ready screen used to lead with "this build understands nothing" on every machine,
+    /// because the picker always started on the placeholder. It starts on real recognition
+    /// wherever real recognition is actually installed, and only there.
+    /// </summary>
+    [Fact]
+    public async Task RealSpeechRecognitionIsTheDefaultOnceItsModelsAreUsable()
+    {
+        ArtifactRegistry registry = RegistryWithInstalledModel(out ArtifactEntry[] entries);
+
+        // Bytes on disk that have never been verified are not usable yet, and defaulting to a
+        // recogniser whose first click would fail is worse than defaulting to the placeholder.
+        TranscriptionViewModel unverified = Track(new TranscriptionViewModel(Coordinator(registry), new NoPrompt()));
+
+        Assert.False(unverified.ProductionInstalled);
+        Assert.Equal(WorkerProtocol.MockBackend, unverified.SelectedBackend.Id);
+        Assert.True(unverified.IsPlaceholderBackend);
+
+        await VerifyAllAsync(registry, entries);
+
+        TranscriptionViewModel verified = Track(new TranscriptionViewModel(Coordinator(registry), new NoPrompt()));
+
+        Assert.True(verified.ProductionInstalled);
+        Assert.True(verified.SelectedBackend.RecognizesSpeech);
+        Assert.True(verified.IsProductionSelected);
+
+        // And with nothing transcribed yet, the screen says nothing about a placeholder, because
+        // the placeholder is not what the next run would use.
+        Assert.False(verified.IsPlaceholderBackend);
+
+        // Choosing the placeholder deliberately still warns, which is the case the notice is for.
+        verified.SelectedBackend = verified.Backends.First(b => !b.RecognizesSpeech);
+        Assert.True(verified.IsPlaceholderBackend);
+    }
+
     [Fact]
     public void ProfileAndLanguageControlsOnlyApplyToARealRecogniser()
     {

@@ -202,15 +202,19 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
     }
 
     /// <summary>
-    /// True whenever the transcript on show was not produced by real speech recognition.
+    /// True when what is on show, or what is about to run, is not real speech recognition.
     ///
     /// <para>
-    /// It is also true before anything has run, because the backend that would run is the
-    /// placeholder. The warning is about what the user is about to get, not only about what they
-    /// already have.
+    /// Deliberately not true merely because nothing has run yet. This build has real recognition
+    /// and selects it by default wherever its models are installed, so leading an idle screen with
+    /// "this build understands nothing" would be false as well as loud. The warning appears when a
+    /// placeholder transcript is being shown, or when the placeholder is genuinely what the next
+    /// run would use.
     /// </para>
     /// </summary>
-    public bool IsPlaceholderBackend => _state.Selected is null || !_state.Selected.RecognizesSpeech;
+    public bool IsPlaceholderBackend => _state.Selected is { } shown
+        ? !shown.RecognizesSpeech
+        : !SelectedBackend.RecognizesSpeech;
 
     public string PlaceholderWarning => _state.Selected is { RecognizesSpeech: false } selected
         ? string.Create(
@@ -315,11 +319,43 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
 
     private BackendOption? _selectedBackend;
 
+    /// <summary>
+    /// Real speech recognition where its models are actually on disk, the placeholder otherwise.
+    ///
+    /// <para>
+    /// Resolved lazily rather than in the constructor, because preparation discovers what is
+    /// installed after this view model exists. Once the user picks a backend their choice stands,
+    /// including a deliberate choice of the placeholder.
+    /// </para>
+    /// </summary>
     public BackendOption SelectedBackend
     {
-        get => _selectedBackend ??= Backends[0];
-        set { _selectedBackend = value; OnChanged(); OnChanged(nameof(IsProductionSelected)); RaiseCommands(); }
+        get => _selectedBackend ??= ProductionInstalled
+            ? Backends.FirstOrDefault(b => b.RecognizesSpeech) ?? Backends[0]
+            : Backends[0];
+        set
+        {
+            _selectedBackend = value;
+            OnChanged();
+            OnChanged(nameof(IsProductionSelected));
+            OnChanged(nameof(IsPlaceholderBackend));
+            OnChanged(nameof(PlaceholderWarning));
+            RaiseCommands();
+        }
     }
+
+    /// <summary>
+    /// True when a production profile's models are actually on disk and usable.
+    ///
+    /// <para>
+    /// Profiles that declare no artifacts are excluded deliberately. A profile with nothing to
+    /// install is trivially "ready", so counting those would report a machine with no speech model
+    /// at all as production-ready and default the picker to a backend whose first click fails.
+    /// </para>
+    /// </summary>
+    public bool ProductionInstalled =>
+        _coordinator.Preparation is { Registry: { } registry } &&
+        registry.Profiles().Any(profile => profile.Artifacts.Count > 0 && registry.IsProfileReady(profile));
 
     public bool IsProductionSelected => SelectedBackend.RecognizesSpeech;
 
@@ -692,7 +728,7 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         nameof(IsPlaceholderBackend), nameof(PlaceholderWarning), nameof(BackendSummary),
         nameof(HasSession), nameof(SelectedRevision),
         nameof(CanTranscribe), nameof(CanTranscribeAgain), nameof(CanCancel), nameof(CanExport),
-        nameof(CanPrepare), nameof(SupportsProduction), nameof(IsPreparing),
+        nameof(CanPrepare), nameof(SupportsProduction), nameof(ProductionInstalled), nameof(IsPreparing),
         nameof(ProductionStatus), nameof(HasProductionStatus), nameof(ProductionPlanSummary),
         nameof(FallbackNotice), nameof(HasFallbackNotice), nameof(IsProductionSelected),
     ];

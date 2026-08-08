@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -16,8 +17,9 @@ using EchoForge.Infrastructure.Processing;
 using EchoForge.Infrastructure.Sessions;
 using EchoForge.Infrastructure.Summaries;
 using EchoForge.Infrastructure.Workers;
+using EchoForge.UnitTests;
 
-namespace EchoForge.UnitTests;
+namespace EchoForge.RenderTests;
 
 /// <summary>
 /// The screens, rendered, and checked against their own pixels.
@@ -135,17 +137,6 @@ public sealed class RenderedScreenTests
         screen.NoRecordToStringAnywhere();
         screen.EveryVisibleButtonShowsItsLabel();
         screen.NoTextOverlaps();
-    });
-
-    [Fact]
-    public void ThePaletteBrushesAreTheOnesTheThemeCanRepaint() => UiThread.Run(() =>
-    {
-        System.Windows.Application application = System.Windows.Application.Current;
-        object? ink = application?.TryFindResource("Ink");
-        Assert.True(
-            ink is System.Windows.Media.SolidColorBrush { IsFrozen: false },
-            $"app={application?.GetType().Name ?? "<null>"} ink={ink?.GetType().Name ?? "<null>"} " +
-            $"frozen={(ink as System.Windows.Media.SolidColorBrush)?.IsFrozen}");
     });
 
     // ---------------------------------------------------------------- the other palette

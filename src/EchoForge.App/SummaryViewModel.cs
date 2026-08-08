@@ -199,7 +199,18 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
     /// True whenever the summary on show was not written by a real summariser — and before
     /// anything has run, because the placeholder is what would run.
     /// </summary>
-    public bool IsPlaceholderBackend => _state.Selected is null || !_state.Selected.ProducesSummaries;
+    /// <summary>
+    /// True when the summary on show, or the one that would be written next, is the placeholder.
+    ///
+    /// <para>
+    /// Not true simply because nothing has been summarised yet: the local model is preferred
+    /// wherever it is installed, and announcing a placeholder that is not going to run would be
+    /// wrong. Same rule as the transcription surface, for the same reason.
+    /// </para>
+    /// </summary>
+    public bool IsPlaceholderBackend => _state.Selected is { } shown
+        ? !shown.ProducesSummaries
+        : !(UseProductionModel && ProductionAvailable);
 
     public string PlaceholderWarning => _state.Selected is { ProducesSummaries: false } selected
         ? $"Version {selected.Revision.ToString(CultureInfo.InvariantCulture)} was produced by a deterministic " +

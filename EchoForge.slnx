@@ -11,5 +11,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/EchoForge.UnitTests/EchoForge.UnitTests.csproj" />
+    <Project Path="tests/EchoForge.RenderTests/EchoForge.RenderTests.csproj" />
   </Folder>
 </Solution>

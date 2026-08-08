@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    A separate assembly, and therefore a separate process, purely for isolation.
+
+    Rendering a real window needs a real System.Windows.Application, and an Application is a
+    process-wide singleton whose Dispatcher belongs to whichever thread created it. Inside the unit
+    test assembly that one object changes the behaviour of every other test: view models marshal
+    through Application.Current.Dispatcher, so work that used to run inline on the calling thread
+    starts being posted to the render thread instead, and assertions read state that has not been
+    written yet. Nothing was wrong with those tests; they were simply no longer alone.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>EchoForge.RenderTests</RootNamespace>
+    <UseWPF>true</UseWPF>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\EchoForge.App\EchoForge.App.csproj" />
+
+    <!-- For the session fixtures and the capture fakes, which are the same ones the unit tests
+         build their meetings with. A second copy would be a second thing to keep true. -->
+    <ProjectReference Include="..\EchoForge.UnitTests\EchoForge.UnitTests.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>
