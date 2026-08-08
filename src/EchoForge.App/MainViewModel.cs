@@ -279,9 +279,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public string TestButtonLabel => IsTesting ? "Stop test" : "Test devices";
 
-    public double TestYouLevel => IsTesting ? (_monitor?.YouLevel ?? 0) : 0;
+    public double TestYouLevel => IsTesting ? Meter(_monitor?.YouLevel ?? 0) : 0;
 
-    public double TestRemoteLevel => IsTesting ? (_monitor?.RemoteLevel ?? 0) : 0;
+    public double TestRemoteLevel => IsTesting ? Meter(_monitor?.RemoteLevel ?? 0) : 0;
 
     /// <summary>A plain report of what the test found, per track.</summary>
     public string TestStatus
@@ -557,6 +557,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public double YouLevel { get; private set; }
 
     public double RemoteLevel { get; private set; }
+
+    /// <summary>The same reading as a number, in the units meters are actually read in.</summary>
+    public string YouLevelText { get; private set; } = "—";
+
+    public string RemoteLevelText { get; private set; } = "—";
 
     public string YouCaption { get; private set; } = "You";
 
@@ -854,8 +859,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         TrackLiveStatus? you = status.Tracks.FirstOrDefault(t => t.Track == SourceTrack.Microphone);
         TrackLiveStatus? remote = status.Tracks.FirstOrDefault(t => t.Track == SourceTrack.System);
 
-        YouLevel = you?.PeakLevel ?? 0;
-        RemoteLevel = remote?.PeakLevel ?? 0;
+        YouLevel = Meter(you?.PeakLevel ?? 0);
+        RemoteLevel = Meter(remote?.PeakLevel ?? 0);
+        YouLevelText = Decibels(you?.PeakLevel ?? 0);
+        RemoteLevelText = Decibels(remote?.PeakLevel ?? 0);
         YouCaption = you is { IsHealthy: false } ? "You — not capturing" : "You";
         RemoteCaption = remote is { IsHealthy: false } ? "Remote — not capturing" : "Remote";
 
@@ -869,6 +876,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // flatlines truthfully rather than holding its last bar.
         if (_controller.CaptureMayBeLive)
         {
+            // The same mapped reading the meters show, so the ribbon and the bars beside it agree
+            // about how loud something was.
             _activity.Add(
                 totals.ActiveDuration.TotalSeconds,
                 YouLevel, you is { IsHealthy: true },
@@ -938,6 +947,45 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         RaiseCommands();
     }
 
+    /// <summary>
+    /// A level meter's fill, from a linear amplitude.
+    ///
+    /// <para>
+    /// Amplitude is the wrong scale to draw. Ordinary speech peaks around a tenth of full scale
+    /// and sits far below that on average, so a bar drawn straight from the sample value barely
+    /// leaves the left edge and only moves if somebody shouts — which is exactly how this read.
+    /// Hearing is logarithmic and so is every meter people are used to, so this maps the bottom
+    /// sixty decibels of full scale across the bar. Presentation only: the recorded audio is
+    /// untouched, and <see cref="YouLevelText"/> reports the real figure.
+    /// </para>
+    /// </summary>
+    private const double MeterFloorDb = -60.0;
+
+    private static double Meter(double amplitude)
+    {
+        if (amplitude <= 0 || double.IsNaN(amplitude))
+        {
+            return 0;
+        }
+
+        double decibels = 20 * Math.Log10(Math.Min(amplitude, 1.0));
+        return Math.Clamp((decibels - MeterFloorDb) / -MeterFloorDb, 0, 1);
+    }
+
+    /// <summary>The reading itself, in dBFS, or a dash when there is no signal at all.</summary>
+    private static string Decibels(double amplitude)
+    {
+        if (amplitude <= 0 || double.IsNaN(amplitude))
+        {
+            return "—";
+        }
+
+        double decibels = 20 * Math.Log10(Math.Min(amplitude, 1.0));
+        return decibels <= MeterFloorDb
+            ? "—"
+            : string.Create(CultureInfo.InvariantCulture, $"{decibels:0} dB");
+    }
+
     /// <summary>Bytes as a person reads them, in the same units the disk figures use.</summary>
     private static string Bytes(long bytes) => bytes >= 1_000_000_000
         ? string.Create(CultureInfo.InvariantCulture, $"{bytes / 1_000_000_000.0:0.00} GB")
@@ -971,6 +1019,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private static readonly string[] RefreshedProperties =
     [
         nameof(Elapsed), nameof(YouLevel), nameof(RemoteLevel), nameof(YouCaption), nameof(RemoteCaption),
+        nameof(YouLevelText), nameof(RemoteLevelText),
         nameof(RibbonRevision),
         nameof(ChunkSummary), nameof(QueueSummary), nameof(FreeSpace), nameof(StorageRate),
         nameof(Written), nameof(Headroom), nameof(ShowCaptureFacts),

@@ -251,22 +251,30 @@
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="130" />
           <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="62" />
         </Grid.ColumnDefinitions>
         <TextBlock Grid.Column="0" Text="{Binding YouCaption}" Style="{StaticResource Label}"
                    Foreground="{StaticResource You}" VerticalAlignment="Center" />
         <ProgressBar Grid.Column="1" Style="{StaticResource Meter}"
                      Foreground="{StaticResource You}" Value="{Binding YouLevel, Mode=OneWay}" />
+        <TextBlock Grid.Column="2" Text="{Binding YouLevelText}" Style="{StaticResource Label}"
+                   Foreground="{StaticResource InkDim}" HorizontalAlignment="Right"
+                   VerticalAlignment="Center" Margin="10,0,0,0" />
       </Grid>
 
       <Grid>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="130" />
           <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="62" />
         </Grid.ColumnDefinitions>
         <TextBlock Grid.Column="0" Text="{Binding RemoteCaption}" Style="{StaticResource Label}"
                    Foreground="{StaticResource Remote}" VerticalAlignment="Center" />
         <ProgressBar Grid.Column="1" Style="{StaticResource Meter}"
                      Foreground="{StaticResource Remote}" Value="{Binding RemoteLevel, Mode=OneWay}" />
+        <TextBlock Grid.Column="2" Text="{Binding RemoteLevelText}" Style="{StaticResource Label}"
+                   Foreground="{StaticResource InkDim}" HorizontalAlignment="Right"
+                   VerticalAlignment="Center" Margin="10,0,0,0" />
       </Grid>
 
       <!--

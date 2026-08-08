@@ -19,6 +19,8 @@ has, and says so plainly when there is not one.
 
 from __future__ import annotations
 
+import sys
+
 from dataclasses import dataclass, field
 from typing import Any, Callable, Final
 
@@ -77,9 +79,43 @@ def cuda_device_count(probe: Callable[[], int] | None = None) -> int:
     try:
         import ctranslate2
 
-        return max(0, int(ctranslate2.get_cuda_device_count()))
+        devices = max(0, int(ctranslate2.get_cuda_device_count()))
     except Exception:  # noqa: BLE001 - any failure means the GPU is not usable, not that we crash
         return 0
+
+    # Seeing a device is not the same as being able to use it. CTranslate2 links against the CUDA
+    # maths libraries and loads them lazily, on the first inference rather than when the model is
+    # built - so a machine without cublas64_12.dll reports a device, builds a GPU model happily,
+    # and then dies part-way through the job with "Library cublas64_12.dll is not found".
+    #
+    # Checking here rather than recovering later is deliberate. Once that failure has happened
+    # inside the process, loading a CPU model afterwards deadlocks, so there is no in-process
+    # fallback to be had: the only safe moment to choose the CPU is before the GPU is touched.
+    return devices if devices <= 0 or cuda_libraries_loadable() else 0
+
+
+#: The CUDA major version CTranslate2's Windows wheels are built against.
+CUDA_RUNTIME_LIBRARIES: tuple[str, ...] = ("cublas64_12.dll", "cublasLt64_12.dll")
+
+
+def cuda_libraries_loadable() -> bool:
+    """Whether the CUDA maths libraries CTranslate2 needs can actually be loaded.
+
+    Windows only. Everywhere else the loader reports a missing dependency when the extension
+    module is imported, which the count above already turns into zero devices.
+    """
+    if sys.platform != "win32":
+        return True
+
+    import ctypes
+
+    for name in CUDA_RUNTIME_LIBRARIES:
+        try:
+            ctypes.WinDLL(name)
+        except OSError:
+            return False
+
+    return True
 
 
 def plans_for(profile: str, cuda_devices: int) -> list[ComputePlan]:

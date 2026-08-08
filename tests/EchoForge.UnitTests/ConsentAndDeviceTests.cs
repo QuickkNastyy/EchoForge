@@ -206,6 +206,44 @@ public sealed class ConsentAndDeviceTests : IDisposable
         Assert.Contains("Checked 3 interrupted recordings.", vm.Notice, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The meters are read logarithmically, because amplitude is the wrong scale to draw one on.
+    /// Ordinary speech peaks around a tenth of full scale, which as a linear bar barely leaves the
+    /// left edge - the reason the recorder looked as though it were hearing almost nothing.
+    /// </summary>
+    [Fact]
+    public void TheMetersReadInDecibelsRatherThanRawAmplitude()
+    {
+        // -20 dBFS is unremarkable speech. On a linear bar it is one tenth; it has to read as most
+        // of the way up a meter, or nobody can see themselves talking.
+        Assert.InRange(MeterFor(0.1), 0.6, 0.75);
+
+        // A shout is at the top, and silence is the floor rather than something faintly lit.
+        Assert.InRange(MeterFor(1.0), 0.99, 1.0);
+        Assert.Equal(0, MeterFor(0));
+
+        // Quieter than the floor is still the floor, not a negative bar.
+        Assert.Equal(0, MeterFor(0.0001));
+
+        // And the reading itself is reported truthfully, in the units meters are read in.
+        Assert.Equal("-20 dB", TextFor(0.1));
+        Assert.Equal("\u2014", TextFor(0));
+    }
+
+    private static double MeterFor(double amplitude) => Invoke<double>("Meter", amplitude);
+
+    private static string TextFor(double amplitude) => Invoke<string>("Decibels", amplitude);
+
+    /// <summary>
+    /// Reached by reflection on purpose. The mapping is presentation detail with no business
+    /// being public, and it is worth a test precisely because getting it wrong is invisible in
+    /// every structural check and obvious the moment somebody speaks.
+    /// </summary>
+    private static T Invoke<T>(string name, double amplitude) =>
+        (T)typeof(MainViewModel)
+            .GetMethod(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
+            .Invoke(null, [amplitude])!;
+
     [Fact]
     public void DevicesCannotBeRefreshedDuringARecording()
     {

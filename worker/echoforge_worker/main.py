@@ -417,6 +417,11 @@ class WorkerSession:
                 on_warning=lambda code, detail: self._writer.send(
                     protocol.warning(job_id, code, detail)
                 ),
+                # Without this the default of 0.0 reaches rebase(), which clamps every segment's
+                # end to the session duration - so every window-based run placed twelve recognised
+                # segments at zero length and returned an empty transcript. The placeholder backend
+                # never calls rebase(), which is why only real speech recognition was affected.
+                session_duration_seconds=request.duration_seconds,
             )
 
             transcript = build_transcript(request, backend, context, self._emit_progress)
