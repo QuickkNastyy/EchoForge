@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows.Threading;
 using EchoForge.Contracts.Library;
@@ -117,6 +118,10 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
     private readonly LibraryServices _services;
     private readonly OperationGate _gate = new();
 
+    // A small cache of the two-lane conversation shapes the library rows draw, keyed by session.
+    // Derived from the transcript, bounded per meeting, and dropped when a meeting is re-read.
+    private readonly Dictionary<string, ConversationShape> _shapes = new(StringComparer.Ordinal);
+
     private MeetingRow? _selected;
     private MeetingViewModel? _open;
     private string _searchText = string.Empty;
@@ -178,6 +183,47 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
     public AsyncRelayCommand SummarizeAgainCommand { get; }
 
     public AsyncRelayCommand DeleteMeetingCommand { get; }
+
+    /// <summary>
+    /// Loads the miniature conversation shape for one meeting, off the UI thread, and caches it.
+    ///
+    /// <para>
+    /// Derived from the meeting's selected transcript, not its audio, so it is cheap and reads no WAV.
+    /// A meeting with no transcript yields an empty shape and a quiet ribbon. The library rows pass
+    /// this in as an inherited provider, so a virtualised list only loads the shapes it actually shows.
+    /// </para>
+    /// </summary>
+    public Func<string, Task<ConversationShape>> LoadShapeProvider => LoadShapeAsync;
+
+    private async Task<ConversationShape> LoadShapeAsync(string sessionId)
+    {
+        if (_shapes.TryGetValue(sessionId, out ConversationShape? cached))
+        {
+            return cached;
+        }
+
+        ConversationShape shape = await Task.Run(() =>
+        {
+            try
+            {
+                Contracts.Processing.TranscriptionState state = _transcripts.Read(sessionId);
+                if (state.SelectedRevision is not { } revision)
+                {
+                    return ConversationShape.Empty;
+                }
+
+                Contracts.Transcripts.TranscriptDocument? transcript = _transcripts.ReadTranscript(sessionId, revision);
+                return transcript is null ? ConversationShape.Empty : ConversationShape.FromTranscript(transcript);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                return ConversationShape.Empty;
+            }
+        }).ConfigureAwait(true);
+
+        _shapes[sessionId] = shape;
+        return shape;
+    }
 
     public bool CanReprocessHere => _services.Reprocessor is not null;
 
@@ -547,6 +593,9 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public async Task RefreshMeetingAsync(string sessionId)
     {
+        // The transcript may have changed, so its cached shape is no longer trustworthy.
+        _shapes.Remove(sessionId);
+
         if (_services.Index is { } maintainer)
         {
             await maintainer.UpdateNowAsync(sessionId).ConfigureAwait(true);

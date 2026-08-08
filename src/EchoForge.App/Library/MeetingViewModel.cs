@@ -127,6 +127,12 @@ public sealed class MeetingViewModel : INotifyPropertyChanged, IDisposable
 
     public LibraryEntry Entry => _entry;
 
+    /// <summary>
+    /// The two-lane conversation shape for the detail timeline, derived from the selected transcript
+    /// (already in memory here), so the timeline ribbon costs nothing extra to draw.
+    /// </summary>
+    public ConversationShape Shape { get; private set; } = ConversationShape.Empty;
+
     public ObservableCollection<TranscriptLine> Lines { get; } = [];
 
     public ObservableCollection<SummaryLine> SummaryLines { get; } = [];
@@ -269,6 +275,10 @@ public sealed class MeetingViewModel : INotifyPropertyChanged, IDisposable
             }
         }
 
+        Shape = _transcript is { } shapeSource
+            ? ConversationShape.FromTranscript(shapeSource)
+            : ConversationShape.Empty;
+
         BuildSummaryLines(overlay);
         BuildRevisionLists();
         BuildSpeakers(overlay);
@@ -277,7 +287,7 @@ public sealed class MeetingViewModel : INotifyPropertyChanged, IDisposable
         [
             nameof(HasTranscript), nameof(HasSummary), nameof(SummaryIsStale), nameof(StaleNotice),
             nameof(TranscriptModelText), nameof(SummaryModelText), nameof(SummaryOverview),
-            nameof(SelectedTranscriptRevision), nameof(SelectedSummaryRevision), nameof(Entry),
+            nameof(SelectedTranscriptRevision), nameof(SelectedSummaryRevision), nameof(Entry), nameof(Shape),
         ])
         {
             Changed(name);
