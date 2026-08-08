@@ -470,6 +470,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public string RemoteCaption { get; private set; } = "Remote";
 
+    /// <summary>True when the microphone track has lost its device during a live recording.</summary>
+    public bool YouLost { get; private set; }
+
+    /// <summary>True when the system track has lost its device during a live recording.</summary>
+    public bool RemoteLost { get; private set; }
+
+    /// <summary>Which device dropped, for the degraded banner. Empty when nothing is lost.</summary>
+    public string DegradedHeadline => YouLost && RemoteLost
+        ? "Both devices disconnected"
+        : YouLost ? "Your microphone disconnected"
+        : RemoteLost ? "The system audio device disconnected"
+        : string.Empty;
+
+    public string DegradedDetail => YouLost && RemoteLost
+        ? "Everything captured before the disconnection is saved and intact. Stop, reconnect a device, and start again."
+        : YouLost ? "The system track is still recording, and everything captured before the disconnection is saved and intact."
+        : RemoteLost ? "Your microphone is still recording, and everything captured before the disconnection is saved and intact."
+        : string.Empty;
+
     public string ChunkSummary { get; private set; } = "0 + 0";
 
     public string FreeSpace { get; private set; } = "—";
@@ -713,6 +732,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         YouCaption = you is { IsHealthy: false } ? "You — not capturing" : "You";
         RemoteCaption = remote is { IsHealthy: false } ? "Remote — not capturing" : "Remote";
 
+        // Which track, if any, has lost its device while the session is live. Drives the degraded
+        // banner and is why the ribbon flatlines that lane in red.
+        YouLost = IsRecording && you is { IsHealthy: false };
+        RemoteLost = IsRecording && remote is { IsHealthy: false };
+
         // Feed the ribbon on the canonical active-time clock, only while capture is genuinely live.
         // A track with no live status, or an unhealthy one, is recorded as inactive so a lost device
         // flatlines truthfully rather than holding its last bar.
@@ -794,6 +818,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         nameof(RibbonRevision),
         nameof(ChunkSummary), nameof(QueueSummary), nameof(FreeSpace), nameof(StorageRate),
         nameof(IsRecording), nameof(IsPaused), nameof(IsDegraded), nameof(IndicatorVisible),
+        nameof(YouLost), nameof(RemoteLost), nameof(DegradedHeadline), nameof(DegradedDetail),
         nameof(DevicesEditable), nameof(CanStart), nameof(IsBusy), nameof(TrayText), nameof(StatusHeadline),
     ];
 
