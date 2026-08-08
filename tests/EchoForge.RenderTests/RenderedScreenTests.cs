@@ -722,14 +722,16 @@ internal sealed class Screen : IDisposable
         window.Show();
         Settle();
 
+        FrameworkElement root = (FrameworkElement)VisualTreeHelper.GetChild(window, 0);
+        Settle(root);
+
         if (then is not null)
         {
             then(window);
-            Settle();
+            Settle(root);
         }
 
         // The window may refuse a size it has a minimum for; photograph what it actually became.
-        FrameworkElement root = (FrameworkElement)VisualTreeHelper.GetChild(window, 0);
         int pixelWidth = Math.Max(1, (int)Math.Round(root.ActualWidth));
         int pixelHeight = Math.Max(1, (int)Math.Round(root.ActualHeight));
 
@@ -754,13 +756,50 @@ internal sealed class Screen : IDisposable
     }
 
     /// <summary>Lets layout, bindings and the render pass finish before the shutter opens.</summary>
-    private static void Settle()
+    private static void Settle() => Settle(null);
+
+    /// <summary>
+    /// Pumps until the tree is genuinely laid out, not merely until three priorities have drained.
+    ///
+    /// <para>
+    /// Draining a fixed set of priorities is only enough on an idle machine. Running both test
+    /// assemblies at once — which is what packaging does — starved these of CPU long enough that
+    /// the shutter opened on a window that had been shown but not yet arranged, and ten checks
+    /// failed on a blank bitmap. Waiting on the condition rather than on a number of pumps is the
+    /// difference between a test that passes when the machine is quiet and one that passes.
+    /// </para>
+    /// </summary>
+    private static void Settle(FrameworkElement? root)
     {
         Dispatcher dispatcher = Dispatcher.CurrentDispatcher;
-        foreach (DispatcherPriority priority in (DispatcherPriority[])
-            [DispatcherPriority.Loaded, DispatcherPriority.Render, DispatcherPriority.ContextIdle])
+        DateTime deadline = DateTime.UtcNow.AddSeconds(30);
+
+        while (true)
         {
-            dispatcher.Invoke(() => { }, priority);
+            foreach (DispatcherPriority priority in (DispatcherPriority[])
+                [DispatcherPriority.Loaded, DispatcherPriority.Render, DispatcherPriority.ContextIdle])
+            {
+                dispatcher.Invoke(() => { }, priority);
+            }
+
+            if (root is null)
+            {
+                return;
+            }
+
+            if (root is { ActualWidth: > 0, ActualHeight: > 0, IsMeasureValid: true, IsArrangeValid: true })
+            {
+                return;
+            }
+
+            if (DateTime.UtcNow > deadline)
+            {
+                throw new Xunit.Sdk.XunitException(
+                    $"the window never finished laying out: {root.ActualWidth}x{root.ActualHeight}, " +
+                    $"measured={root.IsMeasureValid}, arranged={root.IsArrangeValid}");
+            }
+
+            Thread.Sleep(25);
         }
     }
 
