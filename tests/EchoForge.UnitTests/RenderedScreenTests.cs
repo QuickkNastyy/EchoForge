@@ -48,7 +48,7 @@ public sealed class RenderedScreenTests
     {
         using RecorderHarness harness = new();
 
-        Screen screen = UiThread.Render("01-ready", () =>
+        using Screen screen = UiThread.Render("01-ready", () =>
             new MainWindow { DataContext = harness.Ready() }, 1180, 900);
 
         screen.NoRecordToStringAnywhere();
@@ -66,7 +66,7 @@ public sealed class RenderedScreenTests
     {
         using RecorderHarness harness = new();
 
-        Screen screen = UiThread.Render("02-capturing", () =>
+        using Screen screen = UiThread.Render("02-capturing", () =>
             new MainWindow { DataContext = harness.Capturing() }, 1180, 900);
 
         screen.NoRecordToStringAnywhere();
@@ -81,7 +81,7 @@ public sealed class RenderedScreenTests
     {
         using RecorderHarness harness = new();
 
-        Screen screen = UiThread.Render("04-compact", () =>
+        using Screen screen = UiThread.Render("04-compact", () =>
             new CompactRecorderWindow { DataContext = harness.Capturing() }, 372, 150);
 
         screen.NoRecordToStringAnywhere();
@@ -96,7 +96,7 @@ public sealed class RenderedScreenTests
     {
         using LibraryHarness harness = new();
 
-        Screen screen = UiThread.Render("05-all-recordings", harness.Window, 1440, 900);
+        using Screen screen = UiThread.Render("05-all-recordings", harness.Window, 1440, 900);
 
         screen.NoRecordToStringAnywhere();
         screen.EveryVisibleButtonShowsItsLabel();
@@ -114,7 +114,7 @@ public sealed class RenderedScreenTests
         using LibraryHarness harness = new();
         harness.Open("processed");
 
-        Screen screen = UiThread.Render("06-one-recording", harness.Window, 1920, 1080);
+        using Screen screen = UiThread.Render("06-one-recording", harness.Window, 1920, 1080);
 
         screen.NoRecordToStringAnywhere();
         screen.EveryVisibleButtonShowsItsLabel();
@@ -130,11 +130,76 @@ public sealed class RenderedScreenTests
         using LibraryHarness harness = new();
         harness.Open("processed");
 
-        Screen screen = UiThread.Render("07-one-recording-1366", harness.Window, 1366, 768);
+        using Screen screen = UiThread.Render("07-one-recording-1366", harness.Window, 1366, 768);
 
         screen.NoRecordToStringAnywhere();
         screen.EveryVisibleButtonShowsItsLabel();
         screen.NoTextOverlaps();
+    });
+
+    [Fact]
+    public void ThePaletteBrushesAreTheOnesTheThemeCanRepaint() => UiThread.Run(() =>
+    {
+        System.Windows.Application application = System.Windows.Application.Current;
+        object? ink = application?.TryFindResource("Ink");
+        Assert.True(
+            ink is System.Windows.Media.SolidColorBrush { IsFrozen: false },
+            $"app={application?.GetType().Name ?? "<null>"} ink={ink?.GetType().Name ?? "<null>"} " +
+            $"frozen={(ink as System.Windows.Media.SolidColorBrush)?.IsFrozen}");
+    });
+
+    // ---------------------------------------------------------------- the other palette
+
+    [Fact]
+    public void TheReadyScreenIsReadableInTheLightTheme() => UiThread.Run(() =>
+    {
+        using ThemeScope light = ThemeScope.Light();
+        using RecorderHarness harness = new();
+
+        using Screen screen = UiThread.Render("01-ready-light", () =>
+            new MainWindow { DataContext = harness.Ready() }, 1180, 900);
+
+        screen.NoRecordToStringAnywhere();
+        screen.EveryVisibleButtonShowsItsLabel();
+        screen.EveryComboBoxPaintsItsSelection();
+        screen.ButtonIsReadable("Start recording");
+        screen.TextIsPainted("Headphones");
+        screen.NoTextOverlaps();
+
+        // The point of a second palette is that it is genuinely a light one, not the dark screen
+        // with different accents: the page has to be light and its writing dark.
+        screen.PageIsLight();
+    });
+
+    [Fact]
+    public void TheRecordingsListIsReadableInTheLightTheme() => UiThread.Run(() =>
+    {
+        using ThemeScope light = ThemeScope.Light();
+        using LibraryHarness harness = new();
+
+        using Screen screen = UiThread.Render("05-all-recordings-light", harness.Window, 1440, 900);
+
+        screen.NoRecordToStringAnywhere();
+        screen.EveryVisibleButtonShowsItsLabel();
+        screen.TextIsPainted("Deployment planning");
+        screen.NoTextOverlaps();
+        screen.PageIsLight();
+    });
+
+    [Fact]
+    public void AnOpenedRecordingIsReadableInTheLightTheme() => UiThread.Run(() =>
+    {
+        using ThemeScope light = ThemeScope.Light();
+        using LibraryHarness harness = new();
+        harness.Open("processed");
+
+        using Screen screen = UiThread.Render("06-one-recording-light", harness.Window, 1920, 1080);
+
+        screen.NoRecordToStringAnywhere();
+        screen.EveryVisibleButtonShowsItsLabel();
+        screen.EveryComboBoxPaintsItsSelection();
+        screen.NoTextOverlaps();
+        screen.PageIsLight();
     });
 
     [Fact]
@@ -143,7 +208,7 @@ public sealed class RenderedScreenTests
         using LibraryHarness harness = new();
         harness.Open("bare");
 
-        Screen screen = UiThread.Render("06b-unprocessed", harness.Window, 1440, 900);
+        using Screen screen = UiThread.Render("06b-unprocessed", harness.Window, 1440, 900);
 
         screen.NoRecordToStringAnywhere();
         screen.EveryVisibleButtonShowsItsLabel();
@@ -153,6 +218,18 @@ public sealed class RenderedScreenTests
         // warning that shipped. It must not be drawn for a recording that has no summary.
         screen.NoWordlessPanelWithControls();
     });
+}
+
+/// <summary>Paints in the light palette for the length of a test, and puts it back afterwards.</summary>
+internal sealed class ThemeScope : IDisposable
+{
+    private readonly AppTheme _restore = Theme.Current;
+
+    private ThemeScope(AppTheme theme) => Theme.Apply(theme);
+
+    public static ThemeScope Light() => new(AppTheme.Light);
+
+    public void Dispose() => Theme.Apply(_restore);
 }
 
 // ==================================================================== harnesses
@@ -389,10 +466,11 @@ internal static class UiThread
 }
 
 /// <summary>A rendered window: the visual tree that produced it, and the bitmap it produced.</summary>
-internal sealed class Screen
+internal sealed class Screen : IDisposable
 {
     private readonly string _name;
     private readonly FrameworkElement _root;
+    private Window? _window;
     private readonly byte[] _pixels;
     private readonly int _stride;
     private List<FrameworkElement>? _tree;
@@ -412,36 +490,63 @@ internal sealed class Screen
 
     public int Height { get; }
 
+    /// <summary>
+    /// Shows the window off-screen, photographs it, and closes it again.
+    ///
+    /// <para>
+    /// Actually shown, rather than measured and arranged in the abstract, because the parts most
+    /// worth checking only exist in a real window: the application's own title bar lives in the
+    /// window's <em>template</em>, and a template is not applied to a window that was never shown.
+    /// Laying out the content alone would photograph everything except the chrome.
+    /// </para>
+    /// </summary>
     public static Screen Capture(string name, Window window, int width, int height)
     {
-        FrameworkElement root = (FrameworkElement)window.Content;
+        window.WindowStartupLocation = WindowStartupLocation.Manual;
+        window.ShowInTaskbar = false;
+        window.ShowActivated = false;
+        window.Left = -32000;
+        window.Top = -32000;
+        window.Width = width;
+        window.Height = height;
 
-        // Two passes: the first settles bindings that change a desired size, the second lays the
-        // settled tree out at exactly the size being photographed.
-        for (int pass = 0; pass < 2; pass++)
-        {
-            root.Measure(new Size(width, height));
-            root.Arrange(new Rect(0, 0, width, height));
-            root.UpdateLayout();
-        }
+        window.Show();
+        Settle();
 
-        RenderTargetBitmap content = new(width, height, 96, 96, PixelFormats.Pbgra32);
-        content.Render(root);
+        // The window may refuse a size it has a minimum for; photograph what it actually became.
+        FrameworkElement root = (FrameworkElement)VisualTreeHelper.GetChild(window, 0);
+        int pixelWidth = Math.Max(1, (int)Math.Round(root.ActualWidth));
+        int pixelHeight = Math.Max(1, (int)Math.Round(root.ActualHeight));
 
-        // The window carries the page background; the content only paints its own panels.
-        DrawingVisual composed = new();
-        using (DrawingContext dc = composed.RenderOpen())
-        {
-            dc.DrawRectangle(window.Background ?? Brushes.Black, null, new Rect(0, 0, width, height));
-            dc.DrawImage(content, new Rect(0, 0, width, height));
-        }
-
-        RenderTargetBitmap bitmap = new(width, height, 96, 96, PixelFormats.Pbgra32);
-        bitmap.Render(composed);
+        RenderTargetBitmap bitmap = new(pixelWidth, pixelHeight, 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(root);
         bitmap.Freeze();
 
         Write(name, bitmap);
-        return new Screen(name, root, bitmap);
+
+        // The window stays open until the caller has finished with the screen. Closing it here
+        // tore down the visual tree every check reads, so the checks saw an empty window and said
+        // so — which is the same false negative as the false positives they exist to catch.
+        return new Screen(name, root, bitmap) { _window = window };
+    }
+
+    /// <summary>Closes the window that was photographed.</summary>
+    public void Dispose()
+    {
+        _window?.Close();
+        _window = null;
+        Settle();
+    }
+
+    /// <summary>Lets layout, bindings and the render pass finish before the shutter opens.</summary>
+    private static void Settle()
+    {
+        Dispatcher dispatcher = Dispatcher.CurrentDispatcher;
+        foreach (DispatcherPriority priority in (DispatcherPriority[])
+            [DispatcherPriority.Loaded, DispatcherPriority.Render, DispatcherPriority.ContextIdle])
+        {
+            dispatcher.Invoke(() => { }, priority);
+        }
     }
 
     /// <summary>Writes the PNG next to the repository, where a person can open it.</summary>
@@ -660,6 +765,36 @@ internal sealed class Screen
         }
 
         Assert.True(collisions.Count == 0, $"{_name}: overlapping text: {string.Join(" | ", collisions.Take(8))}");
+    }
+
+    /// <summary>
+    /// The light palette has to be an actually light page with dark writing on it.
+    ///
+    /// <para>
+    /// Checked on the pixels because the failure this catches is a control that kept a colour from
+    /// the other palette — a frozen brush, or a hex spelled into a template — which leaves a dark
+    /// slab on a white page that no structural check would notice.
+    /// </para>
+    /// </summary>
+    public void PageIsLight()
+    {
+        long light = 0;
+        long total = 0;
+
+        for (int y = 0; y < Height; y += 3)
+        {
+            for (int x = 0; x < Width; x += 3)
+            {
+                total++;
+                if (Level(x, y) > 150)
+                {
+                    light++;
+                }
+            }
+        }
+
+        double fraction = (double)light / Math.Max(1, total);
+        Assert.True(fraction > 0.55, $"{_name}: only {fraction:P0} of the page is light — the light theme did not take");
     }
 
     /// <summary>A bordered panel offering a button and no words at all looks broken, and is.</summary>

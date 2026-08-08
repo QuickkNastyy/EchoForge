@@ -4,10 +4,10 @@ using System.Windows;
 using System.Windows.Media;
 
 using Brush = System.Windows.Media.Brush;
-using Color = System.Windows.Media.Color;
 using Pen = System.Windows.Media.Pen;
 using Point = System.Windows.Point;
-using SolidColorBrush = System.Windows.Media.SolidColorBrush;
+
+using EchoForge.App;
 
 namespace EchoForge.App.Library;
 
@@ -23,12 +23,20 @@ namespace EchoForge.App.Library;
 /// </summary>
 public sealed class MiniRibbon : FrameworkElement
 {
-    private static readonly Brush YouBrush = Frozen(0xF2, 0xA9, 0x3B);
-    private static readonly Brush RemoteBrush = Frozen(0x3F, 0xBF, 0xC7);
-    private static readonly Brush FaintBrush = Frozen(0x5B, 0x6C, 0x7B);
-    private static readonly Pen LinePen = FrozenPen(0x26, 0x31, 0x3B, 1);
-    private static readonly Pen PlayheadPen = FrozenPen(0xE6, 0xED, 0xF3, 1);
-    private static readonly Brush InkBrush = Frozen(0xE6, 0xED, 0xF3);
+    // The shared application brushes, so the row sparklines and the detail timeline follow a
+    // theme switch instead of holding the palette they were first drawn in.
+    private static Brush YouBrush => Theme.Brush("You");
+
+    private static Brush RemoteBrush => Theme.Brush("Remote");
+
+    private static Brush FaintBrush => Theme.Brush("InkFaint");
+
+    private static Pen LinePen => Theme.Pen("Line", 1);
+
+    private static Pen PlayheadPen => Theme.Pen("Ink", 1);
+
+    private static Brush InkBrush => Theme.Brush("Ink");
+
     private static readonly Typeface Mono = new("Cascadia Mono, Consolas");
 
     public static readonly DependencyProperty ShapeProperty = DependencyProperty.Register(
@@ -243,17 +251,4 @@ public sealed class MiniRibbon : FrameworkElement
             : string.Create(CultureInfo.InvariantCulture, $"{span.Minutes:00}:{span.Seconds:00}");
     }
 
-    private static SolidColorBrush Frozen(byte r, byte g, byte b)
-    {
-        SolidColorBrush brush = new(Color.FromRgb(r, g, b));
-        brush.Freeze();
-        return brush;
-    }
-
-    private static Pen FrozenPen(byte r, byte g, byte b, double thickness)
-    {
-        Pen pen = new(Frozen(r, g, b), thickness);
-        pen.Freeze();
-        return pen;
-    }
 }

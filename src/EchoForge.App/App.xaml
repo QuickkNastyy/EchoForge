@@ -4,8 +4,19 @@
              xmlns:app="clr-namespace:EchoForge.App"
              xmlns:local="clr-namespace:EchoForge.App"
              xmlns:setup="clr-namespace:EchoForge.App.Setup"
+             xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
              ShutdownMode="OnMainWindowClose">
   <Application.Resources>
+    <ResourceDictionary>
+
+      <!--
+        The palette is merged in from code rather than declared here, because compiled XAML freezes
+        a SolidColorBrush and a frozen brush cannot be repainted. Declared first so that every
+        StaticResource below resolves against it while this dictionary is being parsed.
+      -->
+      <ResourceDictionary.MergedDictionaries>
+        <app:PaletteDictionary />
+      </ResourceDictionary.MergedDictionaries>
 
     <!-- Setup shows readiness as a glyph as well as a colour, so it survives a screenshot. -->
     <setup:TickConverter x:Key="TickConverter" />
@@ -13,6 +24,9 @@
 
     <!-- The device picker shows the negotiated format as "48 kHz · stereo · 16-bit", never a DTO. -->
     <app:AudioFormatConverter x:Key="AudioFormat" />
+
+    <!-- The red mark on the window bar, from the same flag the on-screen indicator reads. -->
+    <app:RecordingAccentConverter x:Key="RecordingAccent" />
 
     <!--
       Application-wide because more than one window needs it. Defined in a single window's
@@ -23,24 +37,25 @@
     <local:InverseBoolToVisibilityConverter x:Key="InvBoolToVis" />
 
     <!--
-      Colour is information, never decoration. Amber is always You, teal is always Remote,
-      red means capture and appears nowhere else. Everything else is achromatic graphite.
+      Colour is information, never decoration. Amber is always You, teal is always Remote, red
+      means capture and appears nowhere else. Everything else is achromatic graphite.
+
+      The brushes themselves live in PaletteDictionary, merged above: Ground, Surface, Raised,
+      Sunken, Line, LineStrong, Ink, InkDim, InkFaint, Focus, You, Remote, Rec, their three washes,
+      Warn, WarnWash, Hover and Disabled. Theme.cs holds both palettes and repaints by writing new
+      colours into those same instances, so a switch needs no DynamicResource anywhere.
     -->
-    <SolidColorBrush x:Key="Ground"   Color="#0D1318" />
-    <SolidColorBrush x:Key="Surface"  Color="#141C23" />
-    <SolidColorBrush x:Key="Raised"   Color="#1D2831" />
-    <SolidColorBrush x:Key="Sunken"   Color="#0A1015" />
-    <SolidColorBrush x:Key="Line"     Color="#26313B" />
-    <SolidColorBrush x:Key="Ink"      Color="#E6EDF3" />
-    <SolidColorBrush x:Key="InkDim"   Color="#8496A6" />
-    <SolidColorBrush x:Key="InkFaint" Color="#5B6C7B" />
-    <SolidColorBrush x:Key="Focus"    Color="#9CC4F0" />
-    <SolidColorBrush x:Key="You"      Color="#F2A93B" />
-    <SolidColorBrush x:Key="Remote"   Color="#3FBFC7" />
-    <SolidColorBrush x:Key="Rec"      Color="#E2453D" />
 
     <FontFamily x:Key="UiFont">Segoe UI Variable Text, Segoe UI</FontFamily>
+    <FontFamily x:Key="DisplayFont">Segoe UI Variable Display, Segoe UI</FontFamily>
     <FontFamily x:Key="DataFont">Cascadia Mono, Consolas</FontFamily>
+
+    <!--
+      The clock only. Cascadia Mono draws a dotted zero, which is exactly right at label size and
+      reads as a hole at forty-odd pixels, so the one place the product shows a large running time
+      uses the other monospace face every Windows machine has. Tabular figures either way.
+    -->
+    <FontFamily x:Key="ClockFont">Consolas, Cascadia Mono</FontFamily>
 
     <!--
       Deliberately without a Foreground.
@@ -191,7 +206,7 @@
                 light plate and left an unreadable grey slab, which is what shipped.
               -->
               <Trigger Property="IsEnabled" Value="False">
-                <Setter TargetName="Chrome" Property="Background" Value="#18222B" />
+                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource Disabled}" />
                 <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource Line}" />
                 <Setter TargetName="Label" Property="TextElement.Foreground" Value="{StaticResource InkFaint}" />
                 <Setter Property="Cursor" Value="Arrow" />
@@ -204,7 +219,7 @@
 
     <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
       <Setter Property="Background" Value="{StaticResource Ink}" />
-      <Setter Property="Foreground" Value="#0D1318" />
+      <Setter Property="Foreground" Value="{StaticResource Ground}" />
       <Setter Property="BorderBrush" Value="{StaticResource Ink}" />
     </Style>
 
@@ -215,7 +230,19 @@
     </Style>
 
     <!--
-      A navigation-rail button: an icon in a 40x40 square, faint until it is the current destination,
+      Rail icons, as geometry rather than a font, so they stay crisp at 19px and cannot go missing
+      with a font. Drawn on the mockup's 24-unit grid and stroked, never filled.
+    -->
+    <Geometry x:Key="IconRecord">M12,4.5 A7.5,7.5 0 1 1 11.99,4.5 Z</Geometry>
+    <Geometry x:Key="IconLibrary">M4,6 H20 M4,12 H20 M4,18 H14</Geometry>
+    <Geometry x:Key="IconSetup">M12,7.6 A4.4,4.4 0 1 1 11.99,7.6 Z M12,2.6 V5.4 M12,18.6 V21.4 M2.6,12 H5.4 M18.6,12 H21.4 M5.9,5.9 L7.9,7.9 M16.1,16.1 L18.1,18.1 M18.1,5.9 L16.1,7.9 M7.9,16.1 L5.9,18.1</Geometry>
+
+    <!-- A disc half in shadow: the same glyph reads in both directions, so the toggle needs no
+         state of its own and the tooltip carries the meaning. -->
+    <Geometry x:Key="IconTheme">M12,3.5 A8.5,8.5 0 1 1 11.99,3.5 Z M12,3.5 A8.5,8.5 0 0 1 12,20.5 Z</Geometry>
+
+    <!--
+      A navigation-rail button: an icon in a 44x44 square, faint until it is the current destination,
       hovered, or focused. Set Tag="active" on the destination that is showing now; it gets the raised
       chrome and the left accent bar from the mockup. Icon colour follows the button's Foreground, so a
       Path inside binds its Stroke to the templated parent.
@@ -260,6 +287,17 @@
       </Setter>
     </Style>
 
+    <!-- One shape for every rail icon, stroked in whatever ink its button currently carries. -->
+    <Style x:Key="RailIcon" TargetType="Path">
+      <Setter Property="Width" Value="20" />
+      <Setter Property="Height" Value="20" />
+      <Setter Property="Stretch" Value="Uniform" />
+      <Setter Property="StrokeThickness" Value="1.7" />
+      <Setter Property="StrokeStartLineCap" Value="Round" />
+      <Setter Property="StrokeEndLineCap" Value="Round" />
+      <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}" />
+    </Style>
+
     <!-- Level meter. Foreground is set per track so colour keeps meaning who is speaking. -->
     <Style x:Key="Meter" TargetType="ProgressBar">
       <Setter Property="Minimum" Value="0" />
@@ -302,7 +340,7 @@
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsHighlighted" Value="True">
-                <Setter TargetName="Row" Property="Background" Value="#2C3A46" />
+                <Setter TargetName="Row" Property="Background" Value="{StaticResource Hover}" />
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -334,7 +372,7 @@
                     </Border>
                     <ControlTemplate.Triggers>
                       <Trigger Property="IsMouseOver" Value="True">
-                        <Setter TargetName="Chrome" Property="Background" Value="#26313B" />
+                        <Setter TargetName="Chrome" Property="Background" Value="{StaticResource Hover}" />
                       </Trigger>
                     </ControlTemplate.Triggers>
                   </ControlTemplate>
@@ -611,6 +649,168 @@
       </Setter>
     </Style>
 
+    <!--
+      ============================ THE WINDOW ITSELF ============================
+
+      The design draws its own window bar, so the windows run chromeless and this template supplies
+      the mark, the name, what the window is doing, and the three caption buttons. AppWindow.cs
+      carries the two behaviours a style cannot: maximising to the work area rather than over the
+      taskbar, and the caption commands the system bar would have provided.
+
+      Window.Title stays the accessible, taskbar-visible name. The bar shows it split at the em
+      dash so "EchoForge" can be set in ink and the state after it stays quiet, exactly as the
+      mockup does — which is why the two runs are bound through a converter rather than to Title.
+    -->
+    <app:WindowTitleConverter x:Key="WindowName" Part="Name" />
+    <app:WindowTitleConverter x:Key="WindowState" Part="State" />
+
+    <Style x:Key="CaptionButton" TargetType="Button">
+      <Setter Property="Width" Value="44" />
+      <Setter Property="Height" Value="36" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="{StaticResource InkDim}" />
+      <Setter Property="Cursor" Value="Arrow" />
+      <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Plate" Background="{TemplateBinding Background}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                TextElement.Foreground="{TemplateBinding Foreground}" />
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Plate" Property="Background" Value="{StaticResource Hover}" />
+                <Setter Property="Foreground" Value="{StaticResource Ink}" />
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Plate" Property="Background" Value="{StaticResource Hover}" />
+                <Setter Property="Foreground" Value="{StaticResource Ink}" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- Close is the one caption button that goes red, and only under the pointer. -->
+    <Style x:Key="CloseButton" TargetType="Button" BasedOn="{StaticResource CaptionButton}">
+      <Style.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+          <Setter Property="Foreground" Value="#FFFFFF" />
+        </Trigger>
+      </Style.Triggers>
+    </Style>
+
+    <Style x:Key="AppWindow" TargetType="Window">
+      <Setter Property="app:AppWindow.Managed" Value="True" />
+      <Setter Property="Background" Value="{StaticResource Surface}" />
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+      <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="UseLayoutRounding" Value="True" />
+      <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+      <Setter Property="shell:WindowChrome.WindowChrome">
+        <Setter.Value>
+          <!--
+            CaptionHeight is what makes the bar draggable; anything in it that must stay clickable
+            sets IsHitTestVisibleInChrome. GlassFrameThickness of 1 keeps the system's drop shadow
+            and the Windows 11 rounded corners, which are worth having and cannot be drawn.
+          -->
+          <shell:WindowChrome CaptionHeight="37" ResizeBorderThickness="6"
+                              CornerRadius="0" GlassFrameThickness="1" UseAeroCaptionButtons="False" />
+        </Setter.Value>
+      </Setter>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Window">
+            <Border x:Name="Shell" Background="{TemplateBinding Background}"
+                    BorderBrush="{StaticResource LineStrong}" BorderThickness="1">
+              <DockPanel>
+
+                <Border DockPanel.Dock="Top" Height="37" Background="{StaticResource Raised}"
+                        BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+                  <DockPanel>
+                    <!-- Red while a capture device is live, and never otherwise: the indicator
+                         the consent notice promises is on the window bar as well as the screen. -->
+                    <Border Width="11" Height="11" Margin="14,0,0,0" VerticalAlignment="Center"
+                            CornerRadius="2" BorderThickness="2"
+                            BorderBrush="{Binding (app:AppWindow.Accent), RelativeSource={RelativeSource TemplatedParent},
+                                          TargetNullValue={StaticResource InkDim}}" />
+
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
+                                shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                      <Button Style="{StaticResource CaptionButton}"
+                              Command="{x:Static SystemCommands.MinimizeWindowCommand}"
+                              ToolTip="Minimise" AutomationProperties.Name="Minimise">
+                        <Path Width="10" Height="1" Stretch="Fill" Data="M0,0 H10"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="1" />
+                      </Button>
+
+                      <Button x:Name="Maximize" Style="{StaticResource CaptionButton}"
+                              Command="{x:Static SystemCommands.MaximizeWindowCommand}"
+                              ToolTip="Maximise" AutomationProperties.Name="Maximise">
+                        <Rectangle Width="10" Height="10" StrokeThickness="1"
+                                   Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                      </Button>
+
+                      <Button x:Name="Restore" Style="{StaticResource CaptionButton}" Visibility="Collapsed"
+                              Command="{x:Static SystemCommands.RestoreWindowCommand}"
+                              ToolTip="Restore" AutomationProperties.Name="Restore">
+                        <Grid Width="11" Height="11">
+                          <Rectangle Width="8" Height="8" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                     StrokeThickness="1"
+                                     Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                          <Path Data="M2.5,8 V2.5 H8" StrokeThickness="1"
+                                Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                VerticalAlignment="Top" HorizontalAlignment="Right" />
+                        </Grid>
+                      </Button>
+
+                      <Button Style="{StaticResource CloseButton}"
+                              Command="{x:Static SystemCommands.CloseWindowCommand}"
+                              ToolTip="Close" AutomationProperties.Name="Close">
+                        <Path Width="10" Height="10" Stretch="Uniform" Data="M0,0 L10,10 M10,0 L0,10"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="1.1" />
+                      </Button>
+                    </StackPanel>
+
+                    <TextBlock VerticalAlignment="Center" Margin="10,0,12,0" FontSize="12.5"
+                               TextTrimming="CharacterEllipsis">
+                      <Run Text="{Binding Title, RelativeSource={RelativeSource TemplatedParent},
+                                  Converter={StaticResource WindowName}, Mode=OneWay}"
+                           FontWeight="SemiBold" Foreground="{StaticResource Ink}" />
+                      <Run Text="{Binding Title, RelativeSource={RelativeSource TemplatedParent},
+                                  Converter={StaticResource WindowState}, Mode=OneWay}"
+                           Foreground="{StaticResource InkDim}" />
+                    </TextBlock>
+                  </DockPanel>
+                </Border>
+
+                <AdornerDecorator>
+                  <ContentPresenter />
+                </AdornerDecorator>
+              </DockPanel>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="WindowState" Value="Maximized">
+                <Setter TargetName="Maximize" Property="Visibility" Value="Collapsed" />
+                <Setter TargetName="Restore" Property="Visibility" Value="Visible" />
+                <!-- Maximised, the frame is flush against the work area and a border would be a
+                     stray line down the edge of the screen. -->
+                <Setter TargetName="Shell" Property="BorderThickness" Value="0" />
+              </Trigger>
+              <Trigger Property="IsActive" Value="False">
+                <Setter TargetName="Shell" Property="BorderBrush" Value="{StaticResource Line}" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <!-- A small status pill, mono and uppercase, from the mockup. ChipWarn is the red variant. -->
     <Style x:Key="Chip" TargetType="Border">
       <Setter Property="CornerRadius" Value="3" />
@@ -633,5 +833,6 @@
       <Setter Property="Foreground" Value="{StaticResource InkDim}" />
     </Style>
 
+    </ResourceDictionary>
   </Application.Resources>
 </Application>

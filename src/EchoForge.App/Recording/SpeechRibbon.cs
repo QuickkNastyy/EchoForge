@@ -5,10 +5,8 @@ using System.Windows.Media;
 // The application enables WinForms for the tray icon, which brings System.Drawing into scope and
 // collides with the WPF drawing types. Pin every ambiguous name to its WPF meaning.
 using Brush = System.Windows.Media.Brush;
-using Color = System.Windows.Media.Color;
 using Pen = System.Windows.Media.Pen;
 using Point = System.Windows.Point;
-using SolidColorBrush = System.Windows.Media.SolidColorBrush;
 
 namespace EchoForge.App.Recording;
 
@@ -32,14 +30,26 @@ namespace EchoForge.App.Recording;
 public sealed class SpeechRibbon : FrameworkElement
 {
     // The palette is fixed by the design: amber is always You, teal always Remote, red only capture.
-    private static readonly Brush Background = Frozen(0x0A, 0x10, 0x15);
-    private static readonly Brush YouBrush = Frozen(0xF2, 0xA9, 0x3B);
-    private static readonly Brush RemoteBrush = Frozen(0x3F, 0xBF, 0xC7);
-    private static readonly Brush DeadBrush = Frozen(0xE2, 0x45, 0x3D);
-    private static readonly Brush InkBrush = Frozen(0xE6, 0xED, 0xF3);
-    private static readonly Brush FaintBrush = Frozen(0x5B, 0x6C, 0x7B);
-    private static readonly Pen LinePen = FrozenPen(0x26, 0x31, 0x3B, 1);
-    private static readonly Pen PlayheadPen = FrozenPen(0xE6, 0xED, 0xF3, 1);
+    //
+    // Taken from the application's shared brushes rather than frozen here, so the ribbon follows a
+    // theme switch. A private frozen copy would hold the colour it was born with and leave the one
+    // signature element on the screen painted for the wrong palette.
+    private static Brush Background => Theme.Brush("Sunken");
+
+    private static Brush YouBrush => Theme.Brush("You");
+
+    private static Brush RemoteBrush => Theme.Brush("Remote");
+
+    private static Brush DeadBrush => Theme.Brush("Rec");
+
+    private static Brush InkBrush => Theme.Brush("Ink");
+
+    private static Brush FaintBrush => Theme.Brush("InkFaint");
+
+    private static Pen LinePen => Theme.Pen("Line", 1);
+
+    private static Pen PlayheadPen => Theme.Pen("Ink", 1);
+
     private static readonly Typeface Mono = new("Cascadia Mono, Consolas");
 
     public static readonly DependencyProperty HistoryProperty = DependencyProperty.Register(
@@ -200,17 +210,4 @@ public sealed class SpeechRibbon : FrameworkElement
             : string.Create(CultureInfo.InvariantCulture, $"{span.Minutes:00}:{span.Seconds:00}");
     }
 
-    private static SolidColorBrush Frozen(byte r, byte g, byte b)
-    {
-        SolidColorBrush brush = new(Color.FromRgb(r, g, b));
-        brush.Freeze();
-        return brush;
-    }
-
-    private static Pen FrozenPen(byte r, byte g, byte b, double thickness)
-    {
-        Pen pen = new(Frozen(r, g, b), thickness);
-        pen.Freeze();
-        return pen;
-    }
 }

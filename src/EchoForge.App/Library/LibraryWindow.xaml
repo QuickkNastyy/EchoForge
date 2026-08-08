@@ -150,7 +150,7 @@
                            Visibility="{Binding HasTranscript, Converter={StaticResource BoolToVis}}" />
                 <TextBlock Text="summary" Style="{StaticResource Label}" Foreground="{StaticResource You}" Margin="0,0,8,0"
                            Visibility="{Binding HasSummary, Converter={StaticResource BoolToVis}}" />
-                <TextBlock Text="stale" Style="{StaticResource Label}" Foreground="#D8A657"
+                <TextBlock Text="stale" Style="{StaticResource Label}" Foreground="{StaticResource Warn}"
                            Visibility="{Binding SummaryIsStale, Converter={StaticResource BoolToVis}}" />
               </StackPanel>
 
@@ -251,7 +251,7 @@
                         IsEnabled="{Binding HasRemoteTrack}" VerticalAlignment="Center" />
             </StackPanel>
             <TextBlock Text="{Binding SeekNotice}" TextWrapping="Wrap" Margin="14,0,0,0" VerticalAlignment="Center"
-                       Foreground="#D8A657"
+                       Foreground="{StaticResource Warn}"
                        Visibility="{Binding HasSeekNotice, Converter={StaticResource BoolToVis}}" />
           </DockPanel>
           </Grid>
@@ -281,7 +281,7 @@
             </DockPanel>
 
             <Border CornerRadius="4" Padding="10,8" Margin="0,0,0,8"
-                    Background="#1E1A12" BorderBrush="#D8A657" BorderThickness="1"
+                    Background="{StaticResource WarnWash}" BorderBrush="{StaticResource Warn}" BorderThickness="1"
                     Visibility="{Binding SummaryIsStale, Converter={StaticResource BoolToVis}}">
               <StackPanel>
                 <TextBlock Text="{Binding StaleNotice}" TextWrapping="Wrap" Foreground="{StaticResource Ink}" />

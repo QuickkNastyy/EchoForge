@@ -591,6 +591,23 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public string QueueSummary { get; private set; } = "—";
 
+    /// <summary>
+    /// What the window bar says. "EchoForge", and after an em dash what the window is doing, which
+    /// the bar sets in a quieter tone. Same phase the indicator and the tray read, so the three
+    /// cannot disagree about whether a recording is running.
+    /// </summary>
+    public string WindowTitle =>
+        YouLost || RemoteLost ? "EchoForge — recording, " + (YouLost && RemoteLost
+            ? "both devices lost"
+            : YouLost ? "microphone lost" : "system audio lost")
+        : _controller.Phase switch
+        {
+            CapturePhase.Capturing => "EchoForge — recording",
+            CapturePhase.StoppingCapture => "EchoForge — stopping",
+            CapturePhase.Saving => "EchoForge — saving",
+            _ => IsPaused ? "EchoForge — paused" : "EchoForge",
+        };
+
     /// <summary>The tray tooltip. Derived from the same phase the indicator uses, so they agree.</summary>
     public string TrayText => _controller.Phase switch
     {
@@ -924,6 +941,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         nameof(IsRecording), nameof(IsPaused), nameof(IsDegraded), nameof(IndicatorVisible),
         nameof(YouLost), nameof(RemoteLost), nameof(DegradedHeadline), nameof(DegradedDetail),
         nameof(DevicesEditable), nameof(CanStart), nameof(IsBusy), nameof(TrayText), nameof(StatusHeadline),
+        nameof(WindowTitle),
     ];
 
     /// <summary>Marshals UI state changes onto the dispatcher when raised from a worker thread.</summary>

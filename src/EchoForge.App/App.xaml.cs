@@ -81,7 +81,14 @@ public partial class App : System.Windows.Application, IDisposable
         _store = store;
         FileSessionLeaseProvider leases = new(store);
         _leases = leases;
-        ISettingsStore settings = new JsonSettingsStore();
+        JsonSettingsStore settings = new();
+
+        // Paint in the remembered palette before the first window exists, so nothing is ever seen
+        // in the wrong one, and remember any later change. A settings file written before this
+        // existed, or holding anything unrecognised, reads as dark.
+        Theme.Apply(Theme.Parse(settings.Load().Theme));
+        Theme.Changed += (_, _) => settings.Save(settings.Load() with { Theme = Theme.Name(Theme.Current) });
+
         _catalog = new AudioDeviceCatalog();
         _endpoints = new MmDeviceEndpointMonitor();
         _power = new SystemPowerMonitor();

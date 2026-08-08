@@ -16,6 +16,12 @@ public sealed record AppSettings
     /// <summary>Keep the compact recorder above other windows while capturing.</summary>
     public bool KeepRecorderOnTop { get; init; } = true;
 
+    /// <summary>
+    /// Which palette to paint in: "dark" or "light". Anything else, including a settings file
+    /// written before this existed, reads as dark, which is the design's own default.
+    /// </summary>
+    public string Theme { get; init; } = "dark";
+
     public int SchemaVersion { get; init; } = 1;
 }
 

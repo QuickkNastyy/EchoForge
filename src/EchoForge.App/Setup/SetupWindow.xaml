@@ -71,7 +71,7 @@
         <ItemsControl ItemsSource="{Binding Warnings}" Margin="0,8,0,0">
           <ItemsControl.ItemTemplate>
             <DataTemplate>
-              <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,1" Foreground="#D8A657" />
+              <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,1" Foreground="{StaticResource Warn}" />
             </DataTemplate>
           </ItemsControl.ItemTemplate>
         </ItemsControl>
