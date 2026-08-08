@@ -109,6 +109,23 @@ public sealed class RenderedScreenTests
         screen.NoTextOverlaps();
     });
 
+    /// <summary>
+    /// The recorder at the narrowest it may be. The paired panels have to stack here, and a
+    /// UniformGrid told to use one column while also being told to use one row would draw them on
+    /// top of each other instead — which is exactly what it did until this caught it.
+    /// </summary>
+    [Fact]
+    public void TheRecordingScreenStacksItsPanelsAtItsNarrowest() => UiThread.Run(() =>
+    {
+        using RecorderHarness harness = new();
+
+        using Screen screen = UiThread.Render("01c-ready-narrow", () =>
+            new MainWindow { DataContext = harness.Ready() }, 820, 700);
+
+        screen.EveryVisibleButtonShowsItsLabel();
+        screen.NoTextOverlaps();
+    });
+
     // ---------------------------------------------------------------- the library window
 
     [Fact]
@@ -144,6 +161,35 @@ public sealed class RenderedScreenTests
         screen.TextIsPainted("Deployment planning");
     });
 
+    /// <summary>
+    /// Scene 07: selecting a claim marks it, marks the transcript line it cites, drops a marker on
+    /// the ribbon at that moment, and recedes everything it did not cite.
+    /// </summary>
+    [Fact]
+    public void FollowingAClaimMarksItsSourceEverywhere() => UiThread.Run(() =>
+    {
+        using LibraryHarness harness = new();
+        harness.Open("processed");
+
+        // Selected through the list rather than by calling the view model, so the click path — and
+        // the mark the selected claim itself carries — is what gets photographed.
+        using Screen screen = UiThread.Render(
+            "07-following-a-claim", harness.Window, 1920, 1080, harness.SelectFirstClaim);
+
+        screen.NoRecordToStringAnywhere();
+        screen.EveryVisibleButtonShowsItsLabel();
+        screen.NoTextOverlaps();
+
+        // The transcript says where it went, and the cited moment is marked on the timeline.
+        screen.TextIsPainted("jumped to");
+        screen.TextIsPainted("Evidence for the selected claim");
+
+        // A slot the meeting never filled is drawn as an absence, not as the word "unknown".
+        screen.TextIsPainted("no date stated");
+        screen.NoTextMatches("Due: unknown");
+        screen.NoTextMatches("Owner: unknown");
+    });
+
     [Fact]
     public void AnOpenedRecordingStillFitsAt1366By768() => UiThread.Run(() =>
     {
@@ -153,6 +199,50 @@ public sealed class RenderedScreenTests
         using Screen screen = UiThread.Render("07-one-recording-1366", harness.Window, 1366, 768);
 
         screen.NoRecordToStringAnywhere();
+        screen.EveryVisibleButtonShowsItsLabel();
+        screen.NoTextOverlaps();
+    });
+
+    // ---------------------------------------------------------------- setup
+
+    /// <summary>
+    /// Setup, against this machine's real manifest and whatever is actually installed on it.
+    ///
+    /// <para>
+    /// Skipped rather than failed where the manifest cannot be opened: the window is honest about
+    /// that case too, but a build with no artifact manifest beside it has nothing to photograph.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheSetupScreenRendersItsComponents() => UiThread.Run(() =>
+    {
+        using SetupHarness harness = new();
+        if (!harness.Available)
+        {
+            return;
+        }
+
+        using Screen screen = UiThread.Render("09-setup", harness.Window, 1180, 900, harness.WaitForScan);
+
+        screen.NoRecordToStringAnywhere();
+        screen.EveryVisibleButtonShowsItsLabel();
+        screen.ButtonIsReadable("Install what is recommended");
+        screen.TextIsPainted("WHAT ECHOFORGE CAN DO ON THIS MACHINE");
+        screen.TextIsPainted("COMPONENTS");
+        screen.NoTextOverlaps();
+    });
+
+    [Fact]
+    public void TheSetupScreenStillFitsAtItsNarrowest() => UiThread.Run(() =>
+    {
+        using SetupHarness harness = new();
+        if (!harness.Available)
+        {
+            return;
+        }
+
+        using Screen screen = UiThread.Render("09-setup-narrow", harness.Window, 820, 620, harness.WaitForScan);
+
         screen.EveryVisibleButtonShowsItsLabel();
         screen.NoTextOverlaps();
     });
@@ -434,11 +524,88 @@ internal sealed class LibraryHarness : IDisposable
         _library.SelectedMeeting = row;
     }
 
+    /// <summary>Selects the first cited claim in the open window, as a click on it would.</summary>
+    public void SelectFirstClaim(Window window)
+    {
+        MeetingViewModel meeting = _library.OpenMeeting
+            ?? throw new InvalidOperationException("open a recording first");
+
+        if (window.FindName("SummaryList") is not System.Windows.Controls.ListBox claims)
+        {
+            throw new InvalidOperationException("the workspace has no claim list");
+        }
+
+        claims.SelectedItem = meeting.SummaryLines.First(line => line.HasEvidence);
+    }
+
     public void Dispose()
     {
         _library.Dispose();
         _index.Dispose();
         _fixture.Dispose();
+    }
+}
+
+/// <summary>Setup over the real manifest that ships beside the build.</summary>
+internal sealed class SetupHarness : IDisposable
+{
+    private readonly EchoForge.Infrastructure.Setup.SetupServices? _services;
+    private readonly EchoForge.App.Setup.SetupViewModel? _model;
+
+    public SetupHarness()
+    {
+        _services = EchoForge.Infrastructure.Setup.SetupServices.TryOpen(out _);
+        if (_services is null)
+        {
+            return;
+        }
+
+        // The real endpoint catalogue, so the screen reports this machine rather than a machine
+        // with no audio at all. A build that cannot open it still renders; it just says so.
+        EchoForge.Contracts.Audio.IAudioDeviceCatalog? audio = null;
+        try
+        {
+            audio = new EchoForge.Audio.Windows.AudioDeviceCatalog();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException)
+        {
+            audio = null;
+        }
+
+        _model = new EchoForge.App.Setup.SetupViewModel(_services, audio);
+    }
+
+    public bool Available => _model is not null && _services is not null;
+
+    public Func<Window> Window => () =>
+        new EchoForge.App.Setup.SetupWindow(_model!, _services!) { DataContext = _model };
+
+    /// <summary>
+    /// Waits for the scan the window kicks off when it loads.
+    ///
+    /// <para>
+    /// Setup probes the machine on Loaded, so photographing it immediately catches a page of empty
+    /// cards — which is a real state, but not the one worth checking. Pumped rather than blocked,
+    /// because the scan finishes on this same thread.
+    /// </para>
+    /// </summary>
+    public void WaitForScan(Window window)
+    {
+        for (int attempt = 0; attempt < 120; attempt++)
+        {
+            UiThread.Wait(Task.Delay(100));
+
+            if (_model!.Components.Count > 0 && !_model.IsBusy)
+            {
+                return;
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        _model?.Dispose();
+        _services?.Dispose();
     }
 }
 
@@ -487,8 +654,8 @@ internal static class UiThread
     /// <summary>Runs a whole test on the render thread: building, rendering and inspecting alike.</summary>
     public static void Run(Action body) => Owner.Value.Invoke(body, DispatcherPriority.Normal);
 
-    public static Screen Render(string name, Func<Window> build, int width, int height) =>
-        Screen.Capture(name, build(), width, height);
+    public static Screen Render(string name, Func<Window> build, int width, int height, Action<Window>? then = null) =>
+        Screen.Capture(name, build(), width, height, then);
 
     /// <summary>
     /// Waits for a task while still pumping this thread's dispatcher, so work that continues on
@@ -538,7 +705,11 @@ internal sealed class Screen : IDisposable
     /// Laying out the content alone would photograph everything except the chrome.
     /// </para>
     /// </summary>
-    public static Screen Capture(string name, Window window, int width, int height)
+    /// <param name="then">
+    /// Run against the window once it is shown, for anything that needs a live visual tree — a
+    /// list selection, say, which is how a reader actually gets to the state being photographed.
+    /// </param>
+    public static Screen Capture(string name, Window window, int width, int height, Action<Window>? then = null)
     {
         window.WindowStartupLocation = WindowStartupLocation.Manual;
         window.ShowInTaskbar = false;
@@ -550,6 +721,12 @@ internal sealed class Screen : IDisposable
 
         window.Show();
         Settle();
+
+        if (then is not null)
+        {
+            then(window);
+            Settle();
+        }
 
         // The window may refuse a size it has a minimum for; photograph what it actually became.
         FrameworkElement root = (FrameworkElement)VisualTreeHelper.GetChild(window, 0);
@@ -699,6 +876,19 @@ internal sealed class Screen : IDisposable
         ];
 
         Assert.True(dumps.Count == 0, $"{_name}: raw DTO text on screen: {string.Join(" | ", dumps)}");
+    }
+
+    /// <summary>A phrase that must not appear anywhere on the screen.</summary>
+    public void NoTextMatches(string text)
+    {
+        List<string> found =
+        [
+            .. All<TextBlock>()
+                .Select(t => t.Text ?? string.Empty)
+                .Where(t => t.Contains(text, StringComparison.Ordinal))
+        ];
+
+        Assert.True(found.Count == 0, $"{_name}: \"{text}\" is on screen: {string.Join(" | ", found)}");
     }
 
     public void TextIsPainted(string text)

@@ -35,19 +35,65 @@ public sealed record TranscriptLine(
     public bool IsHighlighted { get; init; }
 }
 
-/// <summary>One rendered summary item, with its citations already resolved.</summary>
+/// <summary>
+/// One citation, ready to be drawn as a chip.
+///
+/// <para>
+/// Carries the track so the chip can be amber for You and teal for Remote, which is the same rule
+/// the ribbon and the transcript follow — a reader should never have to work out whose words are
+/// being cited. An unresolved citation says so on its face rather than looking like a link that
+/// works.
+/// </para>
+/// </summary>
+public sealed record EvidenceChip(string Label, bool IsYou, bool IsResolved, EvidenceLocation Location);
+
+/// <summary>
+/// One rendered summary item, with its citations already resolved.
+///
+/// <para>
+/// What was <em>said</em> and what was merely <em>not said</em> are separate fields rather than one
+/// sentence, because the design draws them differently and for good reason: an owner nobody named
+/// is a hole in the record, and printing "Owner: unknown" in the same ink as a real name invites a
+/// reader to skim past it.
+/// </para>
+/// </summary>
 public sealed record SummaryLine(
     string Section,
     string Text,
     string Certainty,
-    string Detail,
     IReadOnlyList<EvidenceLocation> Evidence)
 {
+    /// <summary>The owner, when the meeting actually named one.</summary>
+    public string? Owner { get; init; }
+
+    /// <summary>The due date as stated or resolved, when the meeting gave one.</summary>
+    public string? Due { get; init; }
+
+    /// <summary>True when this item was inferred rather than stated. Never promoted.</summary>
+    public bool IsInferred { get; init; }
+
+    /// <summary>True when the item carries owner and date slots at all — actions do, decisions do not.</summary>
+    public bool HasAssignment { get; init; }
+
+    public bool HasOwner => !string.IsNullOrWhiteSpace(Owner);
+
+    public bool HasDue => !string.IsNullOrWhiteSpace(Due);
+
+    /// <summary>Shown in place of an owner: a slot the meeting left empty, drawn as one.</summary>
+    public bool OwnerMissing => HasAssignment && !HasOwner;
+
+    public bool DueMissing => HasAssignment && !HasDue;
+
     public bool HasEvidence => Evidence.Count > 0;
 
-    public string EvidenceLabel => Evidence.Count == 0
-        ? string.Empty
-        : string.Join("  ", Evidence.Select(e => e.IsResolved ? e.StartSeconds.ToTimestamp() : e.StartSeconds.ToTimestamp() + " (unresolved)"));
+    public IReadOnlyList<EvidenceChip> Chips =>
+    [
+        .. Evidence.Select(e => new EvidenceChip(
+            e.IsResolved ? e.StartSeconds.ToTimestamp() : e.StartSeconds.ToTimestamp() + " · unresolved",
+            string.Equals(e.SourceTrack, TranscriptSpeakers.MicrophoneTrack, StringComparison.Ordinal),
+            e.IsResolved,
+            e))
+    ];
 }
 
 internal static class TimestampExtensions
@@ -190,6 +236,69 @@ public sealed class MeetingViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public bool SummaryIsStale => HasSummary && _entry.SummaryIsStale;
 
+    // -- following a claim (scene 07) -------------------------------------------------------------
+
+    private string? _evidenceSegmentId;
+    private double _evidenceSeconds = -1;
+
+    /// <summary>
+    /// The transcript segment the selected claim cites, while one is selected.
+    ///
+    /// <para>
+    /// Held here rather than on each line so that marking one of ten thousand lines costs one
+    /// property change instead of rebuilding the list. The transcript rows compare their own
+    /// segment against it.
+    /// </para>
+    /// </summary>
+    public string? EvidenceSegmentId
+    {
+        get => _evidenceSegmentId;
+        private set
+        {
+            _evidenceSegmentId = value;
+            Changed();
+            Changed(nameof(HasEvidenceFocus));
+        }
+    }
+
+    public bool HasEvidenceFocus => _evidenceSegmentId is not null;
+
+    /// <summary>Where the cited moment sits along the timeline, 0..1, or negative for none.</summary>
+    public double EvidenceFraction => _evidenceSeconds < 0 || TimelineSeconds <= 0
+        ? -1
+        : Math.Clamp(_evidenceSeconds / TimelineSeconds, 0, 1);
+
+    /// <summary>The cited moment as a timecode, for the transcript header and the transport.</summary>
+    public string EvidenceTimestamp => _evidenceSeconds < 0 ? string.Empty : _evidenceSeconds.ToTimestamp();
+
+    /// <summary>
+    /// How long the ribbon's ruler runs.
+    ///
+    /// <para>
+    /// The transport knows the exact length of the prepared audio, but it only exists once playback
+    /// is composed. Falling back to the transcript's own duration means the ruler is drawn — and
+    /// the evidence marker lands in the right place — on a build with no transport at all.
+    /// </para>
+    /// </summary>
+    public double TimelineSeconds =>
+        Playback?.DurationSeconds is > 0 and { } playable ? playable : _transcript?.DurationSeconds ?? 0;
+
+    /// <summary>What the transport says it is about to play, in the reader's terms.</summary>
+    public string TransportCaption => _evidenceSegmentId is null
+        ? "You + Remote · click the ribbon to play from that moment"
+        : "Evidence for the selected claim · " + EvidenceTimestamp;
+
+    /// <summary>Marks a claim's evidence, or clears the mark when nothing is selected.</summary>
+    public void FocusEvidence(EvidenceLocation? location)
+    {
+        _evidenceSeconds = location?.StartSeconds ?? -1;
+        EvidenceSegmentId = location?.SegmentId;
+
+        Changed(nameof(EvidenceFraction));
+        Changed(nameof(EvidenceTimestamp));
+        Changed(nameof(TransportCaption));
+    }
+
     /// <summary>
     /// Says which transcript the summary belongs to, rather than only that it is out of date.
     ///
@@ -293,6 +402,7 @@ public sealed class MeetingViewModel : INotifyPropertyChanged, IDisposable
             nameof(HasTranscript), nameof(HasSummary), nameof(SummaryIsStale), nameof(StaleNotice),
             nameof(TranscriptModelText), nameof(SummaryModelText), nameof(SummaryOverview),
             nameof(SelectedTranscriptRevision), nameof(SelectedSummaryRevision), nameof(Entry), nameof(Shape),
+            nameof(TimelineSeconds), nameof(EvidenceFraction),
         ])
         {
             Changed(name);
@@ -320,8 +430,10 @@ public sealed class MeetingViewModel : INotifyPropertyChanged, IDisposable
                     section,
                     item.Text,
                     item.Certainty,
-                    string.Empty,
-                    EvidenceResolver.ResolveAll(SessionId, item.Evidence, source, overlay)));
+                    EvidenceResolver.ResolveAll(SessionId, item.Evidence, source, overlay))
+                {
+                    IsInferred = item.Support == SupportStatus.Inferred,
+                });
             }
         }
 
@@ -330,18 +442,19 @@ public sealed class MeetingViewModel : INotifyPropertyChanged, IDisposable
 
         foreach (SummaryAction action in summary.ActionItems)
         {
-            string owner = action.Owner is { } named
-                ? "Owner: " + named + (action.OwnerSupport == SupportStatus.Inferred ? " (inferred)" : string.Empty)
-                : "Owner: unknown";
-
-            string due = action.DueDate ?? action.DueDateText ?? "unknown";
-
             SummaryLines.Add(new SummaryLine(
                 "Action items",
                 action.Task,
                 action.Certainty,
-                owner + " · Due: " + due,
-                EvidenceResolver.ResolveAll(SessionId, action.Evidence, source, overlay)));
+                EvidenceResolver.ResolveAll(SessionId, action.Evidence, source, overlay))
+            {
+                HasAssignment = true,
+                Owner = action.Owner is { } named
+                    ? named + (action.OwnerSupport == SupportStatus.Inferred ? " (inferred)" : string.Empty)
+                    : null,
+                Due = action.DueDate ?? action.DueDateText,
+                IsInferred = action.Support == SupportStatus.Inferred,
+            });
         }
 
         Add("Open questions", summary.OpenQuestions);

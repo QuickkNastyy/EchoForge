@@ -48,7 +48,18 @@ public sealed class LibraryUiAndExportTests : IDisposable
         Assert.Equal("00:00:00", meeting.Lines[0].Timestamp);
         Assert.Equal(2, meeting.SummaryLines.Count);
         Assert.Contains(meeting.SummaryLines, l => l.Section == "Decisions");
-        Assert.Contains(meeting.SummaryLines, l => l.Section == "Action items" && l.Detail.Contains("Alex", StringComparison.Ordinal));
+        // Owner and date are separate facts now, so that a slot the meeting never filled can be
+        // drawn as an empty slot rather than as the word "unknown" in the same ink as a real name.
+        SummaryLine action = Assert.Single(meeting.SummaryLines, l => l.Section == "Action items");
+        Assert.True(action.HasAssignment);
+        Assert.Equal("Alex", action.Owner);
+        Assert.False(action.OwnerMissing);
+        Assert.True(action.DueMissing);
+
+        // The citation carries the track it came from, so the chip can be drawn in its colour.
+        EvidenceChip cited = Assert.Single(action.Chips);
+        Assert.False(cited.IsYou);
+        Assert.True(cited.IsResolved);
     }
 
     [Fact]

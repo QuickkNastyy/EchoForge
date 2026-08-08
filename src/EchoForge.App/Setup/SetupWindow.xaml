@@ -3,137 +3,189 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:app="clr-namespace:EchoForge.App"
         Style="{StaticResource AppWindow}" WindowStyle="None"
-        Title="EchoForge — setup" Height="800" Width="1000" MinHeight="560" MinWidth="820">
+        Title="EchoForge — setup" Height="820" Width="1060" MinHeight="560" MinWidth="820">
 
-  <Grid Margin="18">
+  <!--
+    Laid out as cards on the graphite ground, like every other screen, rather than as one flat
+    column of headings. The order is the argument: what already works, then what this machine is,
+    then what EchoForge concluded from it, then the parts — and only then the buttons that change
+    anything. Recording works throughout, and a screen that opened with a download list would say
+    otherwise.
+  -->
+  <Grid x:Name="Page" Margin="24,20,24,20">
     <Grid.RowDefinitions>
-      <RowDefinition Height="Auto" />
-      <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
       <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
 
     <!--
+      The page scrolls and the actions do not. Squeezing four stacked cards into whatever height is
+      left over is how the components heading ended up drawn across the status line underneath it:
+      a starved row does not shrink its contents, it just stops containing them.
+    -->
+    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel>
+
+    <StackPanel Margin="0,0,0,16">
+      <TextBlock Text="Setup" FontFamily="{StaticResource DisplayFont}" FontSize="21" FontWeight="SemiBold" />
+      <TextBlock Margin="0,3,0,0" Foreground="{StaticResource InkDim}" TextWrapping="Wrap"
+                 Text="Transcription and summaries need models on this machine. Recording does not, and keeps working while anything here is downloading." />
+    </StackPanel>
+
+    <!--
       Capabilities first, because the honest headline is that recording already works. A setup
       screen that led with a list of missing downloads would imply the application does not.
     -->
-    <StackPanel Grid.Row="0" Margin="0,0,0,14">
-      <TextBlock Text="WHAT ECHOFORGE CAN DO ON THIS MACHINE" Style="{StaticResource Label}" Margin="0,0,0,8" />
+    <Border Margin="0,0,0,12" CornerRadius="6" Padding="16,14"
+            Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+      <StackPanel>
+        <TextBlock Text="WHAT ECHOFORGE CAN DO ON THIS MACHINE" Style="{StaticResource Label}" Margin="0,0,0,10" />
 
-      <ItemsControl ItemsSource="{Binding Capabilities}">
-        <ItemsControl.ItemTemplate>
-          <DataTemplate>
-            <DockPanel Margin="0,3">
-              <TextBlock DockPanel.Dock="Left" Width="18" VerticalAlignment="Top"
-                         Text="{Binding Available, Converter={StaticResource TickConverter}}"
-                         Foreground="{Binding Available, Converter={StaticResource ReadyBrushConverter}}" />
-              <TextBlock DockPanel.Dock="Left" Width="200" Text="{Binding Name}" FontWeight="SemiBold"
-                         TextWrapping="Wrap" />
-              <TextBlock Text="{Binding Detail}" TextWrapping="Wrap" Foreground="{StaticResource InkDim}" />
-            </DockPanel>
-          </DataTemplate>
-        </ItemsControl.ItemTemplate>
-      </ItemsControl>
-    </StackPanel>
-
-    <!-- This machine, and what EchoForge concluded from it. -->
-    <Grid Grid.Row="1" Margin="0,0,0,14">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="*" />
-        <ColumnDefinition Width="*" />
-      </Grid.ColumnDefinitions>
-
-      <StackPanel Grid.Column="0" Margin="0,0,10,0">
-        <TextBlock Text="THIS MACHINE" Style="{StaticResource Label}" Margin="0,0,0,6" />
-        <ItemsControl ItemsSource="{Binding HardwareFacts}">
+        <ItemsControl ItemsSource="{Binding Capabilities}">
           <ItemsControl.ItemTemplate>
             <DataTemplate>
-              <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,1"
-                         Foreground="{StaticResource InkDim}" />
+              <DockPanel Margin="0,4">
+                <TextBlock DockPanel.Dock="Left" Width="20" VerticalAlignment="Top" FontWeight="Bold"
+                           Text="{Binding Available, Converter={StaticResource TickConverter}}"
+                           Foreground="{Binding Available, Converter={StaticResource ReadyBrushConverter}}" />
+                <TextBlock DockPanel.Dock="Left" Width="210" Margin="0,0,14,0" Text="{Binding Name}"
+                           FontWeight="SemiBold" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding Detail}" TextWrapping="Wrap" Foreground="{StaticResource InkDim}" />
+              </DockPanel>
             </DataTemplate>
           </ItemsControl.ItemTemplate>
         </ItemsControl>
       </StackPanel>
+    </Border>
 
-      <StackPanel Grid.Column="1" Margin="10,0,0,0">
-        <TextBlock Text="RECOMMENDED" Style="{StaticResource Label}" Margin="0,0,0,6" />
-        <TextBlock Text="{Binding RecommendationSummary}" TextWrapping="Wrap" Margin="0,0,0,6" />
+    <!-- This machine, and what EchoForge concluded from it. Side by side while there is room. -->
+    <UniformGrid Margin="0,0,0,12"
+                 Columns="{Binding ActualWidth, ElementName=Page, Converter={StaticResource ColumnsForWidth}}">
 
-        <!-- Always with its reasons. A recommendation nobody can interrogate is one they ignore. -->
-        <ItemsControl ItemsSource="{Binding RecommendationReasons}">
-          <ItemsControl.ItemTemplate>
-            <DataTemplate>
-              <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,1"
-                         Foreground="{StaticResource InkDim}" />
-            </DataTemplate>
-          </ItemsControl.ItemTemplate>
-        </ItemsControl>
+      <Border Margin="0,0,6,0" CornerRadius="6" Padding="16,14"
+              Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+        <StackPanel>
+          <TextBlock Text="THIS MACHINE" Style="{StaticResource Label}" Margin="0,0,0,8" />
+          <ItemsControl ItemsSource="{Binding HardwareFacts}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,2"
+                           Foreground="{StaticResource InkDim}" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
 
-        <ItemsControl ItemsSource="{Binding Warnings}" Margin="0,8,0,0">
-          <ItemsControl.ItemTemplate>
-            <DataTemplate>
-              <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,1" Foreground="{StaticResource Warn}" />
-            </DataTemplate>
-          </ItemsControl.ItemTemplate>
-        </ItemsControl>
-      </StackPanel>
-    </Grid>
+      <Border Margin="6,0,0,0" CornerRadius="6" Padding="16,14"
+              Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+        <StackPanel>
+          <TextBlock Text="RECOMMENDED" Style="{StaticResource Label}" Margin="0,0,0,8" />
+          <TextBlock Text="{Binding RecommendationSummary}" TextWrapping="Wrap" Margin="0,0,0,8"
+                     FontWeight="SemiBold" />
+
+          <!-- Always with its reasons. A recommendation nobody can interrogate is one they ignore. -->
+          <ItemsControl ItemsSource="{Binding RecommendationReasons}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,2"
+                           Foreground="{StaticResource InkDim}" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+
+          <ItemsControl ItemsSource="{Binding Warnings}" Margin="0,10,0,0">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border CornerRadius="4" Padding="10,7" Margin="0,3"
+                        Background="{StaticResource WarnWash}" BorderBrush="{StaticResource Warn}"
+                        BorderThickness="1">
+                  <TextBlock Text="{Binding}" TextWrapping="Wrap" Foreground="{StaticResource Ink}" />
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+    </UniformGrid>
 
     <!-- The detail: one row per component, each installable and repairable on its own. -->
-    <DockPanel Grid.Row="2">
-      <TextBlock DockPanel.Dock="Top" Text="COMPONENTS" Style="{StaticResource Label}" Margin="0,0,0,6" />
+    <Border CornerRadius="6" Padding="16,14"
+            Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+      <DockPanel>
+        <TextBlock DockPanel.Dock="Top" Text="COMPONENTS" Style="{StaticResource Label}" Margin="0,0,0,8" />
 
-      <ListBox x:Name="ComponentList" ItemsSource="{Binding Components}"
-               SelectedItem="{Binding SelectedComponent, Mode=TwoWay}"
-               ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-        <ListBox.ItemTemplate>
-          <DataTemplate>
-            <Grid Margin="0,4">
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="230" />
-                <ColumnDefinition Width="120" />
-                <ColumnDefinition Width="80" />
-                <ColumnDefinition Width="*" />
-              </Grid.ColumnDefinitions>
-              <TextBlock Grid.Column="0" Text="{Binding Name}" FontWeight="SemiBold" TextWrapping="Wrap" />
-              <TextBlock Grid.Column="1" Text="{Binding Status}" Style="{StaticResource Label}"
-                         Foreground="{Binding IsReady, Converter={StaticResource ReadyBrushConverter}}" />
-              <TextBlock Grid.Column="2" Text="{Binding Size}" Style="{StaticResource Label}"
-                         Foreground="{StaticResource InkDim}" />
-              <TextBlock Grid.Column="3" Text="{Binding Detail}" TextWrapping="Wrap"
-                         Foreground="{StaticResource InkDim}" />
-            </Grid>
-          </DataTemplate>
-        </ListBox.ItemTemplate>
-      </ListBox>
-    </DockPanel>
+        <!-- The page is the scroller; this list grows to fit rather than scrolling inside one. -->
+        <ListBox x:Name="ComponentList" ItemsSource="{Binding Components}"
+                 SelectedItem="{Binding SelectedComponent, Mode=TwoWay}"
+                 ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+          <ListBox.ItemTemplate>
+            <DataTemplate>
+              <Grid Margin="0,2">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="230" />
+                  <ColumnDefinition Width="Auto" />
+                  <ColumnDefinition Width="84" />
+                  <ColumnDefinition Width="*" MinWidth="140" />
+                </Grid.ColumnDefinitions>
 
-    <StackPanel Grid.Row="3" Margin="0,14,0,0">
-      <TextBlock Text="{Binding OutstandingSummary}" Margin="0,0,0,6" Foreground="{StaticResource InkDim}" />
+                <TextBlock Grid.Column="0" Text="{Binding Name}" FontWeight="SemiBold" TextWrapping="Wrap"
+                           VerticalAlignment="Center" Margin="0,0,12,0" />
 
-      <ProgressBar Height="6" Minimum="0" Maximum="1" Margin="0,0,0,6"
+                <!-- Readiness as a pill, so a scan down the column reads as a column. -->
+                <Border Grid.Column="1" Style="{StaticResource Chip}" Margin="0,0,12,0"
+                        BorderBrush="{Binding IsReady, Converter={StaticResource ReadyBrushConverter}}">
+                  <TextBlock Text="{Binding Status}" Style="{StaticResource ChipText}"
+                             Foreground="{Binding IsReady, Converter={StaticResource ReadyBrushConverter}}" />
+                </Border>
+
+                <TextBlock Grid.Column="2" Text="{Binding Size}" Style="{StaticResource Label}"
+                           Foreground="{StaticResource InkDim}" VerticalAlignment="Center"
+                           HorizontalAlignment="Right" Margin="0,0,14,0" />
+
+                <TextBlock Grid.Column="3" Text="{Binding Detail}" TextWrapping="Wrap"
+                           Foreground="{StaticResource InkDim}" VerticalAlignment="Center" />
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </DockPanel>
+    </Border>
+
+      </StackPanel>
+    </ScrollViewer>
+
+    <StackPanel Grid.Row="1" Margin="0,14,0,0">
+      <TextBlock Text="{Binding OutstandingSummary}" Margin="0,0,0,8" TextWrapping="Wrap"
+                 Foreground="{StaticResource InkDim}" />
+
+      <ProgressBar Style="{StaticResource Meter}" Height="6" Minimum="0" Maximum="1" Margin="0,0,0,8"
+                   Foreground="{StaticResource Remote}"
                    Value="{Binding Progress, Mode=OneWay}"
                    Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
 
-      <TextBlock Text="{Binding ProgressText}" Margin="0,0,0,6" Foreground="{StaticResource InkDim}"
+      <TextBlock Text="{Binding ProgressText}" Margin="0,0,0,8" TextWrapping="Wrap"
+                 Style="{StaticResource Label}" Foreground="{StaticResource InkDim}"
                  Visibility="{Binding HasProgress, Converter={StaticResource BoolToVis}}" />
 
-      <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,0,0,8"
+      <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,0,0,10"
                  Foreground="{StaticResource InkDim}"
                  Visibility="{Binding HasStatus, Converter={StaticResource BoolToVis}}" />
 
-      <StackPanel Orientation="Horizontal">
+      <!-- Wrapped, because six actions do not fit across the narrowest this window may be. -->
+      <WrapPanel Margin="0,0,-8,-8">
         <Button Content="Install what is recommended" Style="{StaticResource PrimaryButton}"
-                Command="{Binding InstallRecommendedCommand}" Margin="0,0,8,0"
+                Command="{Binding InstallRecommendedCommand}" Margin="0,0,8,8"
                 ToolTip="Downloads only what the recommended setup needs. The comparison model is never included." />
-        <Button Content="Install selected" Command="{Binding InstallSelectedCommand}" Margin="0,0,8,0" />
-        <Button Content="Repair selected" Command="{Binding RepairSelectedCommand}" Margin="0,0,8,0"
+        <Button Content="Install selected" Command="{Binding InstallSelectedCommand}" Margin="0,0,8,8" />
+        <Button Content="Repair selected" Command="{Binding RepairSelectedCommand}" Margin="0,0,8,8"
                 ToolTip="Checks what is already on disk before downloading anything. Your recordings are never touched." />
-        <Button Content="Re-check" Command="{Binding RefreshCommand}" Margin="0,0,8,0" />
-        <Button Content="Stop" Command="{Binding CancelCommand}" Margin="0,0,8,0" />
-        <Button Content="Save diagnostics…" Click="OnSaveDiagnostics"
+        <Button Content="Re-check" Command="{Binding RefreshCommand}" Margin="0,0,8,8" />
+        <Button Content="Stop" Command="{Binding CancelCommand}" Margin="0,0,8,8" />
+        <Button Content="Save diagnostics…" Click="OnSaveDiagnostics" Margin="0,0,8,8"
                 ToolTip="Writes a support file with no transcript, summary or meeting content in it." />
-      </StackPanel>
+      </WrapPanel>
     </StackPanel>
   </Grid>
 </Window>

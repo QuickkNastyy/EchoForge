@@ -84,18 +84,25 @@ public partial class LibraryWindow : Window
     /// </summary>
     private void OnSummarySelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (SummaryList.SelectedItem is not SummaryLine summary || _library.OpenMeeting is not { } meeting)
+        if (_library.OpenMeeting is not { } meeting)
         {
             return;
         }
 
-        if (summary.Evidence.Count == 0)
+        // Deselecting puts the transcript back the way it was. A reader who clicked away should
+        // not be left with two thirds of the transcript dimmed and no way to see why.
+        if (SummaryList.SelectedItem is not SummaryLine summary || summary.Evidence.Count == 0)
         {
+            meeting.FocusEvidence(null);
             return;
         }
 
         EvidenceLocation first = summary.Evidence[0];
         MeetingViewModel.EvidenceFollow follow = meeting.FollowEvidence(first);
+
+        // Mark it on the transcript and on the ribbon before scrolling, so the line a reader
+        // arrives at is already the one wearing the accent.
+        meeting.FocusEvidence(follow.Line is null ? null : first);
 
         // The audio moves either way. A citation whose transcript version is gone can still be heard
         // at the time stored with it, and the transport says the position is approximate.

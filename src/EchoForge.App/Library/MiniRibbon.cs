@@ -48,6 +48,18 @@ public sealed class MiniRibbon : FrameworkElement
         nameof(PlayheadFraction), typeof(double), typeof(MiniRibbon),
         new FrameworkPropertyMetadata(-1.0, FrameworkPropertyMetadataOptions.AffectsRender));
 
+    /// <summary>
+    /// Where the selected claim's evidence sits, 0..1, or negative for none.
+    ///
+    /// <para>
+    /// Drawn in the focus colour rather than in a track colour, because it marks <em>what you asked
+    /// about</em> and not who was speaking — the two would otherwise compete for the same meaning.
+    /// </para>
+    /// </summary>
+    public static readonly DependencyProperty EvidenceFractionProperty = DependencyProperty.Register(
+        nameof(EvidenceFraction), typeof(double), typeof(MiniRibbon),
+        new FrameworkPropertyMetadata(-1.0, FrameworkPropertyMetadataOptions.AffectsRender));
+
     public static readonly DependencyProperty ShowRulerProperty = DependencyProperty.Register(
         nameof(ShowRuler), typeof(bool), typeof(MiniRibbon),
         new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsRender));
@@ -129,6 +141,12 @@ public sealed class MiniRibbon : FrameworkElement
         set => SetValue(PlayheadFractionProperty, value);
     }
 
+    public double EvidenceFraction
+    {
+        get => (double)GetValue(EvidenceFractionProperty);
+        set => SetValue(EvidenceFractionProperty, value);
+    }
+
     public bool ShowRuler
     {
         get => (bool)GetValue(ShowRulerProperty);
@@ -180,6 +198,26 @@ public sealed class MiniRibbon : FrameworkElement
 
         DrawLane(dc, shape.You, top, laneHeight, YouBrush, w);
         DrawLane(dc, shape.Remote, top + laneHeight + laneGap, laneHeight, RemoteBrush, w);
+
+        // The evidence marker sits under the playhead, so a claim being followed while the audio
+        // plays past it stays legible as two separate facts.
+        if (EvidenceFraction >= 0)
+        {
+            double x = Math.Clamp(EvidenceFraction, 0, 1) * w;
+            Brush focus = Theme.Brush("Focus");
+            dc.DrawRectangle(focus, null, new Rect(x - 1, top, 2, h - top));
+
+            StreamGeometry flag = new();
+            using (StreamGeometryContext leg = flag.Open())
+            {
+                leg.BeginFigure(new Point(x - 4, top), isFilled: true, isClosed: true);
+                leg.LineTo(new Point(x + 4, top), isStroked: false, isSmoothJoin: false);
+                leg.LineTo(new Point(x, top + 5), isStroked: false, isSmoothJoin: false);
+            }
+
+            flag.Freeze();
+            dc.DrawGeometry(focus, null, flag);
+        }
 
         if (PlayheadFraction >= 0)
         {

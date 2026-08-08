@@ -260,33 +260,45 @@
         <StackPanel>
           <lib:MiniRibbon x:Name="TimelineRibbon" Height="92" ShowRuler="True"
                           Shape="{Binding Shape}"
-                          DurationSeconds="{Binding Playback.DurationSeconds, FallbackValue=0}"
+                          DurationSeconds="{Binding TimelineSeconds}"
+                          EvidenceFraction="{Binding EvidenceFraction}"
                           PlayheadFraction="{Binding Playback.PositionFraction, FallbackValue=-1}"
                           MouseLeftButtonDown="OnTimelineRibbonClicked"
                           Cursor="Hand" ToolTip="Click to play from this moment" />
 
-          <!-- Same rule as the workspace above: the gate reads the meeting, the row reads the
-               transport, and they cannot be the same element. -->
-          <Grid Visibility="{Binding CanPlay, Converter={StaticResource BoolToVis}}">
-          <DockPanel DataContext="{Binding Playback}">
-            <Button DockPanel.Dock="Left" MinWidth="72" Content="{Binding PlayPauseLabel}"
-                    Command="{Binding PlayPauseCommand}" Style="{StaticResource PrimaryButton}" />
-            <Button DockPanel.Dock="Left" Content="Stop" Margin="8,0,0,0" Command="{Binding StopCommand}" />
-            <TextBlock DockPanel.Dock="Left" Margin="14,0,0,0" VerticalAlignment="Center"
-                       FontFamily="{StaticResource DataFont}" FontSize="12" Foreground="{StaticResource InkDim}">
-              <Run Text="{Binding PositionText, Mode=OneWay}" /><Run Text=" / " /><Run Text="{Binding DurationText, Mode=OneWay}" />
-            </TextBlock>
-            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-              <CheckBox Content="Mute You" IsChecked="{Binding MuteYou, Mode=TwoWay}" Margin="0,0,12,0"
-                        IsEnabled="{Binding HasYouTrack}" VerticalAlignment="Center" />
-              <CheckBox Content="Mute Remote" IsChecked="{Binding MuteRemote, Mode=TwoWay}"
-                        IsEnabled="{Binding HasRemoteTrack}" VerticalAlignment="Center" />
-            </StackPanel>
-            <TextBlock Text="{Binding SeekNotice}" TextWrapping="Wrap" Margin="14,0,0,0" VerticalAlignment="Center"
-                       Foreground="{StaticResource Warn}"
-                       Visibility="{Binding HasSeekNotice, Converter={StaticResource BoolToVis}}" />
+          <!--
+            The caption belongs to the ribbon rather than to the transport: it says what clicking
+            the ribbon does, and what the marker on it is, both of which are true on a build with
+            no transport composed at all. The controls beside it come and go with playback.
+          -->
+          <DockPanel Margin="0,9,0,0">
+            <TextBlock DockPanel.Dock="Right" Style="{StaticResource Label}" VerticalAlignment="Center"
+                       Margin="16,0,0,0" TextTrimming="CharacterEllipsis"
+                       Text="{Binding TransportCaption}" />
+
+            <!-- Same rule as the workspace above: the gate reads the meeting, the row reads the
+                 transport, and they cannot be the same element. -->
+            <Grid Visibility="{Binding CanPlay, Converter={StaticResource BoolToVis}}">
+              <DockPanel DataContext="{Binding Playback}">
+                <Button DockPanel.Dock="Left" MinWidth="76" Content="{Binding PlayPauseLabel}"
+                        Command="{Binding PlayPauseCommand}" Style="{StaticResource PrimaryButton}" />
+                <Button DockPanel.Dock="Left" Content="Stop" Margin="8,0,0,0" Command="{Binding StopCommand}" />
+                <TextBlock DockPanel.Dock="Left" Margin="14,0,0,0" VerticalAlignment="Center"
+                           FontFamily="{StaticResource DataFont}" FontSize="12" Foreground="{StaticResource InkDim}">
+                  <Run Text="{Binding PositionText, Mode=OneWay}" /><Run Text=" / " /><Run Text="{Binding DurationText, Mode=OneWay}" />
+                </TextBlock>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                  <CheckBox Content="Mute You" IsChecked="{Binding MuteYou, Mode=TwoWay}" Margin="0,0,12,0"
+                            IsEnabled="{Binding HasYouTrack}" VerticalAlignment="Center" />
+                  <CheckBox Content="Mute Remote" IsChecked="{Binding MuteRemote, Mode=TwoWay}"
+                            IsEnabled="{Binding HasRemoteTrack}" VerticalAlignment="Center" />
+                </StackPanel>
+                <TextBlock Text="{Binding SeekNotice}" TextWrapping="Wrap" Margin="14,0,0,0" VerticalAlignment="Center"
+                           Foreground="{StaticResource Warn}"
+                           Visibility="{Binding HasSeekNotice, Converter={StaticResource BoolToVis}}" />
+              </DockPanel>
+            </Grid>
           </DockPanel>
-          </Grid>
         </StackPanel>
       </Border>
 
@@ -346,6 +358,7 @@
                    Background="Transparent" BorderThickness="0"
                    HorizontalContentAlignment="Stretch"
                    SelectionChanged="OnSummarySelectionChanged"
+                   ItemContainerStyle="{StaticResource ClaimRow}"
                    VirtualizingStackPanel.IsVirtualizing="True"
                    VirtualizingStackPanel.VirtualizationMode="Recycling"
                    ScrollViewer.HorizontalScrollBarVisibility="Disabled">
@@ -358,16 +371,61 @@
                                  Foreground="{StaticResource InkDim}" />
                       <TextBlock DockPanel.Dock="Right" Text="{Binding Certainty}" Style="{StaticResource Label}"
                                  Foreground="{StaticResource InkFaint}" HorizontalAlignment="Right" />
+
+                      <!-- Inferred is stated on the item itself and never promoted to explicit. -->
+                      <Border Style="{StaticResource EmptySlot}" Margin="10,0,0,0"
+                              Visibility="{Binding IsInferred, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="inferred" Style="{StaticResource SlotText}" />
+                      </Border>
                     </DockPanel>
-                    <TextBox Text="{Binding Text, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" Margin="0,3,0,0"
-                             BorderThickness="0" Background="Transparent" Foreground="{StaticResource Ink}" />
-                    <DockPanel Margin="0,4,0,0">
-                      <TextBlock DockPanel.Dock="Left" Text="{Binding Detail}" Style="{StaticResource Label}"
-                                 Foreground="{StaticResource InkDim}" />
-                      <TextBlock DockPanel.Dock="Right" Text="{Binding EvidenceLabel}" Style="{StaticResource Label}"
-                                 Foreground="{StaticResource You}" HorizontalAlignment="Right"
-                                 ToolTip="Click this item to open the transcript here and play from the source"
-                                 Visibility="{Binding HasEvidence, Converter={StaticResource BoolToVis}}" />
+
+                    <TextBox Text="{Binding Text, Mode=OneWay}" Style="{StaticResource ReadingText}" Margin="0,4,0,0" />
+
+                    <!--
+                      Owner, date, and the citations. What was never said is drawn as an empty slot
+                      rather than as the words "unknown", so a hole in the record reads as a hole.
+                    -->
+                    <DockPanel Margin="0,6,0,0">
+                      <ItemsControl DockPanel.Dock="Right" ItemsSource="{Binding Chips}"
+                                    HorizontalAlignment="Right"
+                                    ToolTip="Click this claim to open the transcript here and play from the source">
+                        <ItemsControl.ItemsPanel>
+                          <ItemsPanelTemplate>
+                            <StackPanel Orientation="Horizontal" />
+                          </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate>
+                            <Border Style="{StaticResource EvidenceChip}">
+                              <TextBlock Text="{Binding Label}" Style="{StaticResource EvidenceChipText}" />
+                            </Border>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+
+                      <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource Label}" Foreground="{StaticResource InkDim}"
+                                   VerticalAlignment="Center" Margin="0,0,8,0"
+                                   Visibility="{Binding HasOwner, Converter={StaticResource BoolToVis}}">
+                          <Run Text="owner " /><Run Text="{Binding Owner, Mode=OneWay}"
+                                                    Foreground="{StaticResource Ink}" />
+                        </TextBlock>
+                        <Border Style="{StaticResource EmptySlot}"
+                                Visibility="{Binding OwnerMissing, Converter={StaticResource BoolToVis}}">
+                          <TextBlock Text="no owner stated" Style="{StaticResource SlotText}" />
+                        </Border>
+
+                        <TextBlock Style="{StaticResource Label}" Foreground="{StaticResource InkDim}"
+                                   VerticalAlignment="Center" Margin="0,0,8,0"
+                                   Visibility="{Binding HasDue, Converter={StaticResource BoolToVis}}">
+                          <Run Text="due " /><Run Text="{Binding Due, Mode=OneWay}"
+                                                  Foreground="{StaticResource Ink}" />
+                        </TextBlock>
+                        <Border Style="{StaticResource EmptySlot}"
+                                Visibility="{Binding DueMissing, Converter={StaticResource BoolToVis}}">
+                          <TextBlock Text="no date stated" Style="{StaticResource SlotText}" />
+                        </Border>
+                      </StackPanel>
                     </DockPanel>
                   </StackPanel>
                 </Border>
@@ -383,6 +441,11 @@
             <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
               <TextBlock DockPanel.Dock="Left" Text="TRANSCRIPT" Style="{StaticResource SectionLabel}" VerticalAlignment="Center" />
               <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <TextBlock Style="{StaticResource Label}" VerticalAlignment="Center" Margin="0,0,12,0"
+                           Foreground="{StaticResource Focus}"
+                           Visibility="{Binding HasEvidenceFocus, Converter={StaticResource BoolToVis}}">
+                  <Run Text="jumped to " /><Run Text="{Binding EvidenceTimestamp, Mode=OneWay}" />
+                </TextBlock>
                 <TextBlock Text="Version" Style="{StaticResource Label}" VerticalAlignment="Center" Margin="0,0,6,0" />
                 <ComboBox MinWidth="60" ItemsSource="{Binding TranscriptRevisions}"
                           SelectedItem="{Binding SelectedTranscriptRevision, Mode=TwoWay}" />
@@ -433,13 +496,39 @@
                 <DataTemplate>
                   <Grid Margin="0,3">
                     <Grid.ColumnDefinitions>
-                      <ColumnDefinition Width="64" />
+                      <ColumnDefinition Width="10" />
+                      <ColumnDefinition Width="60" />
                       <ColumnDefinition Width="66" />
                       <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="{Binding Timestamp}" FontFamily="{StaticResource DataFont}"
+
+                    <!--
+                      Everything but the cited line recedes while a claim is being followed, and the
+                      cited one gets the focus bar. Compared at render time against the meeting's
+                      one cited segment, so marking a line costs no rebuilt list.
+                    -->
+                    <Grid.Opacity>
+                      <MultiBinding Converter="{StaticResource EvidenceFocus}">
+                        <Binding Path="SegmentId" />
+                        <Binding Path="DataContext.EvidenceSegmentId"
+                                 RelativeSource="{RelativeSource AncestorType=ListBox}" />
+                      </MultiBinding>
+                    </Grid.Opacity>
+
+                    <Border Grid.Column="0" Width="3" HorizontalAlignment="Left" Margin="0,1"
+                            CornerRadius="2" Background="{StaticResource Focus}">
+                      <Border.Visibility>
+                        <MultiBinding Converter="{StaticResource EvidenceFocus}" ConverterParameter="mark">
+                          <Binding Path="SegmentId" />
+                          <Binding Path="DataContext.EvidenceSegmentId"
+                                   RelativeSource="{RelativeSource AncestorType=ListBox}" />
+                        </MultiBinding>
+                      </Border.Visibility>
+                    </Border>
+
+                    <TextBlock Grid.Column="1" Text="{Binding Timestamp}" FontFamily="{StaticResource DataFont}"
                                FontSize="11" Foreground="{StaticResource InkFaint}" VerticalAlignment="Top" Margin="0,2,0,0" />
-                    <TextBlock Grid.Column="1" Text="{Binding Speaker}" FontFamily="{StaticResource DataFont}" FontSize="10"
+                    <TextBlock Grid.Column="2" Text="{Binding Speaker}" FontFamily="{StaticResource DataFont}" FontSize="10"
                                VerticalAlignment="Top" Margin="0,2,0,0" TextTrimming="CharacterEllipsis">
                       <TextBlock.Style>
                         <Style TargetType="TextBlock">
@@ -452,9 +541,7 @@
                         </Style>
                       </TextBlock.Style>
                     </TextBlock>
-                    <TextBox Grid.Column="2" Text="{Binding Text, Mode=OneWay}" IsReadOnly="True"
-                             BorderThickness="0" Background="Transparent" Foreground="{StaticResource Ink}"
-                             TextWrapping="Wrap" />
+                    <TextBox Grid.Column="3" Text="{Binding Text, Mode=OneWay}" Style="{StaticResource ReadingText}" />
                   </Grid>
                 </DataTemplate>
               </ListBox.ItemTemplate>

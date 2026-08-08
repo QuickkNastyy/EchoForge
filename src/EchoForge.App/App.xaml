@@ -35,6 +35,9 @@
     <!-- Side by side while there is room for two readable columns; stacked below that. -->
     <app:ColumnsForWidthConverter x:Key="ColumnsForWidth" />
 
+    <!-- Which transcript line the selected claim cites, and how far the rest recedes. -->
+    <lib:EvidenceFocusConverter x:Key="EvidenceFocus" />
+
     <!--
       Application-wide because more than one window needs it. Defined in a single window's
       resources it was present for that window and missing for the library one — a lookup that
@@ -830,6 +833,40 @@
       </Setter>
     </Style>
 
+    <!--
+      A summary claim in the list. Selecting one is how a reader follows it to its source, so the
+      selected row carries the focus bar rather than only a background: it is the same accent the
+      cited transcript line and the ribbon marker use, which is what ties the three together.
+    -->
+    <Style x:Key="ClaimRow" TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="Margin" Value="0,1" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <Grid>
+              <Border x:Name="Row" CornerRadius="6" Background="{TemplateBinding Background}"
+                      BorderBrush="Transparent" BorderThickness="1">
+                <ContentPresenter TextElement.Foreground="{TemplateBinding Foreground}" />
+              </Border>
+              <Border x:Name="Mark" Width="3" HorizontalAlignment="Left" Margin="0,7" CornerRadius="2"
+                      Background="{StaticResource Focus}" Visibility="Collapsed" />
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Row" Property="Background" Value="{StaticResource Sunken}" />
+              </Trigger>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter TargetName="Row" Property="Background" Value="{StaticResource Raised}" />
+                <Setter TargetName="Row" Property="BorderBrush" Value="{StaticResource Line}" />
+                <Setter TargetName="Mark" Property="Visibility" Value="Visible" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <!-- A small status pill, mono and uppercase, from the mockup. ChipWarn is the red variant. -->
     <Style x:Key="Chip" TargetType="Border">
       <Setter Property="CornerRadius" Value="3" />
@@ -837,6 +874,65 @@
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="Padding" Value="6,1" />
       <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+
+    <!--
+      A citation, as the design draws it: a mono timecode in the track's own colour, so a reader can
+      see whose words are being cited before reading a word of it.
+    -->
+    <Style x:Key="EvidenceChip" TargetType="Border">
+      <Setter Property="CornerRadius" Value="3" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Padding" Value="6,2" />
+      <Setter Property="Margin" Value="6,0,0,0" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="BorderBrush" Value="{StaticResource Remote}" />
+      <Setter Property="Background" Value="{StaticResource RemoteWash}" />
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding IsYou}" Value="True">
+          <Setter Property="BorderBrush" Value="{StaticResource You}" />
+          <Setter Property="Background" Value="{StaticResource YouWash}" />
+        </DataTrigger>
+        <DataTrigger Binding="{Binding IsResolved}" Value="False">
+          <Setter Property="BorderBrush" Value="{StaticResource LineStrong}" />
+          <Setter Property="Background" Value="Transparent" />
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+
+    <Style x:Key="EvidenceChipText" TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="{StaticResource DataFont}" />
+      <Setter Property="FontSize" Value="10.5" />
+      <Setter Property="Foreground" Value="{StaticResource Remote}" />
+      <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding IsYou}" Value="True">
+          <Setter Property="Foreground" Value="{StaticResource You}" />
+        </DataTrigger>
+        <DataTrigger Binding="{Binding IsResolved}" Value="False">
+          <Setter Property="Foreground" Value="{StaticResource InkFaint}" />
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+
+    <!--
+      A slot the meeting never filled. Dashed, and worded as an absence — "no owner stated" rather
+      than "Owner: unknown" — because the summary is not allowed to imply it looked and failed.
+    -->
+    <Style x:Key="EmptySlot" TargetType="Border">
+      <Setter Property="CornerRadius" Value="3" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="BorderBrush" Value="{StaticResource LineStrong}" />
+      <Setter Property="Padding" Value="7,1.5" />
+      <Setter Property="Margin" Value="0,0,8,0" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+
+    <Style x:Key="SlotText" TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="{StaticResource DataFont}" />
+      <Setter Property="FontSize" Value="10.5" />
+      <Setter Property="Foreground" Value="{StaticResource InkFaint}" />
+      <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
     </Style>
 
     <Style x:Key="ChipText" TargetType="TextBlock">
