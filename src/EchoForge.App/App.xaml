@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:app="clr-namespace:EchoForge.App"
              xmlns:local="clr-namespace:EchoForge.App"
+             xmlns:lib="clr-namespace:EchoForge.App.Library"
              xmlns:setup="clr-namespace:EchoForge.App.Setup"
              xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
              ShutdownMode="OnMainWindowClose">
@@ -27,6 +28,9 @@
 
     <!-- The red mark on the window bar, from the same flag the on-screen indicator reads. -->
     <app:RecordingAccentConverter x:Key="RecordingAccent" />
+
+    <!-- "2 recordings · 1h 13m" on a day heading, summed from the rows in that day. -->
+    <lib:DayTotalConverter x:Key="DayTotal" />
 
     <!--
       Application-wide because more than one window needs it. Defined in a single window's
@@ -387,6 +391,13 @@
                 … }" ended up on the recording screen. DisplayMemberPath does not survive a custom
                 ComboBox template, so every picker in the app carries a real ItemTemplate instead.
               -->
+              <!-- Nothing selected is a state with something to say, not a blank plate. The
+                   prompt comes from the picker's Tag, so each one asks for what it wants. -->
+              <TextBlock x:Name="Prompt" Margin="{TemplateBinding Padding}" VerticalAlignment="Center"
+                         IsHitTestVisible="False" Visibility="Collapsed"
+                         Foreground="{StaticResource InkFaint}" FontStyle="Italic"
+                         Text="{TemplateBinding Tag}" />
+
               <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center"
                                 HorizontalAlignment="Left" IsHitTestVisible="False"
                                 Content="{TemplateBinding SelectionBoxItem}"
@@ -407,6 +418,9 @@
               </Popup>
             </Grid>
             <ControlTemplate.Triggers>
+              <Trigger Property="SelectedIndex" Value="-1">
+                <Setter TargetName="Prompt" Property="Visibility" Value="Visible" />
+              </Trigger>
               <!-- Quieter ink, not a faded control: a picker that is unavailable should still be
                    readable, because what it is set to is often why it is unavailable. -->
               <Trigger Property="IsEnabled" Value="False">

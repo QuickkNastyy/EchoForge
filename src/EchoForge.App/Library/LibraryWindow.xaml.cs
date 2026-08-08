@@ -43,6 +43,27 @@ public partial class LibraryWindow : Window
     /// <summary>Returns from a recording to the list.</summary>
     private void OnBackToList(object sender, RoutedEventArgs e) => _library.CloseOpenMeeting();
 
+    /// <summary>
+    /// The rail's Record destination. The recorder is its own window here rather than a page in
+    /// this one, so the destination brings it forward — including from minimised — instead of
+    /// building a second view over the same controller.
+    /// </summary>
+    private void OnGoToRecorder(object sender, RoutedEventArgs e)
+    {
+        if (System.Windows.Application.Current?.MainWindow is not { } recorder)
+        {
+            return;
+        }
+
+        recorder.Show();
+        if (recorder.WindowState == WindowState.Minimized)
+        {
+            recorder.WindowState = WindowState.Normal;
+        }
+
+        recorder.Activate();
+    }
+
     /// <summary>Opens the meeting a result came from and scrolls to the line it matched.</summary>
     private void OnResultActivated(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {

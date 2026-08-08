@@ -465,10 +465,19 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
             // The action words follow the newly opened meeting's state, not the last one's.
             Changed(nameof(TranscribeActionLabel));
             Changed(nameof(SummarizeActionLabel));
+            Changed(nameof(WindowTitle));
         }
     }
 
     public bool HasOpenMeeting => _open is not null;
+
+    /// <summary>
+    /// What the window bar says: the destination, or the recording that is open in it. Named so a
+    /// second window in the taskbar is identifiable without switching to it.
+    /// </summary>
+    public string WindowTitle => _open is { } meeting
+        ? "EchoForge — " + meeting.Title
+        : "EchoForge — all recordings";
 
     // -- commands ------------------------------------------------------------------------------
 

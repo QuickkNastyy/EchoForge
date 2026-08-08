@@ -1,19 +1,52 @@
 <Window x:Class="EchoForge.App.Library.LibraryWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:app="clr-namespace:EchoForge.App"
         xmlns:lib="clr-namespace:EchoForge.App.Library"
-        Title="EchoForge — recordings" Height="860" Width="1240" MinHeight="560" MinWidth="900"
-        lib:MiniRibbon.Provider="{Binding LoadShapeProvider}"
-        Background="{StaticResource Surface}" Foreground="{StaticResource Ink}"
-        FontFamily="{StaticResource UiFont}">
+        Style="{StaticResource AppWindow}"
+        Title="{Binding WindowTitle, FallbackValue=EchoForge — all recordings}"
+        Height="860" Width="1320" MinHeight="620" MinWidth="960"
+        WindowStyle="None"
+        lib:MiniRibbon.Provider="{Binding LoadShapeProvider}">
 
-  <Grid Margin="22,18,22,18">
+  <Grid>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="Auto" />
+      <ColumnDefinition Width="*" />
+    </Grid.ColumnDefinitions>
+
+    <!-- The same rail as the recorder, with All recordings as the current destination. -->
+    <Border Grid.Column="0" Width="58" Background="{StaticResource Sunken}"
+            BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
+      <DockPanel Margin="0,10" LastChildFill="False">
+        <Button DockPanel.Dock="Top" HorizontalAlignment="Center" Style="{StaticResource RailButton}"
+                ToolTip="Record" AutomationProperties.Name="Record" Click="OnGoToRecorder">
+          <Path Style="{StaticResource RailIcon}" Data="{StaticResource IconRecord}" />
+        </Button>
+
+        <Button DockPanel.Dock="Top" HorizontalAlignment="Center" Style="{StaticResource RailButton}"
+                Tag="active" ToolTip="All recordings" AutomationProperties.Name="All recordings"
+                IsHitTestVisible="False">
+          <Path Style="{StaticResource RailIcon}" Data="{StaticResource IconLibrary}" />
+        </Button>
+
+        <Button DockPanel.Dock="Bottom" HorizontalAlignment="Center" Style="{StaticResource RailButton}"
+                ToolTip="Switch between the light and dark theme"
+                AutomationProperties.Name="Switch theme"
+                Command="{x:Static app:Theme.ToggleCommand}">
+          <Path Style="{StaticResource RailIcon}" Data="{StaticResource IconTheme}" />
+        </Button>
+      </DockPanel>
+    </Border>
+
+  <Grid Grid.Column="1" Margin="22,18,22,18">
 
     <!-- ============================ ALL RECORDINGS (scene 05) ============================ -->
     <DockPanel Visibility="{Binding HasOpenMeeting, Converter={StaticResource InvBoolToVis}}">
 
-      <TextBlock DockPanel.Dock="Top" Text="All recordings" Margin="0,0,0,12"
-                 FontFamily="{StaticResource DataFont}" FontSize="20" FontWeight="SemiBold" />
+      <!-- Prose is set in the platform's voice; mono is reserved for time and data. -->
+      <TextBlock DockPanel.Dock="Top" Text="All recordings" Margin="0,0,0,14"
+                 FontFamily="{StaticResource DisplayFont}" FontSize="21" FontWeight="SemiBold" />
 
       <!-- Search + filters -->
       <Grid DockPanel.Dock="Top" Margin="0,0,0,10">
@@ -88,11 +121,10 @@
           <GroupStyle>
             <GroupStyle.HeaderTemplate>
               <DataTemplate>
-                <DockPanel Margin="2,16,2,6">
+                <DockPanel Margin="2,18,2,6">
                   <TextBlock DockPanel.Dock="Left" Text="{Binding Name}" Style="{StaticResource Label}" />
-                  <TextBlock DockPanel.Dock="Right" Style="{StaticResource Label}" Foreground="{StaticResource InkFaint}">
-                    <Run Text="{Binding ItemCount, Mode=OneWay}" /><Run Text=" recording(s)" />
-                  </TextBlock>
+                  <TextBlock DockPanel.Dock="Right" Style="{StaticResource Label}" Foreground="{StaticResource InkFaint}"
+                             Text="{Binding Items, Converter={StaticResource DayTotal}}" />
                   <Border Height="1" Background="{StaticResource Line}" Margin="12,0" VerticalAlignment="Center" />
                 </DockPanel>
               </DataTemplate>
@@ -201,7 +233,7 @@
         <Button Grid.Column="0" Content="‹ All recordings" Click="OnBackToList" VerticalAlignment="Center" Margin="0,0,16,0" />
 
         <StackPanel Grid.Column="1" VerticalAlignment="Center">
-          <TextBlock Text="{Binding Title}" FontFamily="{StaticResource DataFont}" FontSize="19" FontWeight="SemiBold"
+          <TextBlock Text="{Binding Title}" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold"
                      TextTrimming="CharacterEllipsis" />
           <TextBlock Style="{StaticResource Label}" Foreground="{StaticResource InkFaint}" Margin="0,3,0,0">
             <Run Text="{Binding TranscriptModelText, Mode=OneWay}" />
@@ -431,6 +463,7 @@
         </Border>
       </Grid>
     </DockPanel>
+    </Grid>
     </Grid>
   </Grid>
 </Window>

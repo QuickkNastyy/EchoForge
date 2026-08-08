@@ -166,6 +166,18 @@ public sealed class MiniRibbon : FrameworkElement
         }
 
         ConversationShape shape = Shape ?? ConversationShape.Empty;
+
+        if (!shape.HasData)
+        {
+            // Nothing to draw is not the same as nothing to show. A recording with no transcript
+            // yet gets two quiet baselines, so the well reads as empty rather than as a hole where
+            // a control failed to render.
+            Pen quiet = Theme.Pen("Line", 1);
+            dc.DrawLine(quiet, new Point(0, top + laneHeight), new Point(w, top + laneHeight));
+            dc.DrawLine(quiet, new Point(0, top + (laneHeight * 2) + laneGap), new Point(w, top + (laneHeight * 2) + laneGap));
+            return;
+        }
+
         DrawLane(dc, shape.You, top, laneHeight, YouBrush, w);
         DrawLane(dc, shape.Remote, top + laneHeight + laneGap, laneHeight, RemoteBrush, w);
 

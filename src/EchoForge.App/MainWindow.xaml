@@ -175,7 +175,8 @@
           <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
         <Ellipse Grid.Column="0" Width="8" Height="8" Fill="{StaticResource Remote}" VerticalAlignment="Center" />
-        <ComboBox Grid.Column="1" ItemsSource="{Binding RenderDevices}" SelectedItem="{Binding SelectedRender}">
+        <ComboBox Grid.Column="1" Tag="Choose a playback device to record the other side from"
+                  ItemsSource="{Binding RenderDevices}" SelectedItem="{Binding SelectedRender}">
           <ComboBox.ItemTemplate>
             <DataTemplate>
               <Grid>
@@ -200,7 +201,8 @@
           <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
         <Ellipse Grid.Column="0" Width="8" Height="8" Fill="{StaticResource You}" VerticalAlignment="Center" />
-        <ComboBox Grid.Column="1" ItemsSource="{Binding CaptureDevices}" SelectedItem="{Binding SelectedCapture}">
+        <ComboBox Grid.Column="1" Tag="Choose a microphone to record yourself from"
+                  ItemsSource="{Binding CaptureDevices}" SelectedItem="{Binding SelectedCapture}">
           <ComboBox.ItemTemplate>
             <DataTemplate>
               <Grid>

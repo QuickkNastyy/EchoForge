@@ -91,6 +91,24 @@ public sealed class RenderedScreenTests
         screen.NoTextOverlaps();
     });
 
+    [Fact]
+    public void AMissingDeviceLeavesAPromptAndAnExplanation() => UiThread.Run(() =>
+    {
+        using RecorderHarness harness = new();
+
+        using Screen screen = UiThread.Render("01b-device-missing", () =>
+            new MainWindow { DataContext = harness.WithADeviceThatIsGone() }, 1180, 900);
+
+        screen.NoRecordToStringAnywhere();
+        screen.EveryVisibleButtonShowsItsLabel();
+
+        // The two pickers cannot show a device, so they must show what to do instead, and the
+        // screen must say why Start is unavailable rather than leaving three dead controls.
+        screen.EveryComboBoxPaintsItsSelection();
+        screen.TextIsPainted("is not available. Choose another before recording");
+        screen.NoTextOverlaps();
+    });
+
     // ---------------------------------------------------------------- the library window
 
     [Fact]
@@ -248,6 +266,32 @@ internal sealed class RecorderHarness : IDisposable
     public MainViewModel Ready()
     {
         MainViewModel model = new(_controller, new FakeDeviceCatalog(), new FakeSettingsStore(), new FakeConsentPrompt());
+        _owned.Add(model);
+        model.MarkReady();
+        Attach(model);
+        return model;
+    }
+
+    /// <summary>
+    /// Ready, but the endpoints remembered from last time are not on this machine any more.
+    ///
+    /// <para>
+    /// The state the real application was found in, and the one the fakes hid: two empty pickers
+    /// and a dead Start button, because the recorder refuses to substitute a different device.
+    /// </para>
+    /// </summary>
+    public MainViewModel WithADeviceThatIsGone()
+    {
+        FakeSettingsStore settings = new()
+        {
+            Current = new Contracts.Settings.AppSettings
+            {
+                RenderEndpointId = "an-endpoint-that-has-since-been-unplugged",
+                CaptureEndpointId = "another-one-that-has-gone",
+            },
+        };
+
+        MainViewModel model = new(_controller, new FakeDeviceCatalog(), settings, new FakeConsentPrompt());
         _owned.Add(model);
         model.MarkReady();
         Attach(model);
@@ -616,7 +660,10 @@ internal sealed class Screen : IDisposable
 
         foreach (ComboBox box in Visible<ComboBox>())
         {
-            if (box.SelectedItem is null)
+            // A picker with nothing selected and nothing to ask for — an empty revision list —
+            // is legitimately blank. One that has a selection, or a prompt to show instead, is
+            // not allowed to be.
+            if (box.SelectedItem is null && box.Tag is not string { Length: > 0 })
             {
                 continue;
             }
@@ -628,7 +675,7 @@ internal sealed class Screen : IDisposable
             long marks = Marks(selection);
             if (marks < MinimumGlyphPixels(1))
             {
-                empty.Add($"{box.SelectedItem.GetType().Name} [{marks} glyph pixels]");
+                empty.Add($"{box.SelectedItem?.GetType().Name ?? "prompt"} [{marks} glyph pixels]");
             }
         }
 

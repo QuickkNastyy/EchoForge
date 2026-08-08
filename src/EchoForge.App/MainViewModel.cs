@@ -91,7 +91,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         LoadDevices();
         RestoreSelection(_settings.Load());
 
-        Notice = recoverySummary;
+        // Added to, never assigned over. Restoring the selection is what discovers that a device
+        // from last time has gone, and assigning the recovery summary here — usually null — threw
+        // that away one line after computing it. The window then showed two empty pickers and a
+        // dead Start button with nothing on screen saying why.
+        Notice = Join(Notice, recoverySummary);
 
         _controller.StateChanged += OnControllerStateChanged;
         _controller.Notice += OnControllerNotice;
@@ -518,14 +522,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         IsReady = true;
         ReadinessMessage = string.Empty;
 
-        if (warning is not null)
-        {
-            Notice = warning;
-        }
-        else if (summary is not null)
-        {
-            Notice = summary;
-        }
+        // Same rule as the constructor: a device that has gone missing still needs saying, and
+        // recovery finishing is not a reason to stop saying it.
+        Notice = Join(Notice, warning ?? summary);
 
         OnChanged(nameof(IsReady));
         OnChanged(nameof(ReadinessMessage));
@@ -547,6 +546,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     public bool HasNotice => !string.IsNullOrWhiteSpace(Notice);
+
+    /// <summary>Keeps both halves of a notice when two things are worth saying at once.</summary>
+    private static string? Join(string? first, string? second)
+    {
+        if (string.IsNullOrWhiteSpace(first))
+        {
+            return string.IsNullOrWhiteSpace(second) ? null : second;
+        }
+
+        return string.IsNullOrWhiteSpace(second) || first.Contains(second, StringComparison.Ordinal)
+            ? first
+            : first + " " + second;
+    }
 
     /// <summary>The two-lane activity history the recording ribbon draws. Presentation only.</summary>
     public Recording.SpeechActivityHistory RibbonHistory => _activity;

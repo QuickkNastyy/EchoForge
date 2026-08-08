@@ -1,9 +1,10 @@
 <Window x:Class="EchoForge.App.Library.ManualHandoffWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Copy for ChatGPT / Claude" Height="640" Width="760"
-        WindowStartupLocation="CenterOwner"
-        Background="{StaticResource Surface}" Foreground="{StaticResource Ink}">
+        xmlns:app="clr-namespace:EchoForge.App"
+        Style="{StaticResource AppWindow}" WindowStyle="None"
+        Title="EchoForge — copy for ChatGPT or Claude" Height="660" Width="800"
+        WindowStartupLocation="CenterOwner">
 
   <DockPanel Margin="16">
 

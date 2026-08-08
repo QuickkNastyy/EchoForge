@@ -197,6 +197,37 @@ public sealed class ConsentAndDeviceTests : IDisposable
         Assert.DoesNotContain("A Different Device", vm.SelectedRender?.FriendlyName ?? string.Empty, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A device from last time that is no longer here leaves both pickers empty and Start dead,
+    /// which is correct — the recorder never silently substitutes another endpoint. What was
+    /// missing is the sentence saying so: the constructor worked it out and then assigned the
+    /// recovery summary, usually null, straight over the top of it.
+    /// </summary>
+    [Fact]
+    public void AMissingDeviceFromLastTimeIsExplainedRatherThanLeftBlank()
+    {
+        _settings.Current = _settings.Current with
+        {
+            RenderEndpointId = "an-endpoint-that-has-since-been-unplugged",
+            CaptureEndpointId = "capture-id",
+        };
+
+        using MainViewModel vm = NewViewModel();
+
+        Assert.Null(vm.SelectedRender);
+        Assert.False(vm.CanStart);
+
+        Assert.True(vm.HasNotice, "the window would show two empty pickers and no explanation");
+        Assert.Contains("playback device", vm.Notice, StringComparison.Ordinal);
+
+        // And it survives the readiness scan finishing, which used to overwrite it.
+        vm.MarkReady("Checked 3 interrupted recordings.");
+
+        Assert.True(vm.HasNotice);
+        Assert.Contains("playback device", vm.Notice, StringComparison.Ordinal);
+        Assert.Contains("Checked 3 interrupted recordings.", vm.Notice, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void DevicesCannotBeRefreshedDuringARecording()
     {
