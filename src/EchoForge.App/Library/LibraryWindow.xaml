@@ -177,8 +177,18 @@
     </DockPanel>
 
     <!-- ============================ ONE RECORDING (scenes 06/07) ============================ -->
-    <DockPanel Visibility="{Binding HasOpenMeeting, Converter={StaticResource BoolToVis}}"
-               DataContext="{Binding OpenMeeting}">
+    <!--
+      The visibility and the data context are deliberately on different elements.
+
+      Setting DataContext on an element re-scopes every other binding on that same element, so a
+      Visibility bound to HasOpenMeeting alongside DataContext="{Binding OpenMeeting}" was asking a
+      MeetingViewModel — or, with nothing open, null — for a property it has never had. The binding
+      found no source, Visibility fell back to its default of Visible, and the whole workspace was
+      drawn on top of the list: the back button over the "All recordings" heading, an empty amber
+      panel where the stale-summary warning would go, a blank transport, and a black timeline well.
+    -->
+    <Grid Visibility="{Binding HasOpenMeeting, Converter={StaticResource BoolToVis}}">
+    <DockPanel DataContext="{Binding OpenMeeting}">
 
       <!-- Header -->
       <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
@@ -223,8 +233,10 @@
                           MouseLeftButtonDown="OnTimelineRibbonClicked"
                           Cursor="Hand" ToolTip="Click to play from this moment" />
 
-          <DockPanel Margin="0,9,0,0" Visibility="{Binding CanPlay, Converter={StaticResource BoolToVis}}"
-                     DataContext="{Binding Playback}">
+          <!-- Same rule as the workspace above: the gate reads the meeting, the row reads the
+               transport, and they cannot be the same element. -->
+          <Grid Visibility="{Binding CanPlay, Converter={StaticResource BoolToVis}}">
+          <DockPanel DataContext="{Binding Playback}">
             <Button DockPanel.Dock="Left" MinWidth="72" Content="{Binding PlayPauseLabel}"
                     Command="{Binding PlayPauseCommand}" Style="{StaticResource PrimaryButton}" />
             <Button DockPanel.Dock="Left" Content="Stop" Margin="8,0,0,0" Command="{Binding StopCommand}" />
@@ -242,6 +254,7 @@
                        Foreground="#D8A657"
                        Visibility="{Binding HasSeekNotice, Converter={StaticResource BoolToVis}}" />
           </DockPanel>
+          </Grid>
         </StackPanel>
       </Border>
 
@@ -418,5 +431,6 @@
         </Border>
       </Grid>
     </DockPanel>
+    </Grid>
   </Grid>
 </Window>

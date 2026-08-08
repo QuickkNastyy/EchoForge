@@ -4,6 +4,7 @@
         xmlns:rec="clr-namespace:EchoForge.App.Recording"
         Title="EchoForge" Height="760" Width="880" MinHeight="560" MinWidth="720"
         Background="{StaticResource Surface}"
+        Foreground="{StaticResource Ink}"
         FontFamily="{StaticResource UiFont}"
         WindowStartupLocation="CenterScreen">
 
@@ -97,8 +98,9 @@
         </TextBlock>
 
         <TextBlock Text="{Binding Elapsed}" Margin="18,0,0,0" VerticalAlignment="Center"
-                   FontFamily="{StaticResource DataFont}" FontSize="40" FontWeight="Light"
-                   Foreground="{StaticResource Ink}" />
+                   FontFamily="{StaticResource DataFont}" FontSize="40" FontWeight="Medium"
+                   Foreground="{StaticResource Ink}"
+                   TextOptions.TextFormattingMode="Ideal" TextOptions.TextRenderingMode="ClearType" />
       </StackPanel>
 
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
@@ -359,17 +361,15 @@
                 <ColumnDefinition Width="Auto" />
               </Grid.ColumnDefinitions>
 
-              <ComboBox Grid.Column="0" ItemsSource="{Binding Backends}" SelectedItem="{Binding SelectedBackend}"
-                        DisplayMemberPath="Label" />
+              <ComboBox Grid.Column="0" Style="{StaticResource OptionPicker}"
+                        ItemsSource="{Binding Backends}" SelectedItem="{Binding SelectedBackend}" />
 
-              <ComboBox Grid.Column="1" Margin="10,0,0,0" MinWidth="200"
+              <ComboBox Grid.Column="1" Margin="10,0,0,0" MinWidth="200" Style="{StaticResource OptionPicker}"
                         ItemsSource="{Binding ComputeProfiles}" SelectedItem="{Binding SelectedComputeProfile}"
-                        DisplayMemberPath="Label"
                         IsEnabled="{Binding IsProductionSelected}" />
 
-              <ComboBox Grid.Column="2" Margin="10,0,0,0" MinWidth="160"
+              <ComboBox Grid.Column="2" Margin="10,0,0,0" MinWidth="160" Style="{StaticResource OptionPicker}"
                         ItemsSource="{Binding Languages}" SelectedItem="{Binding SelectedLanguage}"
-                        DisplayMemberPath="Label"
                         IsEnabled="{Binding IsProductionSelected}" />
             </Grid>
 
@@ -420,12 +420,11 @@
                   <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <ComboBox Grid.Column="0" ItemsSource="{Binding Revisions}"
-                          SelectedItem="{Binding SelectedRevision}" DisplayMemberPath="Label" />
+                <ComboBox Grid.Column="0" Style="{StaticResource OptionPicker}"
+                          ItemsSource="{Binding Revisions}" SelectedItem="{Binding SelectedRevision}" />
 
-                <ComboBox Grid.Column="1" Margin="10,0,0,0" MinWidth="150"
-                          ItemsSource="{Binding ExportFormats}"
-                          SelectedItem="{Binding SelectedExportFormat}" DisplayMemberPath="Label" />
+                <ComboBox Grid.Column="1" Margin="10,0,0,0" MinWidth="150" Style="{StaticResource OptionPicker}"
+                          ItemsSource="{Binding ExportFormats}" SelectedItem="{Binding SelectedExportFormat}" />
 
                 <Button Grid.Column="2" Margin="10,0,0,0" Content="Export…" Command="{Binding ExportCommand}" />
               </Grid>
@@ -551,8 +550,8 @@
             <StackPanel Margin="0,12,0,0"
                         Visibility="{Binding HasSummary, Converter={StaticResource BoolToVis}}">
               <TextBlock Text="{Binding SummarySummary}" Style="{StaticResource Label}" />
-              <ComboBox Margin="0,8,0,0" ItemsSource="{Binding Revisions}"
-                        SelectedItem="{Binding SelectedRevision}" DisplayMemberPath="Label" />
+              <ComboBox Margin="0,8,0,0" Style="{StaticResource OptionPicker}"
+                        ItemsSource="{Binding Revisions}" SelectedItem="{Binding SelectedRevision}" />
             </StackPanel>
           </StackPanel>
         </Border>

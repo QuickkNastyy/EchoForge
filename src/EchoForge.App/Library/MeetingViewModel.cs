@@ -183,7 +183,12 @@ public sealed class MeetingViewModel : INotifyPropertyChanged, IDisposable
 
     public bool HasSummary => _summary is not null;
 
-    public bool SummaryIsStale => _entry.SummaryIsStale;
+    /// <summary>
+    /// True only when there is a summary in hand and it came from a transcript version that is no
+    /// longer selected. Gated on the summary this view model actually read rather than on the index
+    /// entry alone, so a warning about a stale summary can never be shown where there is no summary.
+    /// </summary>
+    public bool SummaryIsStale => HasSummary && _entry.SummaryIsStale;
 
     /// <summary>
     /// Says which transcript the summary belongs to, rather than only that it is out of date.

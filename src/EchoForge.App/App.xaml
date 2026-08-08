@@ -42,10 +42,88 @@
     <FontFamily x:Key="UiFont">Segoe UI Variable Text, Segoe UI</FontFamily>
     <FontFamily x:Key="DataFont">Cascadia Mono, Consolas</FontFamily>
 
+    <!--
+      Deliberately without a Foreground.
+
+      An explicit Foreground here is set *on* every generated TextBlock, and an explicit local-ish
+      style value beats an inherited one — including the one a Button's ContentPresenter pushes down
+      for its own label. That is what painted the light primary button's text in near-white ink on a
+      near-white plate, and it is not fixable from inside the button template: a template-scoped
+      shadow style does not reach content the ContentPresenter generates for the templated parent.
+
+      So ink arrives by inheritance instead. Each window sets Foreground once (Control.Foreground is
+      TextElement.Foreground, so it flows to every TextBlock under it), and any control that needs
+      different ink for its own content — every button state, the chips, the lane labels — simply
+      sets its own and wins, because nothing overrides it on the way down.
+    -->
     <Style TargetType="TextBlock">
       <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
-      <Setter Property="Foreground" Value="{StaticResource Ink}" />
       <Setter Property="FontSize" Value="13" />
+    </Style>
+
+    <!--
+      Ink flows down from the window, and these are the controls that would otherwise stop it.
+
+      A ListBox, its items, and an ItemsControl all carry a themed Foreground of their own — the
+      system's near-black control text — so any TextBlock inside one inherits black on graphite
+      unless the container is told the palette too. The rest of the application never has to think
+      about it; content simply inherits the right ink wherever it is placed.
+    -->
+    <Style TargetType="ListBox">
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="{StaticResource Line}" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+
+    <Style TargetType="ListBoxItem">
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Padding" Value="6,4" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <Border x:Name="Row" CornerRadius="5" Background="{TemplateBinding Background}"
+                    BorderBrush="Transparent" BorderThickness="1" Padding="{TemplateBinding Padding}">
+              <ContentPresenter TextElement.Foreground="{TemplateBinding Foreground}" />
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Row" Property="Background" Value="{StaticResource Sunken}" />
+              </Trigger>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter TargetName="Row" Property="Background" Value="{StaticResource Raised}" />
+                <Setter TargetName="Row" Property="BorderBrush" Value="{StaticResource Line}" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style TargetType="ItemsControl">
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+    </Style>
+
+    <!-- Icon-only controls say what they are through these, so they have to be legible. -->
+    <Style TargetType="ToolTip">
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+      <Setter Property="Background" Value="{StaticResource Raised}" />
+      <Setter Property="BorderBrush" Value="{StaticResource Line}" />
+      <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ToolTip">
+            <Border CornerRadius="5" Padding="9,6"
+                    Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1">
+              <ContentPresenter TextElement.Foreground="{TemplateBinding Foreground}" />
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
 
     <Style x:Key="Label" TargetType="TextBlock">
@@ -74,25 +152,27 @@
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="Chrome" CornerRadius="6"
-                    Background="{TemplateBinding Background}"
-                    BorderBrush="{TemplateBinding BorderBrush}"
-                    BorderThickness="{TemplateBinding BorderThickness}">
-              <Border.Resources>
+            <Grid>
+              <Border x:Name="Chrome" CornerRadius="6"
+                      Background="{TemplateBinding Background}"
+                      BorderBrush="{TemplateBinding BorderBrush}"
+                      BorderThickness="{TemplateBinding BorderThickness}">
                 <!--
-                  The button's Content is a string, so the ContentPresenter generates a TextBlock
-                  for it. Left alone, that TextBlock picks up the application-wide implicit TextBlock
-                  style, whose explicit near-white Foreground beats the inherited TextElement one —
-                  which is how the primary (light) button rendered white-on-white until a hover
-                  darkened the chrome. This template-scoped empty style shadows the app one so the
-                  generated text has no explicit Foreground and inherits the button's own, set below.
+                  The label's ink is pushed down as an inherited value. It reaches the TextBlock the
+                  ContentPresenter generates for string content, and equally an explicit TextBlock a
+                  caller puts in the content, because the application-wide TextBlock style no longer
+                  sets a Foreground that would outrank it.
                 -->
-                <Style TargetType="TextBlock" />
-              </Border.Resources>
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
-                                Margin="{TemplateBinding Padding}"
-                                TextElement.Foreground="{TemplateBinding Foreground}" />
-            </Border>
+                <ContentPresenter x:Name="Label" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                  Margin="{TemplateBinding Padding}"
+                                  TextElement.Foreground="{TemplateBinding Foreground}" />
+              </Border>
+
+              <!-- Keyboard focus is a ring of its own, so it reads on the light plate and the dark
+                   one alike rather than recolouring a border that already means something. -->
+              <Border x:Name="FocusRing" CornerRadius="8" Margin="-2" IsHitTestVisible="False"
+                      BorderBrush="{StaticResource Focus}" BorderThickness="2" Visibility="Collapsed" />
+            </Grid>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
                 <Setter TargetName="Chrome" Property="Opacity" Value="0.88" />
@@ -100,14 +180,21 @@
               <!-- Pressed dims a touch further, so the click is felt on primary and secondary
                    alike without ever changing the text colour into or out of readability. -->
               <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="Chrome" Property="Opacity" Value="0.75" />
-              </Trigger>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.4" />
-                <Setter Property="Cursor" Value="Arrow" />
+                <Setter TargetName="Chrome" Property="Opacity" Value="0.74" />
               </Trigger>
               <Trigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="Chrome" Property="BorderBrush" Value="#9CC4F0" />
+                <Setter TargetName="FocusRing" Property="Visibility" Value="Visible" />
+              </Trigger>
+              <!--
+                Disabled is a quieter plate with quieter ink, not a faded copy of the enabled one.
+                Fading the whole button to 40% took the primary button's dark label down with its
+                light plate and left an unreadable grey slab, which is what shipped.
+              -->
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="Chrome" Property="Background" Value="#18222B" />
+                <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource Line}" />
+                <Setter TargetName="Label" Property="TextElement.Foreground" Value="{StaticResource InkFaint}" />
+                <Setter Property="Cursor" Value="Arrow" />
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -254,10 +341,20 @@
                 </ToggleButton.Template>
               </ToggleButton>
 
+              <!--
+                The closed box paints the selected item through the same template the drop-down
+                uses. All four of these matter: without the template bindings the presenter falls
+                back to its default one, which is a TextBlock bound straight to the item — and a
+                record's compiler-generated ToString is how "ComputeProfileOption { Id = cpu-int8,
+                … }" ended up on the recording screen. DisplayMemberPath does not survive a custom
+                ComboBox template, so every picker in the app carries a real ItemTemplate instead.
+              -->
               <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center"
                                 HorizontalAlignment="Left" IsHitTestVisible="False"
                                 Content="{TemplateBinding SelectionBoxItem}"
                                 ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
                                 TextElement.Foreground="{TemplateBinding Foreground}" />
 
               <Popup x:Name="PART_Popup" AllowsTransparency="True" Placement="Bottom"
@@ -272,8 +369,241 @@
               </Popup>
             </Grid>
             <ControlTemplate.Triggers>
+              <!-- Quieter ink, not a faded control: a picker that is unavailable should still be
+                   readable, because what it is set to is often why it is unavailable. -->
               <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.45" />
+                <Setter Property="Foreground" Value="{StaticResource InkFaint}" />
+                <Setter Property="Opacity" Value="0.8" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!--
+      Every selectable option in the application — backend, compute profile, language, export
+      format, revision — presents itself through a Label, so one template serves all of them and no
+      picker has to fall back on a DTO's ToString.
+    -->
+    <DataTemplate x:Key="OptionRow">
+      <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" />
+    </DataTemplate>
+
+    <Style x:Key="OptionPicker" TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
+      <Setter Property="ItemTemplate" Value="{StaticResource OptionRow}" />
+    </Style>
+
+    <!--
+      Text entry, themed. Without this the stock control paints a white field on the graphite
+      ground, which is how the glossary box rendered as a bright slab.
+    -->
+    <Style TargetType="TextBox">
+      <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+      <Setter Property="CaretBrush" Value="{StaticResource Ink}" />
+      <Setter Property="SelectionBrush" Value="{StaticResource Focus}" />
+      <Setter Property="Background" Value="{StaticResource Raised}" />
+      <Setter Property="BorderBrush" Value="{StaticResource Line}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Padding" Value="9,6" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TextBox">
+            <Border x:Name="Field" CornerRadius="6"
+                    Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}">
+              <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                            VerticalAlignment="Center" Focusable="False"
+                            HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden" />
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                <Setter TargetName="Field" Property="BorderBrush" Value="{StaticResource Focus}" />
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{StaticResource InkFaint}" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- Read-only prose set in a TextBox so it stays selectable, with none of the field chrome. -->
+    <Style x:Key="ReadingText" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+      <Setter Property="IsReadOnly" Value="True" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="Cursor" Value="IBeam" />
+    </Style>
+
+    <Style TargetType="CheckBox">
+      <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <StackPanel Orientation="Horizontal" Background="Transparent">
+              <Border x:Name="Box" Width="15" Height="15" CornerRadius="3" VerticalAlignment="Center"
+                      Background="{StaticResource Raised}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+                <Path x:Name="Tick" Margin="2" Stretch="Uniform" StrokeThickness="2"
+                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                      Data="M 0 4 L 3.2 7.4 L 9 1" Stroke="{StaticResource Ground}" Visibility="Collapsed" />
+              </Border>
+              <ContentPresenter Margin="8,0,0,0" VerticalAlignment="Center" RecognizesAccessKey="True"
+                                TextElement.Foreground="{TemplateBinding Foreground}" />
+            </StackPanel>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Box" Property="Background" Value="{StaticResource Ink}" />
+                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource Ink}" />
+                <Setter TargetName="Tick" Property="Visibility" Value="Visible" />
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource Focus}" />
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{StaticResource InkFaint}" />
+                <Setter TargetName="Box" Property="Opacity" Value="0.6" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!--
+      A disclosure, themed. The stock Aero expander draws a white circle-and-chevron that reads as
+      a foreign object on the graphite ground, and its header text all but disappeared.
+    -->
+    <Style TargetType="Expander">
+      <!-- Ink for the body it reveals; the header sets its own quieter tone below. -->
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Expander">
+            <DockPanel>
+              <ToggleButton x:Name="Header" DockPanel.Dock="Top" Cursor="Hand" Focusable="True"
+                            IsChecked="{Binding IsExpanded, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                <ToggleButton.Template>
+                  <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="Plate" Background="Transparent" Padding="0,4" CornerRadius="4">
+                      <StackPanel Orientation="Horizontal">
+                        <Path x:Name="Chevron" Width="9" Height="6" Stretch="Uniform" VerticalAlignment="Center"
+                              Data="M 0 0 L 4 4 L 8 0" StrokeThickness="1.6" StrokeStartLineCap="Round"
+                              StrokeEndLineCap="Round" Stroke="{StaticResource InkFaint}"
+                              RenderTransformOrigin="0.5,0.5">
+                          <Path.RenderTransform>
+                            <RotateTransform Angle="-90" />
+                          </Path.RenderTransform>
+                        </Path>
+                        <ContentPresenter Margin="9,0,0,0" VerticalAlignment="Center"
+                                          ContentSource="Content"
+                                          TextElement.Foreground="{StaticResource InkDim}" />
+                      </StackPanel>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                      <Trigger Property="IsChecked" Value="True">
+                        <Setter TargetName="Chevron" Property="RenderTransform">
+                          <Setter.Value>
+                            <RotateTransform Angle="0" />
+                          </Setter.Value>
+                        </Setter>
+                      </Trigger>
+                      <Trigger Property="IsMouseOver" Value="True">
+                        <Setter TargetName="Chevron" Property="Stroke" Value="{StaticResource Ink}" />
+                      </Trigger>
+                      <Trigger Property="IsKeyboardFocused" Value="True">
+                        <Setter TargetName="Plate" Property="Background" Value="{StaticResource Raised}" />
+                      </Trigger>
+                    </ControlTemplate.Triggers>
+                  </ControlTemplate>
+                </ToggleButton.Template>
+                <ContentPresenter ContentSource="Header" TextElement.Foreground="{StaticResource InkDim}" />
+              </ToggleButton>
+
+              <ContentPresenter x:Name="Body" Visibility="Collapsed" />
+            </DockPanel>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsExpanded" Value="True">
+                <Setter TargetName="Body" Property="Visibility" Value="Visible" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!--
+      The date range filter. Only the closed control is templated here; the calendar that drops out
+      of it is the platform's own, which is deliberate — it is a familiar, fully accessible control
+      and re-implementing a month grid to recolour it would be a poor trade.
+    -->
+    <Style TargetType="DatePickerTextBox">
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+      <Setter Property="CaretBrush" Value="{StaticResource Ink}" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="FontFamily" Value="{StaticResource DataFont}" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="DatePickerTextBox">
+            <Border Background="Transparent">
+              <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center" Focusable="False"
+                            HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden" />
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style TargetType="DatePicker">
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+      <Setter Property="Background" Value="{StaticResource Raised}" />
+      <Setter Property="BorderBrush" Value="{StaticResource Line}" />
+      <Setter Property="Height" Value="30" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="DatePicker">
+            <Border x:Name="Field" CornerRadius="6"
+                    Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1">
+              <Grid x:Name="PART_Root">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <DatePickerTextBox x:Name="PART_TextBox" Grid.Column="0" Margin="9,0,0,0"
+                                   VerticalContentAlignment="Center" />
+
+                <Button x:Name="PART_Button" Grid.Column="1" Width="26" Padding="0" Margin="0,1,1,1"
+                        Focusable="False" Background="Transparent" BorderThickness="0"
+                        ToolTip="Choose a date" AutomationProperties.Name="Choose a date">
+                  <Path Width="12" Height="12" Stretch="Uniform" StrokeThickness="1.5"
+                        Stroke="{StaticResource InkFaint}"
+                        Data="M3,4 H21 V20 H3 Z M3,9 H21 M8,2 V6 M16,2 V6" />
+                </Button>
+
+                <Popup x:Name="PART_Popup" Placement="Bottom" StaysOpen="False" AllowsTransparency="True" />
+                <Grid x:Name="PART_DisabledVisual" Visibility="Collapsed" />
+              </Grid>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                <Setter TargetName="Field" Property="BorderBrush" Value="{StaticResource Focus}" />
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="PART_DisabledVisual" Property="Visibility" Value="Visible" />
+                <Setter Property="Foreground" Value="{StaticResource InkFaint}" />
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
