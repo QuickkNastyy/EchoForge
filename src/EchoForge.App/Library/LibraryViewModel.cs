@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Windows.Threading;
 using EchoForge.Contracts.Library;
 using EchoForge.Contracts.Playback;
+using EchoForge.Contracts.Sessions;
 using EchoForge.Infrastructure.Library;
 using EchoForge.Infrastructure.Playback;
 using EchoForge.Infrastructure.Processing;
@@ -66,6 +67,43 @@ public sealed record MeetingRow(LibraryEntry Entry)
         : Entry.Duration.ToString(@"m\:ss", CultureInfo.InvariantCulture);
 
     public string Status => Entry.NeedsAttention ? "Needs attention" : Entry.State.ToString();
+
+    /// <summary>The local calendar day, as a heading: Today, Yesterday, or the weekday and date.</summary>
+    public string DayLabel
+    {
+        get
+        {
+            DateTime local = Entry.CreatedUtc.ToLocalTime().DateTime;
+            DateTime day = local.Date;
+            DateTime today = DateTime.Today;
+
+            if (day == today) { return "Today"; }
+            if (day == today.AddDays(-1)) { return "Yesterday"; }
+            return local.ToString("dddd d MMMM", CultureInfo.CurrentCulture);
+        }
+    }
+
+    /// <summary>"14:02 → 14:47 · 45m 09s", the row's second line.</summary>
+    public string Sub
+    {
+        get
+        {
+            DateTimeOffset start = (Entry.StartedUtc ?? Entry.CreatedUtc).ToLocalTime();
+            DateTimeOffset end = start + Entry.Duration;
+            return string.Create(
+                CultureInfo.CurrentCulture,
+                $"{start:HH:mm} → {end:HH:mm} · {Length}");
+        }
+    }
+
+    /// <summary>A short status word for the row's chip.</summary>
+    public string Chip => Entry.NeedsAttention ? "Needs attention"
+        : Entry.HasSummary ? "Ready"
+        : Entry.HasTranscript ? "Transcribed"
+        : Entry.State == SessionState.Recorded ? "Recorded"
+        : Entry.State.ToString();
+
+    public bool ChipIsWarn => Entry.NeedsAttention;
 
     public bool HasTranscript => Entry.HasTranscript;
 

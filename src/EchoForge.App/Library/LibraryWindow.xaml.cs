@@ -1,16 +1,18 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using EchoForge.Contracts.Library;
 using EchoForge.Core.Exports;
 
 namespace EchoForge.App.Library;
 
 /// <summary>
-/// The meeting library window.
+/// The recordings window: a full-width, day-grouped list that opens one recording into a workspace
+/// where its summary and transcript sit side by side.
 ///
 /// <para>
 /// Deliberately thin. Everything that decides anything lives in the view models; this file moves
-/// clicks to them and scrolls a list, so the behaviour worth testing is testable without a window.
+/// clicks to them, scrolls a list, and turns a click on the timeline into a seek.
 /// </para>
 /// </summary>
 public partial class LibraryWindow : Window
@@ -26,10 +28,20 @@ public partial class LibraryWindow : Window
         InitializeComponent();
         DataContext = library;
 
+        // Group the recordings by their local day. The default view is what the list already binds
+        // to, so grouping it here needs no second collection.
+        if (CollectionViewSource.GetDefaultView(library.Meetings) is { } view && view.GroupDescriptions.Count == 0)
+        {
+            view.GroupDescriptions.Add(new PropertyGroupDescription(nameof(MeetingRow.DayLabel)));
+        }
+
         // The view model outlives this window so reopening the library is instant. The transport
         // must not: closing the window releases the audio device and the prepared file.
         Closed += (_, _) => _library.CloseOpenMeeting();
     }
+
+    /// <summary>Returns from a recording to the list.</summary>
+    private void OnBackToList(object sender, RoutedEventArgs e) => _library.CloseOpenMeeting();
 
     /// <summary>Opens the meeting a result came from and scrolls to the line it matched.</summary>
     private void OnResultActivated(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -44,14 +56,12 @@ public partial class LibraryWindow : Window
     }
 
     /// <summary>
-    /// Follows a citation into the transcript.
-    ///
-    /// <para>
-    /// Resolution happens in the view model against the revision the citation names, so a summary
-    /// written from an older transcript opens that transcript rather than the selected one.
-    /// </para>
+    /// Selecting a summary claim follows its evidence: it opens the exact transcript revision the
+    /// summary cites — never the selected one — scrolls the transcript to the segment, highlights it,
+    /// and moves the audio to that moment. The two panes are already side by side, so there is no tab
+    /// to switch.
     /// </summary>
-    private void OnEvidenceActivated(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    private void OnSummarySelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (SummaryList.SelectedItem is not SummaryLine summary || _library.OpenMeeting is not { } meeting)
         {
@@ -64,27 +74,16 @@ public partial class LibraryWindow : Window
         }
 
         EvidenceLocation first = summary.Evidence[0];
-
         MeetingViewModel.EvidenceFollow follow = meeting.FollowEvidence(first);
 
-        // The audio moves either way. A citation whose transcript version is gone can still be
-        // heard at the time stored with it, and the transport says that the position is
-        // approximate rather than pretending the link was followed exactly.
+        // The audio moves either way. A citation whose transcript version is gone can still be heard
+        // at the time stored with it, and the transport says the position is approximate.
         meeting.Playback?.Cue(follow.Request);
 
-        if (follow.Line is not null)
-        {
-            // Switch to the transcript so the reader lands where the citation points.
-            if (FindTabControl() is { } tabs)
-            {
-                tabs.SelectedIndex = 0;
-            }
-
-            Reveal(follow.Line);
-        }
+        Reveal(follow.Line);
     }
 
-    /// <summary>Double-clicking a transcript line moves the audio to that moment.</summary>
+    /// <summary>Double-clicking a transcript line plays from that moment.</summary>
     private void OnTranscriptLineActivated(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
         if (TranscriptList.SelectedItem is not TranscriptLine line || _library.OpenMeeting is not { } meeting)
@@ -95,69 +94,44 @@ public partial class LibraryWindow : Window
         meeting.Playback?.Cue(meeting.RequestPlayback(line));
     }
 
-    // -- the timeline ----------------------------------------------------------------------------
-
-    /// <summary>
-    /// While the thumb is held, the clock stops writing to the slider.
-    ///
-    /// <para>
-    /// Without this the position update a fifth of a second later would drag the thumb back out
-    /// from under the pointer, which feels like the control fighting the user because it is.
-    /// </para>
-    /// </summary>
-    private void OnTimelineDragStarted(object sender, System.Windows.Controls.Primitives.DragStartedEventArgs e)
+    /// <summary>A click on the timeline ribbon seeks to that fraction of the recording.</summary>
+    private void OnTimelineRibbonClicked(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
-        if (_library.OpenMeeting?.Playback is { } playback)
-        {
-            playback.IsScrubbing = true;
-        }
-    }
-
-    private void OnTimelineDragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
-    {
-        if (_library.OpenMeeting?.Playback is not { } playback)
+        if (_library.OpenMeeting?.Playback is not { } playback || sender is not IInputElement element)
         {
             return;
         }
 
-        playback.IsScrubbing = false;
-        playback.SeekTo(Timeline.Value);
-    }
-
-    /// <summary>A click anywhere on the line seeks there, which is what a timeline should do.</summary>
-    private void OnTimelineClicked(object sender, System.Windows.Input.MouseButtonEventArgs e)
-    {
-        if (_library.OpenMeeting?.Playback is not { IsScrubbing: false } playback)
+        double width = TimelineRibbon.ActualWidth;
+        if (width <= 0)
         {
             return;
         }
 
-        playback.SeekTo(Timeline.Value);
+        double x = e.GetPosition(element).X;
+        double fraction = Math.Clamp(x / width, 0, 1);
+        playback.SeekTo(fraction * playback.DurationSeconds);
     }
 
-    private System.Windows.Controls.TabControl? FindTabControl() =>
-        VisualTreeHelperFind(this) as System.Windows.Controls.TabControl;
-
-    private static object? VisualTreeHelperFind(DependencyObject root)
+    /// <summary>Finds the first transcript line that contains the query, and reveals it.</summary>
+    private void OnTranscriptSearchChanged(object sender, TextChangedEventArgs e)
     {
-        int count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(root);
-
-        for (int i = 0; i < count; i++)
+        if (sender is not System.Windows.Controls.TextBox box || box.Text.Trim() is not { Length: > 0 } query || _library.OpenMeeting is null)
         {
-            DependencyObject child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            return;
+        }
 
-            if (child is System.Windows.Controls.TabControl found)
+        TranscriptLine? match = null;
+        foreach (object item in TranscriptList.Items)
+        {
+            if (item is TranscriptLine line && line.Text.Contains(query, StringComparison.OrdinalIgnoreCase))
             {
-                return found;
-            }
-
-            if (VisualTreeHelperFind(child) is { } nested)
-            {
-                return nested;
+                match = line;
+                break;
             }
         }
 
-        return null;
+        Reveal(match);
     }
 
     private void Reveal(TranscriptLine? line)
@@ -169,7 +143,6 @@ public partial class LibraryWindow : Window
 
         TranscriptList.SelectedItem = line;
         TranscriptList.ScrollIntoView(line);
-        TranscriptList.Focus();
     }
 
     private async void OnRegenerateSummary(object sender, RoutedEventArgs e)
@@ -178,7 +151,7 @@ public partial class LibraryWindow : Window
         {
             System.Windows.MessageBox.Show(
                 this,
-                "Generating a summary is done from the main window, on the recording that is open there.",
+                "Use Generate summary above, on the recording that is open.",
                 "EchoForge",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -216,8 +189,6 @@ public partial class LibraryWindow : Window
             _ => TranscriptExportFormat.Text,
         };
 
-        // The dialog already asked about replacing, so overwrite is the user's answer rather
-        // than a default.
         Report(meeting.ExportTranscript(format, dialog.FileName, overwrite: true));
     }
 
@@ -231,19 +202,13 @@ public partial class LibraryWindow : Window
         if (!meeting.HasTranscript)
         {
             System.Windows.MessageBox.Show(
-                this,
-                "There is no transcript to copy yet.",
-                "EchoForge",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
+                this, "There is no transcript to copy yet.", "EchoForge",
+                MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        // The dialog composes a preview and copies nothing until the user asks it to.
         ManualHandoffViewModel model = new(
-            meeting.BuildManualHandoff,
-            new WpfClipboardWriter(),
-            meeting.SuggestManualHandoffFileName());
+            meeting.BuildManualHandoff, new WpfClipboardWriter(), meeting.SuggestManualHandoffFileName());
 
         ManualHandoffWindow window = new(model) { Owner = this };
         window.ShowDialog();

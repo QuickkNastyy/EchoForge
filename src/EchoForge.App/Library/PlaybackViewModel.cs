@@ -151,14 +151,17 @@ public sealed class PlaybackViewModel : INotifyPropertyChanged, IDisposable
     public double PositionSeconds
     {
         get => _position;
-        private set { _position = value; Changed(); Changed(nameof(PositionText)); }
+        private set { _position = value; Changed(); Changed(nameof(PositionText)); Changed(nameof(PositionFraction)); }
     }
 
     public double DurationSeconds
     {
         get => _duration;
-        private set { _duration = value; Changed(); Changed(nameof(DurationText)); }
+        private set { _duration = value; Changed(); Changed(nameof(DurationText)); Changed(nameof(PositionFraction)); }
     }
+
+    /// <summary>Where the playhead sits on the timeline, 0..1. The ribbon draws it.</summary>
+    public double PositionFraction => _duration > 0 ? Math.Clamp(_position / _duration, 0, 1) : 0;
 
     public string PositionText => Format(PositionSeconds);
 

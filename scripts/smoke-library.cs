@@ -332,13 +332,13 @@ try
             List<DependencyObject> tree = [.. Descendants(window)];
 
             windowChecks.Add((tree.Any(node => node is DatePicker) ? "ok:" : "FAIL:") + "the date pickers are present");
-            windowChecks.Add((tree.Any(node => node is Slider { Name: "Timeline" }) ? "ok:" : "FAIL:") + "the timeline is present");
+            windowChecks.Add((tree.Any(node => node is EchoForge.App.Library.MiniRibbon) ? "ok:" : "FAIL:") + "the timeline ribbon is present");
 
             windowChecks.Add((tree.Any(node => node is Button b && b.Content is string t
-                && t.Contains("Delete meeting", StringComparison.Ordinal)) ? "ok:" : "FAIL:") + "the delete action is present");
+                && t.Contains("Delete", StringComparison.Ordinal)) ? "ok:" : "FAIL:") + "the delete action is present");
 
             windowChecks.Add((tree.Any(node => node is Button b && b.Content is string t
-                && t.Contains("Transcribe again", StringComparison.Ordinal)) ? "ok:" : "FAIL:") + "the reprocess actions are present");
+                && t.Contains("Transcribe", StringComparison.Ordinal)) ? "ok:" : "FAIL:") + "the reprocess actions are present");
 
             window.Close();
             Pump();
