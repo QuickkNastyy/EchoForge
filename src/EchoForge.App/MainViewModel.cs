@@ -156,8 +156,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         ArgumentNullException.ThrowIfNull(setup);
 
         Setup = setup;
+
+        // Which row is highlighted decides what Use offers and whether it can run at all.
+        setup.PropertyChanged += (_, e) =>
+        {
+            // Fully qualified: "Setup" alone binds to the property above, not the namespace.
+            if (e.PropertyName is nameof(EchoForge.App.Setup.SetupViewModel.SelectedModel) or null)
+            {
+                RaiseModelChoice();
+            }
+        };
+
         OnChanged(nameof(Setup));
         OnChanged(nameof(HasSetup));
+        RaiseModelChoice();
     });
 
     /// <summary>
@@ -317,6 +329,105 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private RelayCommand? _showMachineSettings;
     private RelayCommand? _showCompareSettings;
 
+    // -- choosing a model from the Models list -------------------------------------------------
+
+    /// <summary>
+    /// Makes the highlighted row on the Models page the model EchoForge actually uses.
+    ///
+    /// <para>
+    /// The Models list existed to install and repair, and selecting a row changed nothing else —
+    /// while the page told the reader that selecting one would "change what EchoForge uses". The
+    /// two pickers in Transcription and Meeting briefs were the only way to choose, which is not
+    /// discoverable from a page that lists every speech and summary model together.
+    /// </para>
+    ///
+    /// <para>
+    /// This does not become a second source of truth. It sets the same property the picker sets,
+    /// which persists the choice and refreshes exactly as it always did; the row is just another
+    /// way to reach it. A speech row drives transcription, a summary or comparison row drives the
+    /// meeting brief, because that is what each of those models is for.
+    /// </para>
+    /// </summary>
+    public RelayCommand UseSelectedModelCommand => _useSelectedModel ??= new RelayCommand(
+        UseSelectedModel,
+        CanUseSelectedModel);
+
+    private RelayCommand? _useSelectedModel;
+
+    /// <summary>
+    /// Enabled only when pressing it would actually change something.
+    ///
+    /// <para>
+    /// The surface that owns the choice arrives late, and on an installation where processing
+    /// never attached it does not arrive at all — so a button guarded only by "a row is selected"
+    /// was offered on exactly the screen that says transcription is unavailable, and did nothing
+    /// when pressed. A control that cannot act should not look like it can.
+    /// </para>
+    /// </summary>
+    private bool CanUseSelectedModel()
+    {
+        if (Setup?.SelectedModel is not { } row)
+        {
+            return false;
+        }
+
+        return IsSpeechRow(row)
+            ? Transcription?.AsrModels.Any(option => string.Equals(option.Id, row.Id, StringComparison.Ordinal)) is true
+            : Summary?.SummaryModels.Any(option => string.Equals(option.ModelId, row.Id, StringComparison.Ordinal)) is true;
+    }
+
+    /// <summary>The model id transcription is set to, so the Models list can mark its own row.</summary>
+    public string? ActiveAsrModelId => Transcription?.SelectedAsrModel.Id;
+
+    /// <summary>The model id meeting briefs are set to.</summary>
+    public string? ActiveSummaryModelId => Summary?.SelectedSummaryModel.ModelId;
+
+    /// <summary>What the Use button offers, named after the thing it will change.</summary>
+    public string UseSelectedModelLabel => Setup?.SelectedModel is { } row && IsSpeechRow(row)
+        ? "Use for transcription"
+        : "Use for meeting briefs";
+
+    private static bool IsSpeechRow(Setup.ModelManagementRow row) =>
+        string.Equals(row.Category, "SPEECH", StringComparison.OrdinalIgnoreCase);
+
+    private void UseSelectedModel()
+    {
+        if (Setup is not { SelectedModel: { } row })
+        {
+            return;
+        }
+
+        if (IsSpeechRow(row))
+        {
+            AsrModelOption? speech = Transcription?.AsrModels
+                .FirstOrDefault(option => string.Equals(option.Id, row.Id, StringComparison.Ordinal));
+            if (speech is not null && Transcription is not null)
+            {
+                Transcription.SelectedAsrModel = speech;
+            }
+        }
+        else
+        {
+            SummaryModelOption? brief = Summary?.SummaryModels
+                .FirstOrDefault(option => string.Equals(option.ModelId, row.Id, StringComparison.Ordinal));
+            if (brief is not null && Summary is not null)
+            {
+                Summary.SelectedSummaryModel = brief;
+            }
+        }
+
+        RaiseModelChoice();
+    }
+
+    /// <summary>Re-reads what is chosen, so the list's own markers follow the change.</summary>
+    private void RaiseModelChoice()
+    {
+        OnChanged(nameof(ActiveAsrModelId));
+        OnChanged(nameof(ActiveSummaryModelId));
+        OnChanged(nameof(UseSelectedModelLabel));
+        UseSelectedModelCommand.RaiseCanExecuteChanged();
+    }
+
     /// <summary>
     /// What happens to a recording once it stops, said on the page that produces one.
     ///
@@ -344,8 +455,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         Summary?.Dispose();
         Summary = summary;
 
+        // The picker and the Models list show the same choice, so a change in either has to reach
+        // the other. Both write the same property; this is only how the markers keep up.
+        summary.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(SummaryViewModel.SelectedSummaryModel) or null)
+            {
+                RaiseModelChoice();
+            }
+        };
+
         OnChanged(nameof(Summary));
         OnChanged(nameof(HasSummary));
+        RaiseModelChoice();
         Refresh();
     });
 
@@ -365,9 +487,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         Transcription?.Dispose();
         Transcription = transcription;
 
+        transcription.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(TranscriptionViewModel.SelectedAsrModel) or null)
+            {
+                RaiseModelChoice();
+            }
+        };
+
         OnChanged(nameof(Transcription));
         OnChanged(nameof(HasTranscription));
         OnChanged(nameof(ProcessingHandoff));
+        RaiseModelChoice();
         Refresh();
     });
 

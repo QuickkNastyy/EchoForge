@@ -52,6 +52,10 @@
     <!-- Sections whose view model has not arrived yet are not drawn empty. -->
     <app:NullToVisibilityConverter x:Key="NullToVis" />
 
+    <!-- Which row in the Models list is the model actually in use, per kind. -->
+    <app:ActiveModelConverter x:Key="ActiveModel" AsVisibility="True" />
+    <app:ActiveModelConverter x:Key="ActiveModelFlag" />
+
     <!-- Plan steps: what "immediate" and "grounded inference" look like at a glance. -->
     <lib:PlanTimingConverter x:Key="PlanTiming" />
     <lib:PlanBasisConverter x:Key="PlanBasis" />

@@ -12,3 +12,13 @@
 # eol=lf pins the working-tree form on every platform. Deliberately not "-text": these stay
 # diffable, they just stop being rewritten underneath the thing that hashes them.
 tests/fixtures/**/*.json text eol=lf
+
+# The pinned dependency closures, for the same reason and a worse consequence.
+#
+# WorkerEnvironmentInstaller.TryResolve hashes requirements-production.txt and compares it to the
+# stamp written when the environment was built. A CRLF checkout changes that hash, the environment
+# stops resolving, and the application reports "the worker environment does not match the packages
+# EchoForge expects" - so transcription and meeting briefs never attach at all. Nothing is actually
+# wrong with the installed packages; the file was rewritten underneath the thing that hashes it.
+worker/requirements-production.* text eol=lf
+worker-nemo/requirements-production.* text eol=lf

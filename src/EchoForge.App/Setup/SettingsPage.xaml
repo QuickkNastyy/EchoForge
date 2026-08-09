@@ -255,12 +255,22 @@
                   Visibility="{Binding ., Converter={StaticResource NullToVis}}">
             <StackPanel>
               <DockPanel Margin="0,0,0,10">
-                <Button DockPanel.Dock="Right" Content="Install selected model" Style="{StaticResource PrimaryButton}"
-                        Command="{Binding InstallSelectedModelCommand}" Margin="8,0,0,0" />
+                <!--
+                  Use is the primary action, because choosing what runs is the reason to be here;
+                  installing is what you do to a model you cannot use yet. Both act on the
+                  highlighted row. Use is bound through the page's own data context rather than
+                  this card's, because the choice lives with the pickers, not with provisioning.
+                -->
+                <Button DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Margin="8,0,0,0"
+                        Content="{Binding DataContext.UseSelectedModelLabel, ElementName=Page}"
+                        Command="{Binding DataContext.UseSelectedModelCommand, ElementName=Page}"
+                        ToolTip="Make the highlighted model the one EchoForge uses. The same choice as the picker in Transcription or Meeting briefs." />
+                <Button DockPanel.Dock="Right" Content="Install" Command="{Binding InstallSelectedModelCommand}"
+                        Margin="8,0,0,0" ToolTip="Download the highlighted model." />
                 <StackPanel VerticalAlignment="Center">
                   <TextBlock Text="MODELS" Style="{StaticResource Label}" FontWeight="Bold" />
                   <TextBlock Margin="0,3,0,0" FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource InkDim}"
-                             Text="Select a model to install, repair, or change what EchoForge uses." />
+                             Text="Click a model, then choose what to do with it. A speech model is used for transcription; a summary model writes the meeting brief." />
                 </StackPanel>
               </DockPanel>
 
@@ -290,8 +300,24 @@
                         <TextBlock Text="{Binding Category}" Style="{StaticResource ChipText}" />
                       </Border>
                       <StackPanel Grid.Column="1" Margin="10,0,12,0" VerticalAlignment="Center">
-                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"
-                                   TextTrimming="CharacterEllipsis" />
+                        <StackPanel Orientation="Horizontal">
+                          <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"
+                                     TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                          <!-- The row EchoForge is set to. Answers "which one is it using?" from
+                               the list itself, rather than from two pickers on other pages. -->
+                          <Border Style="{StaticResource PillOk}" Margin="9,0,0,0" Padding="8,0" Height="18">
+                            <Border.Visibility>
+                              <MultiBinding Converter="{StaticResource ActiveModel}">
+                                <Binding Path="Id" />
+                                <Binding Path="Category" />
+                                <Binding Path="DataContext.ActiveAsrModelId" ElementName="Page" />
+                                <Binding Path="DataContext.ActiveSummaryModelId" ElementName="Page" />
+                              </MultiBinding>
+                            </Border.Visibility>
+                            <TextBlock Text="IN USE" Style="{StaticResource PillText}" FontSize="9.5"
+                                       Foreground="{DynamicResource Focus}" />
+                          </Border>
+                        </StackPanel>
                         <TextBlock Text="{Binding Detail}" FontSize="11.5" TextWrapping="Wrap"
                                    Foreground="{DynamicResource InkDim}" Margin="0,2,0,0" />
                       </StackPanel>

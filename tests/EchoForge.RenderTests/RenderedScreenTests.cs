@@ -375,7 +375,7 @@ public sealed class RenderedScreenTests
             1180, 900, harness.WaitForScan);
 
         models.NoRecordToStringAnywhere();
-        models.TextIsPainted("Select a model to install");
+        models.TextIsPainted("Click a model, then choose what to do with it");
         models.NoTextOverlaps();
     });
 
@@ -1796,4 +1796,66 @@ internal sealed class Screen : IDisposable
     }
 
     private static IEnumerable<FrameworkElement> Descendants(DependencyObject root) => Walk(root).Skip(1);
+}
+
+// ==================================================================== choosing a model
+
+/// <summary>
+/// The Models list is where a reader goes to change what runs, so pressing Use there has to move
+/// the same setting the picker moves.
+///
+/// <para>
+/// Lives here rather than in the unit tests because it needs the composed surfaces — the recorder
+/// harness is the only place transcription and summarisation are attached to one view model, which
+/// is exactly the arrangement being tested.
+/// </para>
+/// </summary>
+public sealed class ChoosingAModelTests
+{
+    [Fact]
+    public void UsingASummaryRowChangesTheModelThatWritesTheBrief() => UiThread.Run(() =>
+    {
+        using RecorderHarness harness = new();
+        MainViewModel host = harness.Ready();
+
+        Assert.NotNull(host.Summary);
+        SummaryModelOption target = host.Summary!.SummaryModels
+            .First(option => option.ModelId != host.Summary.SelectedSummaryModel.ModelId);
+
+        host.Summary.SelectedSummaryModel = target;
+
+        Assert.Equal(target.ModelId, host.Summary.SelectedSummaryModel.ModelId);
+        // The list marks the row the picker just moved to, so both views agree.
+        Assert.Equal(target.ModelId, host.ActiveSummaryModelId);
+    });
+
+    [Fact]
+    public void UsingASpeechRowChangesTheModelThatTranscribes() => UiThread.Run(() =>
+    {
+        using RecorderHarness harness = new();
+        MainViewModel host = harness.Ready();
+
+        Assert.NotNull(host.Transcription);
+        AsrModelOption target = host.Transcription!.AsrModels
+            .First(option => option.Id != host.Transcription.SelectedAsrModel.Id);
+
+        host.Transcription.SelectedAsrModel = target;
+
+        Assert.Equal(target.Id, host.Transcription.SelectedAsrModel.Id);
+        Assert.Equal(target.Id, host.ActiveAsrModelId);
+    });
+
+    /// <summary>
+    /// The button is offered only when it can act. Setup never attaches on an installation where
+    /// provisioning is unavailable, and an enabled control that silently does nothing is worse
+    /// than one that is plainly unavailable.
+    /// </summary>
+    [Fact]
+    public void UseIsUnavailableUntilThereIsBothARowAndSomewhereToPutIt() => UiThread.Run(() =>
+    {
+        using RecorderHarness harness = new();
+        MainViewModel host = harness.Ready();
+
+        Assert.False(host.UseSelectedModelCommand.CanExecute(null));
+    });
 }
