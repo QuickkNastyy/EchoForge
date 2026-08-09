@@ -1,0 +1,14 @@
+# Let Git decide what is text, and normalise it to LF in the repository as usual.
+* text=auto
+
+# Fixtures whose bytes are the contract.
+#
+# corpus.json records a SHA-256 over each transcript file, and the meeting-brief tests recompute
+# it. Line endings are part of that hash, so a checkout on a machine with core.autocrlf=true - the
+# Windows default - rewrites these files to CRLF and every digest stops matching. The repository
+# copies are correct; it is the working tree that drifts, which makes it look like the fixtures
+# are wrong when nothing is.
+#
+# eol=lf pins the working-tree form on every platform. Deliberately not "-text": these stay
+# diffable, they just stop being rewritten underneath the thing that hashes them.
+tests/fixtures/**/*.json text eol=lf

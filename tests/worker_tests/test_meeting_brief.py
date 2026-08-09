@@ -299,3 +299,43 @@ def test_each_scenario_transcript_matches_the_digest_recorded_beside_it(meeting_
     payload = (CORPUS / entry["transcript_path"]).read_bytes()
 
     assert hashlib.sha256(payload).hexdigest() == entry["transcript_sha256"]
+
+
+# -- internal identifiers never reach the reader ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "The beta ships Monday (decision-001).",
+        "The beta ships Monday [decision-001, action-002].",
+        "The beta ships Monday, as recorded in decision-001.",
+        "According to decision-001, the beta ships Monday.",
+        "Per decision-001 and action-002, the beta ships Monday.",
+        "The beta ships Monday decision-001",
+    ],
+)
+def test_no_shape_of_a_fact_id_survives_into_prose(written: str) -> None:
+    """A brief is read; fact IDs are plumbing.
+
+    Evidence already reaches the reader as a chip they can click, so an identifier in the prose is
+    noise at best. The bracketed form was handled from the start and the bare form was not, which
+    is how ``as recorded in decision-001`` reached a real brief. Both are covered here because the
+    model chooses the shape, not us.
+    """
+    from echoforge_worker.local_summary import _clean_parenthetical_fact_ids
+
+    cleaned = _clean_parenthetical_fact_ids(written, ["decision-001", "action-002"])
+
+    assert "decision-001" not in cleaned
+    assert "action-002" not in cleaned
+    assert cleaned.startswith("The beta ships Monday")
+
+
+def test_cleaning_leaves_prose_that_cites_nothing_exactly_as_written() -> None:
+    """The sanitiser removes identifiers, and is not licensed to edit anything else."""
+    from echoforge_worker.local_summary import _clean_parenthetical_fact_ids
+
+    written = "Alex will prepare the release notes by Friday, which the team confirmed."
+
+    assert _clean_parenthetical_fact_ids(written, ["decision-001"]) == written

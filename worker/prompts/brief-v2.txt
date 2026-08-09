@@ -22,8 +22,27 @@ exist is discarded whole, so inventing an ID does not smuggle a claim through - 
 
 ### summary
 
-What the meeting was about, what happened, what changed, and what the outcome was. Write it for
-somebody who was not there, in a few substantial sentences.
+What the meeting was about, what happened in it, what changed, and where it left things. Write it
+for somebody who was not there and has to catch up without listening to the recording.
+
+**Write several paragraphs, not one.** Each entry in `summary` is its own paragraph carrying its
+own evidence, so use as many as the meeting earns. A useful shape for most meetings:
+
+- what this was, who was in it, and what it set out to do;
+- what actually happened, in the order it happened, following the discussion as it developed and
+  through any point where it changed direction;
+- what was settled, what was left hanging, and where things stand now.
+
+**Be specific.** Name the people, systems, numbers, amounts, dates and constraints that were
+actually said. "They discussed pricing" is a wasted sentence; "they settled on forty dollars a seat
+for the first year, with the discount reviewed at renewal" is the sentence the reader opened this
+document for. The particulars are the value here - a reader who wanted the gist could have read the
+first line.
+
+Depth is not padding, and a longer summary must be longer because it holds more of the meeting.
+Restating one point in more words, or filling space with generalities about collaboration and next
+steps, makes the document worse rather than fuller. If the meeting genuinely supports only three
+sentences, write three good ones.
 
 **Always write one.** Every other section here may be empty, and several of them usually should be
 - but a brief with no summary is not a brief. This holds most strongly for the meetings that

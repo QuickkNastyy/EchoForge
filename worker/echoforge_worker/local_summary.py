@@ -857,6 +857,13 @@ def _supported_brief(
     result: dict[str, Any] = {section: [] for section in BRIEF_SECTIONS}
     result["action_plan"] = []
 
+    # Every identifier in play, not just the ones a block admits to resting on. A block that
+    # mentions a *neighbouring* fact's ID in its prose - "this follows from decision-004" while
+    # naming only decision-002 in its own fact_ids - was never cleaned, because the sanitiser was
+    # handed that block's own list. The reader saw the identifier. These names are internal and
+    # generated, so no meeting can have uttered one, and matching the full set cannot cost a claim.
+    known_fact_ids = list(facts)
+
     def resolve(raw_ids: Any) -> tuple[list[str], list[str]] | None:
         if not isinstance(raw_ids, list):
             return None
@@ -885,7 +892,7 @@ def _supported_brief(
             resolved = resolve(entry.get("fact_ids"))
             if resolved is None:
                 continue
-            cleaned = _clean_parenthetical_fact_ids(text.strip(), resolved[0])
+            cleaned = _clean_parenthetical_fact_ids(text.strip(), known_fact_ids)
             # The same sentence under two headings is the duplication this brief exists to avoid.
             if not cleaned or cleaned.casefold() in seen:
                 continue
@@ -925,8 +932,8 @@ def _supported_brief(
             detail = entry.get("detail")
             result["action_plan"].append(
                 {
-                    "title": _clean_parenthetical_fact_ids(title.strip(), resolved[0]),
-                    "detail": _clean_parenthetical_fact_ids(detail.strip(), resolved[0])
+                    "title": _clean_parenthetical_fact_ids(title.strip(), known_fact_ids),
+                    "detail": _clean_parenthetical_fact_ids(detail.strip(), known_fact_ids)
                     if isinstance(detail, str) and detail.strip()
                     else "",
                     "audience": audience,
@@ -987,22 +994,54 @@ def _best_due_date(named: Sequence[Candidate], request: Any) -> tuple[str | None
     return best
 
 
+#: Ways a model introduces a citation before naming one. Removed along with the ID it introduces,
+#: because deleting only the ID leaves prose trailing off into "as recorded in."
+_CITATION_LEAD: Final[str] = (
+    r"(?:as\s+(?:recorded|noted|stated|decided|described|captured|set\s+out)\s+in"
+    r"|according\s+to|based\s+on|per|see(?:\s+also)?|cf\.?|from|ref(?:erence)?)"
+)
+
+
 def _clean_parenthetical_fact_ids(text: str, fact_ids: Sequence[str]) -> str:
     """Hide exact internal citation markers without rewriting narrative claims.
 
-    Some models copy an ID into otherwise good prose as ``(decision-001)``. Evidence remains on
-    the block and is available to the UI, so that marker is presentation noise. Only a bracketed
-    group made entirely from the block's own IDs is removed; arbitrary prose is never searched and
-    replaced.
+    Models copy an ID into otherwise good prose in two shapes: bracketed, as ``(decision-001)``,
+    and bare, as ``the beta ships Monday, as recorded in decision-001``. Both are presentation
+    noise - the evidence is already on the block, and the UI shows it as a chip a reader can click
+    - and both were reaching the brief, because only the bracketed form was ever removed.
+
+    What is matched is still exact: the block's own identifiers, and nothing else. These are
+    internal names of the form ``decision-001``, so a meeting cannot have said one, and removing
+    one cannot delete a claim. Any citation lead-in immediately before the ID goes with it, so the
+    sentence closes cleanly rather than ending mid-phrase. Arbitrary prose is never searched.
     """
     if not fact_ids:
         return text
+
     identifiers = "|".join(re.escape(identifier) for identifier in fact_ids)
     one = rf"(?:{identifiers})"
     group = rf"{one}(?:\s*(?:,|;|and)\s*{one})*"
+
+    # Bracketed first: the whole parenthetical goes, punctuation and all.
     cleaned = re.sub(rf"\s*[\(\[]\s*{group}\s*[\)\]]", "", text, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
-    return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+
+    # Then bare, with whatever introduced it and any punctuation holding it to the sentence.
+    cleaned = re.sub(
+        rf"\s*(?:[,;:]|\s-{{1,2}}|—)?\s*(?:{_CITATION_LEAD}\s+)?{group}",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    # Tidy what the removal left behind: space before punctuation, a comma pushed against a full
+    # stop, doubled spaces, and a sentence that now opens on its own punctuation.
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    cleaned = re.sub(r",\s*([.;:!?])", r"\1", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"^\s*[,;:.\-—]\s*", "", cleaned).strip()
+
+    # Re-open the sentence in upper case when the removal took its first words with it.
+    return cleaned[:1].upper() + cleaned[1:] if cleaned else cleaned
 
 
 def _apply_merges(group: Sequence[Candidate], merges: Any) -> list[Candidate]:

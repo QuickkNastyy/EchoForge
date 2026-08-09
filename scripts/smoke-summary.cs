@@ -253,10 +253,23 @@ HashSet<string> internalFactIds =
     .. summary.AllItems.Select(item => item.Id),
     .. summary.ActionItems.Select(action => action.Id),
 ];
+// Every piece of prose a reader is actually shown: the brief's blocks, and the title and detail
+// of each plan step.
+//
+// This used to read summary.Narrative, and required it to be non-null. New documents carry a
+// brief and set narrative to null on purpose, so the check reported a leak on every run whatever
+// the model wrote - and the one real leak it should have caught, a bare "as recorded in
+// decision-001" in a brief block, it was not looking at.
+IEnumerable<string> readerFacingProse =
+[
+    .. (summary.Brief?.AllBlocks ?? []).Select(block => block.Text),
+    .. (summary.Brief?.ActionPlan ?? []).SelectMany(step => new[] { step.Title, step.Detail }),
+    .. (summary.Narrative?.AllBlocks ?? []).Select(block => block.Text),
+];
+
 Check(
-    summary.Narrative is not null &&
-    summary.Narrative.AllBlocks.All(block =>
-        internalFactIds.All(id => !block.Text.Contains(id, StringComparison.OrdinalIgnoreCase))),
+    readerFacingProse.All(prose =>
+        internalFactIds.All(id => !(prose ?? string.Empty).Contains(id, StringComparison.OrdinalIgnoreCase))),
     "internal fact IDs stay behind the evidence UI instead of leaking into prose");
 
 Check(
