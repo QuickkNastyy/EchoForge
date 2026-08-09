@@ -1,0 +1,528 @@
+<UserControl x:Class="EchoForge.App.Library.RecordingsPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:lib="clr-namespace:EchoForge.App.Library"
+             x:Name="Page"
+             lib:MiniRibbon.Provider="{Binding LoadShapeProvider}">
+
+  <!--
+    The meeting workspace: the list and the meeting that is open, in one page.
+
+    Opening a recording used to mean a second window, and processing it meant going back to the
+    recorder to press Transcribe and then Generate summary in the right order. Both halves live
+    here now, and the brief - not the transcript, and not the extracted-fact cards - is what the
+    page is mostly made of.
+  -->
+  <Grid Margin="18,16,18,16">
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="280" MinWidth="240" />
+      <ColumnDefinition Width="12" />
+      <ColumnDefinition Width="*" MinWidth="420" />
+    </Grid.ColumnDefinitions>
+
+    <!-- ============================ LEFT: every recording ============================ -->
+    <DockPanel Grid.Column="0">
+      <TextBlock DockPanel.Dock="Top" Text="Library" Margin="2,0,0,12"
+                 FontFamily="{StaticResource DisplayFont}" FontSize="19" FontWeight="SemiBold" />
+
+      <!--
+        One search field. Enter searches; the two small glyph buttons keep the same commands the
+        old Find and Clear buttons ran, without spending half the column on labels.
+      -->
+      <Border DockPanel.Dock="Top" Background="{DynamicResource Sunken}" BorderBrush="{DynamicResource Line}"
+              BorderThickness="1" CornerRadius="9" Padding="8,1" Margin="0,0,0,8">
+        <DockPanel>
+          <Button DockPanel.Dock="Left" Command="{Binding SearchCommand}" Padding="4,2" Margin="0,2"
+                  Background="Transparent" BorderThickness="0"
+                  ToolTip="Search" AutomationProperties.Name="Search">
+            <TextBlock Text="⌕" FontSize="14" Foreground="{DynamicResource InkFaint}" />
+          </Button>
+          <Button DockPanel.Dock="Right" Command="{Binding ClearSearchCommand}" Padding="5,2" Margin="0,2"
+                  Background="Transparent" BorderThickness="0"
+                  ToolTip="Clear the search" AutomationProperties.Name="Clear the search">
+            <TextBlock Text="✕" FontSize="11" Foreground="{DynamicResource InkFaint}" />
+          </Button>
+          <TextBox VerticalAlignment="Center" BorderThickness="0" Background="Transparent"
+                   Foreground="{DynamicResource Ink}" Margin="2,0,0,0"
+                   Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                   ToolTip="Search every recording and transcript, then press Enter. Put a phrase in quotes to match it exactly.">
+            <TextBox.InputBindings>
+              <KeyBinding Key="Return" Command="{Binding SearchCommand}" />
+            </TextBox.InputBindings>
+          </TextBox>
+        </DockPanel>
+      </Border>
+
+      <Expander DockPanel.Dock="Top" Header="Filter by date" Margin="0,0,0,8"
+                Foreground="{DynamicResource InkDim}">
+        <StackPanel Margin="0,6,0,0">
+          <DockPanel Margin="0,0,0,5">
+            <TextBlock DockPanel.Dock="Left" Text="From" Style="{StaticResource Label}"
+                       VerticalAlignment="Center" Width="40" />
+            <DatePicker SelectedDate="{Binding FromDate, Mode=TwoWay}" />
+          </DockPanel>
+          <DockPanel Margin="0,0,0,6">
+            <TextBlock DockPanel.Dock="Left" Text="To" Style="{StaticResource Label}"
+                       VerticalAlignment="Center" Width="40" />
+            <DatePicker SelectedDate="{Binding ToDate, Mode=TwoWay}" />
+          </DockPanel>
+          <WrapPanel>
+            <Button Content="Clear" Command="{Binding ClearDatesCommand}" Margin="0,0,6,0" />
+            <Button Content="Refresh" Command="{Binding RefreshCommand}" Margin="0,0,6,0" />
+            <Button Content="Rebuild index" Command="{Binding RebuildCommand}"
+                    ToolTip="The index is a cache. Rebuilding it never touches your recordings." />
+          </WrapPanel>
+        </StackPanel>
+      </Expander>
+
+      <TextBlock DockPanel.Dock="Top" Text="{Binding Status}" TextWrapping="Wrap" Margin="0,0,0,8"
+                 Foreground="{DynamicResource InkDim}"
+                 Visibility="{Binding HasStatus, Converter={StaticResource BoolToVis}}" />
+
+      <ListBox x:Name="ResultsList" DockPanel.Dock="Top" MaxHeight="200" Margin="0,0,0,8"
+               ItemsSource="{Binding Results}"
+               Visibility="{Binding HasResults, Converter={StaticResource BoolToVis}}"
+               MouseDoubleClick="OnResultActivated"
+               Background="{DynamicResource Sunken}"
+               VirtualizingStackPanel.IsVirtualizing="True"
+               VirtualizingStackPanel.VirtualizationMode="Recycling"
+               ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+        <ListBox.ItemTemplate>
+          <DataTemplate>
+            <StackPanel Margin="2,3">
+              <TextBlock Text="{Binding Where}" Style="{StaticResource Label}" Foreground="{DynamicResource You}" />
+              <TextBlock Text="{Binding Text}" TextWrapping="Wrap" />
+              <TextBlock Text="{Binding MeetingTitle}" Style="{StaticResource Label}" Foreground="{DynamicResource InkDim}" />
+            </StackPanel>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+
+      <ListBox x:Name="MeetingsList" ItemsSource="{Binding Meetings}"
+               SelectedItem="{Binding SelectedMeeting, Mode=TwoWay}"
+               Background="Transparent" BorderThickness="0"
+               HorizontalContentAlignment="Stretch"
+               VirtualizingStackPanel.IsVirtualizing="True"
+               VirtualizingStackPanel.VirtualizationMode="Recycling"
+               ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+        <ListBox.GroupStyle>
+          <GroupStyle>
+            <GroupStyle.HeaderTemplate>
+              <DataTemplate>
+                <DockPanel Margin="2,14,2,5">
+                  <TextBlock DockPanel.Dock="Left" Text="{Binding Name}" Style="{StaticResource Label}" />
+                  <Border Height="1" Background="{DynamicResource Line}" Margin="12,0" VerticalAlignment="Center" />
+                </DockPanel>
+              </DataTemplate>
+            </GroupStyle.HeaderTemplate>
+          </GroupStyle>
+        </ListBox.GroupStyle>
+        <ListBox.ItemContainerStyle>
+          <Style TargetType="ListBoxItem">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0,2" />
+            <Setter Property="Background" Value="Transparent" />
+            <EventSetter Event="PreviewMouseRightButtonUp" Handler="OnRecordingRowRightClick" />
+            <Setter Property="Template">
+              <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                  <Border x:Name="Row" CornerRadius="9" Background="{TemplateBinding Background}"
+                          BorderBrush="Transparent" BorderThickness="1" Padding="12,10">
+                    <ContentPresenter />
+                  </Border>
+                  <ControlTemplate.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                      <Setter TargetName="Row" Property="Background" Value="{DynamicResource Hover}" />
+                    </Trigger>
+                    <Trigger Property="IsSelected" Value="True">
+                      <Setter TargetName="Row" Property="Background" Value="{DynamicResource Raised}" />
+                      <Setter TargetName="Row" Property="BorderBrush" Value="{DynamicResource LineStrong}" />
+                    </Trigger>
+                  </ControlTemplate.Triggers>
+                </ControlTemplate>
+              </Setter.Value>
+            </Setter>
+          </Style>
+        </ListBox.ItemContainerStyle>
+        <ListBox.ItemTemplate>
+          <DataTemplate>
+            <StackPanel>
+              <TextBlock Text="{Binding Title}" FontSize="13.5" FontWeight="SemiBold"
+                         Foreground="{DynamicResource Ink}" TextTrimming="CharacterEllipsis" />
+              <DockPanel Margin="0,4,0,0">
+                <!-- The row says whether it has been processed, so unfinished work is visible
+                     from the list: green means a brief exists, gray means audio only. -->
+                <Border DockPanel.Dock="Right">
+                  <Border.Style>
+                    <!-- The row's own state, in its own colour: a processed meeting is the one
+                         green thing in the list, and one needing attention is the one amber. -->
+                    <Style TargetType="Border" BasedOn="{StaticResource Pill}">
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding HasSummary}" Value="True">
+                          <Setter Property="BorderBrush" Value="{DynamicResource Focus}" />
+                          <Setter Property="Background" Value="{DynamicResource FocusWash}" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding ChipIsWarn}" Value="True">
+                          <Setter Property="BorderBrush" Value="{DynamicResource Warn}" />
+                          <Setter Property="Background" Value="{DynamicResource WarnWash}" />
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </Border.Style>
+                  <StackPanel Orientation="Horizontal">
+                    <Ellipse>
+                      <Ellipse.Style>
+                        <Style TargetType="Ellipse" BasedOn="{StaticResource PillDot}">
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding HasSummary}" Value="True">
+                              <Setter Property="Fill" Value="{DynamicResource Focus}" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding ChipIsWarn}" Value="True">
+                              <Setter Property="Fill" Value="{DynamicResource Warn}" />
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </Ellipse.Style>
+                    </Ellipse>
+                    <TextBlock Text="{Binding Chip}" FontSize="10">
+                      <TextBlock.Style>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource PillText}">
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding HasSummary}" Value="True">
+                              <Setter Property="Foreground" Value="{DynamicResource Focus}" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding ChipIsWarn}" Value="True">
+                              <Setter Property="Foreground" Value="{DynamicResource Warn}" />
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </TextBlock.Style>
+                    </TextBlock>
+                  </StackPanel>
+                </Border>
+                <TextBlock Text="{Binding DurationLabel}" FontSize="12" VerticalAlignment="Center"
+                           Foreground="{DynamicResource InkDim}" />
+              </DockPanel>
+            </StackPanel>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </DockPanel>
+
+    <!-- ============================ RIGHT: the open meeting ============================ -->
+    <Border Grid.Column="2" Background="Transparent">
+      <Grid>
+        <!-- Nothing open. Says what this page is for rather than showing an empty frame. -->
+        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="380"
+                    Visibility="{Binding DataContext.HasOpenMeeting, ElementName=Page,
+                                 Converter={StaticResource InvBoolToVis}}">
+          <TextBlock Text="Choose a recording" FontFamily="{StaticResource DisplayFont}" FontSize="17"
+                     FontWeight="SemiBold" HorizontalAlignment="Center" />
+          <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" TextAlignment="Center"
+                     Foreground="{DynamicResource InkDim}"
+                     Text="Processing a meeting turns it into a transcript and a meeting brief: what happened, and what you need to do about it." />
+        </StackPanel>
+
+        <!--
+          The visibility and the data context are deliberately on different elements, and the
+          visibility is bound by element name rather than by ancestor type.
+
+          Setting DataContext on an element re-scopes every other binding on that same element, so
+          a Visibility bound to HasOpenMeeting alongside DataContext="{Binding OpenMeeting}" asks a
+          MeetingViewModel - or, with nothing open, null - for a property it has never had. Using
+          RelativeSource to escape that is worse again: it makes the *control* the source, so the
+          binding looks for HasOpenMeeting on RecordingsPage, finds nothing, and Visibility falls
+          back to Visible. Both mistakes have the same symptom: the workspace drawn on top of the
+          empty state, with a blank title and buttons whose labels are bindings and are therefore
+          empty. ElementName says exactly what is meant and cannot be re-scoped.
+        -->
+        <DockPanel x:Name="MeetingRoot" DataContext="{Binding OpenMeeting}"
+                   Visibility="{Binding DataContext.HasOpenMeeting, ElementName=Page,
+                                Converter={StaticResource BoolToVis}}">
+
+          <!-- Header: what this meeting is, its facts as chips, and the one action that
+               processes it. The pencil renames, same as the row's context menu. -->
+          <Grid DockPanel.Dock="Top" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0" VerticalAlignment="Center">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="{Binding Title}" FontFamily="{StaticResource DisplayFont}" FontSize="18"
+                           FontWeight="Bold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                <Button Click="OnRenameOpenMeeting" Margin="7,0,0,0" Padding="4" VerticalAlignment="Center"
+                        Background="Transparent" BorderThickness="0"
+                        ToolTip="Rename this recording" AutomationProperties.Name="Rename this recording">
+                  <Path Width="12" Height="12" Stretch="Uniform" StrokeThickness="1.6"
+                        StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                        Data="M13.5,4.5 L17.5,8.5 L8,18 H4 V14 L13.5,4.5 Z"
+                        Stroke="{DynamicResource InkFaint}" />
+                </Button>
+              </StackPanel>
+
+<!-- Wraps: at the window's minimum width the status pill drops to a second line
+                   rather than being cut off behind the action buttons. -->
+              <WrapPanel Margin="0,7,0,0">
+                <Border Style="{StaticResource Pill}" Margin="0,0,6,3">
+                  <TextBlock Text="{Binding RecordedWhen}" Style="{StaticResource PillText}"
+                             FontWeight="SemiBold" Foreground="{DynamicResource InkDim}" />
+                </Border>
+                <Border Style="{StaticResource Pill}" Margin="0,0,6,3">
+                  <TextBlock Text="{Binding DurationText}" Style="{StaticResource PillText}"
+                             FontWeight="SemiBold" Foreground="{DynamicResource InkDim}" />
+                </Border>
+                <Border Style="{StaticResource PillOk}" Margin="0,0,6,3"
+                        Visibility="{Binding HasSummary, Converter={StaticResource BoolToVis}}">
+                  <StackPanel Orientation="Horizontal">
+                    <Ellipse Style="{StaticResource PillDot}" Fill="{DynamicResource Focus}" />
+                    <TextBlock Text="Brief ready" Style="{StaticResource PillText}"
+                               FontWeight="SemiBold" Foreground="{DynamicResource Focus}" />
+                  </StackPanel>
+                </Border>
+                <Border Style="{StaticResource Pill}" Margin="0,0,6,3"
+                        Visibility="{Binding HasSummary, Converter={StaticResource InvBoolToVis}}">
+                  <StackPanel Orientation="Horizontal">
+                    <Ellipse Style="{StaticResource PillDot}" />
+                    <TextBlock Text="Not processed" Style="{StaticResource PillText}" FontWeight="SemiBold" />
+                  </StackPanel>
+                </Border>
+              </WrapPanel>
+            </StackPanel>
+
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+              <Button Content="{Binding DataContext.ProcessActionLabel,
+                                ElementName=Page}"
+                      Command="{Binding DataContext.ProcessMeetingCommand,
+                                ElementName=Page}"
+                      Style="{StaticResource PrimaryButton}" Margin="0,0,8,0"
+                      ToolTip="Transcribes and writes the meeting brief, using the models chosen in Settings. Earlier versions are never replaced." />
+
+              <Button Content="Cancel" Margin="0,0,8,0"
+                      Command="{Binding DataContext.CancelProcessingCommand,
+                                ElementName=Page}"
+                      Visibility="{Binding DataContext.IsProcessing,
+                                   ElementName=Page,
+                                   Converter={StaticResource BoolToVis}}" />
+
+              <!-- Everything secondary, in one menu. There is one authoritative place for these
+                   and it is here; the Record page offers none of them. -->
+              <Button Content="⋯" Padding="10,8" Click="OnMoreActions"
+                      ToolTip="More actions" AutomationProperties.Name="More actions" />
+            </StackPanel>
+          </Grid>
+
+          <!-- Processing status, in words. Only while something is happening. -->
+          <Border DockPanel.Dock="Top" Margin="0,0,0,10" CornerRadius="6" Padding="12,10"
+                  Background="{DynamicResource Sunken}" BorderBrush="{DynamicResource Line}" BorderThickness="1"
+                  Visibility="{Binding DataContext.IsProcessing,
+                               ElementName=Page,
+                               Converter={StaticResource BoolToVis}}">
+            <StackPanel>
+              <TextBlock Text="{Binding DataContext.ProcessingStage,
+                                ElementName=Page}"
+                         FontWeight="SemiBold" />
+              <ProgressBar Height="4" Margin="0,8,0,0" IsIndeterminate="True"
+                           Background="{DynamicResource Sunken}" BorderThickness="0"
+                           Foreground="{DynamicResource Remote}" />
+            </StackPanel>
+          </Border>
+
+          <!--
+            Playback: one media bar, as the mockup draws it. Round play key, the scrubbable
+            waveform with its playhead, the time, and a lit chip per audible track. The same
+            MiniRibbon still carries seek-on-click and the evidence marker; only its ruler and
+            height changed.
+          -->
+          <Border DockPanel.Dock="Top" Margin="0,0,0,12" Padding="12,10" Style="{StaticResource Card}">
+            <StackPanel>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="Auto" />
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center"
+                            DataContext="{Binding Playback}"
+                            Visibility="{Binding DataContext.CanPlay, ElementName=MeetingRoot,
+                                         Converter={StaticResource BoolToVis}}">
+                  <Button Style="{StaticResource RoundIconButton}" Command="{Binding PlayPauseCommand}"
+                          Background="{DynamicResource Focus}" Foreground="{DynamicResource OnAccent}"
+                          BorderBrush="{DynamicResource Focus}"
+                          ToolTip="{Binding PlayPauseLabel}"
+                          AutomationProperties.Name="{Binding PlayPauseLabel}">
+                    <Path Width="13" Height="13" Stretch="Uniform"
+                          Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}">
+                      <Path.Style>
+                        <Style TargetType="Path">
+                          <Setter Property="Data" Value="M4,2.5 L14,8 L4,13.5 Z" />
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsPlaying}" Value="True">
+                              <Setter Property="Data" Value="M3,2 H6.5 V14 H3 Z M9.5,2 H13 V14 H9.5 Z" />
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </Path.Style>
+                    </Path>
+                  </Button>
+                  <Button Style="{StaticResource RoundIconButton}" Width="30" Height="30" Margin="7,0,0,0"
+                          Command="{Binding StopCommand}"
+                          ToolTip="Stop playback" AutomationProperties.Name="Stop playback">
+                    <Path Width="9" Height="9" Stretch="Uniform" Data="M2,2 H12 V12 H2 Z"
+                          Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                  </Button>
+                </StackPanel>
+
+                <lib:MiniRibbon Grid.Column="1" x:Name="TimelineRibbon" Height="38" Margin="12,0"
+                                ShowRuler="False" VerticalAlignment="Center"
+                                Shape="{Binding Shape}"
+                                DurationSeconds="{Binding TimelineSeconds}"
+                                EvidenceFraction="{Binding EvidenceFraction}"
+                                PlayheadFraction="{Binding Playback.PositionFraction, FallbackValue=-1}"
+                                MouseLeftButtonDown="OnTimelineRibbonClicked"
+                                Cursor="Hand" ToolTip="Click to play from this moment" />
+
+                <TextBlock Grid.Column="2" VerticalAlignment="Center" Margin="0,0,12,0"
+                           DataContext="{Binding Playback}"
+                           FontFamily="{StaticResource DataFont}" FontSize="12"
+                           Visibility="{Binding DataContext.CanPlay, ElementName=MeetingRoot,
+                                        Converter={StaticResource BoolToVis}}">
+                  <Run Text="{Binding PositionText, Mode=OneWay}" Foreground="{DynamicResource Ink}"
+                       FontWeight="Bold" /><Run Text=" / " Foreground="{DynamicResource InkFaint}"
+                  /><Run Text="{Binding DurationText, Mode=OneWay}" Foreground="{DynamicResource InkDim}" />
+                </TextBlock>
+
+                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center"
+                            DataContext="{Binding Playback}"
+                            Visibility="{Binding DataContext.CanPlay, ElementName=MeetingRoot,
+                                         Converter={StaticResource BoolToVis}}">
+                  <ToggleButton Style="{StaticResource TrackChip}" Content="You" Margin="0,0,6,0"
+                                Foreground="{DynamicResource You}" BorderBrush="{DynamicResource You}"
+                                IsChecked="{Binding MuteYou, Mode=TwoWay}" IsEnabled="{Binding HasYouTrack}"
+                                ToolTip="Your track plays while this chip is lit. Click to mute it."
+                                AutomationProperties.Name="Mute your track" />
+                  <ToggleButton Style="{StaticResource TrackChip}" Content="Remote"
+                                Foreground="{DynamicResource Remote}" BorderBrush="{DynamicResource Remote}"
+                                IsChecked="{Binding MuteRemote, Mode=TwoWay}" IsEnabled="{Binding HasRemoteTrack}"
+                                ToolTip="The remote track plays while this chip is lit. Click to mute it."
+                                AutomationProperties.Name="Mute the remote track" />
+                </StackPanel>
+              </Grid>
+
+              <!-- Why playback is unavailable, said only when it is. -->
+              <TextBlock Style="{StaticResource Label}" Margin="2,7,0,0" TextWrapping="Wrap"
+                         Text="{Binding TransportCaption}"
+                         Visibility="{Binding DataContext.CanPlay, ElementName=MeetingRoot,
+                                      Converter={StaticResource InvBoolToVis}}" />
+
+              <TextBlock DataContext="{Binding Playback}" Text="{Binding SeekNotice}" TextWrapping="Wrap"
+                         Margin="2,7,0,0" FontSize="12" Foreground="{DynamicResource Warn}"
+                         Visibility="{Binding HasSeekNotice, Converter={StaticResource BoolToVis},
+                                      FallbackValue=Collapsed}" />
+            </StackPanel>
+          </Border>
+
+          <!--
+            The brief is the page. The transcript and the raw extracted facts are still one click
+            away, and that is exactly where they belong: a reader opening a finished meeting wants
+            to know what to do, not to audit an evidence table.
+          -->
+          <TabControl x:Name="MeetingTabs" Style="{StaticResource ModernTabControl}"
+                       ItemContainerStyle="{StaticResource ModernTabItem}">
+            <TabItem Header="Meeting brief">
+              <lib:MeetingBriefView x:Name="BriefView" />
+            </TabItem>
+
+            <TabItem Header="Transcript">
+              <lib:TranscriptView x:Name="TranscriptViewPane" />
+            </TabItem>
+
+            <TabItem Header="Evidence">
+              <DockPanel Margin="0,10,0,0">
+                <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="{DynamicResource InkDim}"
+                           Margin="0,0,0,8"
+                           Text="Every claim EchoForge extracted, with the exact segments it rests on. This is the audit view; the brief above is the product." />
+                <ListBox x:Name="SummaryList" ItemsSource="{Binding SummaryLines}"
+                         Background="Transparent" BorderThickness="0"
+                         HorizontalContentAlignment="Stretch"
+                         SelectionChanged="OnSummarySelectionChanged"
+                         ItemContainerStyle="{StaticResource ClaimRow}"
+                         VirtualizingStackPanel.IsVirtualizing="True"
+                         VirtualizingStackPanel.VirtualizationMode="Recycling"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate>
+                      <Border Padding="10,8" Margin="0,2" CornerRadius="6" Background="Transparent">
+                        <StackPanel>
+                          <DockPanel>
+                            <TextBlock DockPanel.Dock="Left" Text="{Binding Section}" Style="{StaticResource Label}"
+                                       Foreground="{DynamicResource InkDim}" />
+                            <TextBlock DockPanel.Dock="Right" Text="{Binding Certainty}" Style="{StaticResource Label}"
+                                       Foreground="{DynamicResource InkFaint}" HorizontalAlignment="Right" />
+                            <Border Style="{StaticResource EmptySlot}" Margin="10,0,0,0"
+                                    Visibility="{Binding IsInferred, Converter={StaticResource BoolToVis}}">
+                              <TextBlock Text="inferred" Style="{StaticResource SlotText}" />
+                            </Border>
+                          </DockPanel>
+
+                          <TextBox Text="{Binding Text, Mode=OneWay}" Style="{StaticResource ReadingText}" Margin="0,4,0,0" />
+
+                          <DockPanel Margin="0,6,0,0">
+                            <ItemsControl DockPanel.Dock="Right" ItemsSource="{Binding Chips}"
+                                          HorizontalAlignment="Right"
+                                          ToolTip="Click this claim to open the transcript here and play from the source">
+                              <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+                              </ItemsControl.ItemsPanel>
+                              <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                  <Border Style="{StaticResource EvidenceChip}">
+                                    <TextBlock Text="{Binding Label}" Style="{StaticResource EvidenceChipText}" />
+                                  </Border>
+                                </DataTemplate>
+                              </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <StackPanel Orientation="Horizontal">
+                              <TextBlock Style="{StaticResource Label}" Foreground="{DynamicResource InkDim}"
+                                         VerticalAlignment="Center" Margin="0,0,8,0"
+                                         Visibility="{Binding HasOwner, Converter={StaticResource BoolToVis}}">
+                                <Run Text="owner " /><Run Text="{Binding Owner, Mode=OneWay}"
+                                                          Foreground="{DynamicResource Ink}" />
+                              </TextBlock>
+                              <Border Style="{StaticResource EmptySlot}"
+                                      Visibility="{Binding OwnerMissing, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="no owner stated" Style="{StaticResource SlotText}" />
+                              </Border>
+
+                              <TextBlock Style="{StaticResource Label}" Foreground="{DynamicResource InkDim}"
+                                         VerticalAlignment="Center" Margin="0,0,8,0"
+                                         Visibility="{Binding HasDue, Converter={StaticResource BoolToVis}}">
+                                <Run Text="due " /><Run Text="{Binding Due, Mode=OneWay}"
+                                                        Foreground="{DynamicResource Ink}" />
+                              </TextBlock>
+                              <Border Style="{StaticResource EmptySlot}"
+                                      Visibility="{Binding DueMissing, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="no date stated" Style="{StaticResource SlotText}" />
+                              </Border>
+                            </StackPanel>
+                          </DockPanel>
+                        </StackPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+              </DockPanel>
+            </TabItem>
+
+
+          </TabControl>
+        </DockPanel>
+      </Grid>
+    </Border>
+  </Grid>
+</UserControl>

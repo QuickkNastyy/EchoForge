@@ -21,6 +21,9 @@ public sealed record WindowPlanOptions
 
     /// <summary>Bumped when the planning rules change, so old checkpoints stop matching.</summary>
     public string PlanningVersion { get; init; } = "windows-v1";
+
+    /// <summary>Backend/model-owned strategy identity persisted separately from its version.</summary>
+    public string StrategyId { get; init; } = "whisper-long-v1";
 }
 
 /// <summary>Where one unit of transcription work has got to.</summary>
@@ -152,6 +155,9 @@ public sealed record WindowPlan
 
     [JsonPropertyName("planning_version")]
     public required string PlanningVersion { get; init; }
+
+    [JsonPropertyName("strategy_id")]
+    public string StrategyId { get; init; } = "whisper-long-v1";
 
     [JsonPropertyName("window_seconds")]
     public required double WindowSeconds { get; init; }

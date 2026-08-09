@@ -35,12 +35,14 @@ public sealed class LibraryProjection(
     ISessionStore sessions,
     ITranscriptionStore transcripts,
     FileSummaryStore summaries,
-    FileSpeakerAliasStore aliases)
+    FileSpeakerAliasStore aliases,
+    FileMeetingTitleStore? titles = null)
 {
     private readonly ISessionStore _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
     private readonly ITranscriptionStore _transcripts = transcripts ?? throw new ArgumentNullException(nameof(transcripts));
     private readonly FileSummaryStore _summaries = summaries ?? throw new ArgumentNullException(nameof(summaries));
     private readonly FileSpeakerAliasStore _aliases = aliases ?? throw new ArgumentNullException(nameof(aliases));
+    private readonly FileMeetingTitleStore? _titles = titles;
 
     /// <summary>Every session on disk, newest first.</summary>
     public IReadOnlyList<string> SessionIds() => _sessions.EnumerateSessions();
@@ -89,7 +91,7 @@ public sealed class LibraryProjection(
         LibraryEntry entry = new()
         {
             SessionId = sessionId,
-            Title = Title(snapshot),
+            Title = Title(snapshot, _titles?.Read(sessionId)),
             CreatedUtc = snapshot.CreatedUtc,
             StartedUtc = snapshot.StartedUtc,
             Duration = snapshot.Duration,
@@ -129,15 +131,22 @@ public sealed class LibraryProjection(
     /// thing people actually remember a meeting by.
     /// </para>
     /// </summary>
-    private static string Title(SessionSnapshot snapshot)
+    private static string Title(SessionSnapshot snapshot, string? displayTitle)
     {
+        if (!string.IsNullOrWhiteSpace(displayTitle))
+        {
+            return displayTitle!;
+        }
+
+        // Legacy snapshots may already have a title. New user renames live outside session.json so
+        // recovery remains free to rebuild the snapshot from the journal.
         if (!string.IsNullOrWhiteSpace(snapshot.Title))
         {
             return snapshot.Title!;
         }
 
         DateTimeOffset when = (snapshot.StartedUtc ?? snapshot.CreatedUtc).ToLocalTime();
-        return when.ToString("ddd d MMM yyyy, HH:mm", CultureInfo.CurrentCulture);
+        return when.ToString("ddd, MMM d, yyyy · h:mm tt", CultureInfo.CurrentCulture);
     }
 
     /// <summary>What, if anything, a person should look at.</summary>

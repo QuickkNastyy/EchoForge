@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Text;
 using EchoForge.App.Library;
+using EchoForge.Contracts.Audio;
+using EchoForge.Core.Recording;
 using EchoForge.Contracts.Library;
 using EchoForge.Contracts.Summaries;
 using EchoForge.Contracts.Transcripts;
@@ -45,6 +47,8 @@ public sealed class LibraryUiAndExportTests : IDisposable
         Assert.True(meeting.HasSummary);
         Assert.Equal(2, meeting.Lines.Count);
         Assert.Equal("You", meeting.Lines[0].Speaker);
+        Assert.Equal(TranscriptSpeakers.YouId, meeting.Lines[0].SpeakerId);
+        Assert.Equal(TranscriptSpeakers.RemoteId, meeting.Lines[1].SpeakerId);
         Assert.Equal("00:00:00", meeting.Lines[0].Timestamp);
         Assert.Equal(2, meeting.SummaryLines.Count);
         Assert.Contains(meeting.SummaryLines, l => l.Section == "Decisions");
@@ -63,12 +67,89 @@ public sealed class LibraryUiAndExportTests : IDisposable
     }
 
     [Fact]
+    public void AdjacentAsrChunksFromOneSpeakerDisplayAsOneReadableUtterance()
+    {
+        _fixture.AddSession("01JUTTERANCE", "Conversation");
+        _fixture.AddTimedTranscript("01JUTTERANCE",
+            ("microphone", "Alright, so", 156.0, 157.0),
+            ("microphone", "official action, Hash Daddy Ray", 157.1, 159.0),
+            ("microphone", "has been switched from the janitor position", 159.1, 161.0),
+            ("microphone", "to the private", 161.1, 163.0),
+            ("microphone", "chef.", 163.62, 164.0),
+            ("microphone", "What kind of great meals are you good at cooking?", 166.54, 168.68),
+            ("system", "What do you want?", 170.0, 171.0));
+
+        MeetingViewModel meeting = Open("01JUTTERANCE");
+
+        Assert.Equal(2, meeting.Lines.Count);
+        TranscriptLine utterance = meeting.Lines[0];
+        Assert.Equal("You", utterance.Speaker);
+        Assert.Equal("00:02:36", utterance.Timestamp);
+        Assert.Equal(
+            "Alright, so official action, Hash Daddy Ray has been switched from the janitor position to the private chef. What kind of great meals are you good at cooking?",
+            utterance.Text);
+        Assert.Equal(6, utterance.SegmentIds.Count);
+        Assert.Same(utterance, meeting.LocateSegment(1, "segment-000006"));
+    }
+
+    [Fact]
+    public void DefaultRecordingLabelsUseTheSystemsLocalTwelveHourClock()
+    {
+        _fixture.AddSession("01JLOCALTIME");
+        LibraryEntry entry = _fixture.Entry("01JLOCALTIME");
+        MeetingRow row = new(entry);
+
+        Assert.Matches(@"\b\d{1,2}:\d{2}\s(?:AM|PM)\b", entry.Title);
+        Assert.Matches(@"\b\d{1,2}:\d{2}\s(?:AM|PM)\b", row.When);
+        Assert.DoesNotContain("→", row.Sub, StringComparison.Ordinal);
+        Assert.Equal(row.DurationLabel, row.Sub);
+    }
+
+    [Fact]
+    public void ARecordingRenameIsPresentationOnlyAndSurvivesAProjectionRestart()
+    {
+        string session = _fixture.AddSession("01JRENAME");
+        string snapshotPath = _fixture.Sessions.Resolve(session).SnapshotPath;
+        byte[] snapshotBefore = File.ReadAllBytes(snapshotPath);
+
+        Assert.True(_fixture.Titles.Rename(session, "  Client   kickoff  "));
+
+        LibraryEntry renamed = _fixture.RestartedProjection().Build(session)!.Entry;
+        Assert.Equal("Client kickoff", renamed.Title);
+        Assert.Equal(snapshotBefore, File.ReadAllBytes(snapshotPath));
+
+        // Clearing the overlay restores the system-local date/time title without touching recovery.
+        Assert.True(_fixture.Titles.Rename(session, null));
+        LibraryEntry restored = _fixture.RestartedProjection().Build(session)!.Entry;
+        Assert.NotEqual("Client kickoff", restored.Title);
+        Assert.Equal(snapshotBefore, File.ReadAllBytes(snapshotPath));
+    }
+
+    [Fact]
+    public void RowTranscriptCopyTextUsesReadableDisplayedUtterances()
+    {
+        _fixture.AddSession("01JCOPY");
+        _fixture.AddTranscript("01JCOPY",
+            ("microphone", "We should ship Friday"),
+            ("system", "I can handle the release notes"));
+
+        using LibraryViewModel library = new(
+            _fixture.NewIndex(), _fixture.Projection, _fixture.Transcripts, _fixture.Summaries, _fixture.Aliases);
+        MeetingRow row = new(_fixture.Entry("01JCOPY"));
+
+        string text = Assert.IsType<string>(library.BuildTranscriptText(row));
+        Assert.Contains("You: We should ship Friday", text, StringComparison.Ordinal);
+        Assert.Contains("Remote: I can handle the release notes", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("segment-", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ALongTranscriptDoesNotBecomeThousandsOfHeavyweightObjects()
     {
         _fixture.AddSession("01JA");
 
         (string, string)[] lines = [.. Enumerable.Range(0, 6000)
-            .Select(i => ("microphone", $"This is line number {i} of a very long meeting"))];
+            .Select(i => (i % 2 == 0 ? "microphone" : "system", $"This is line number {i} of a very long meeting"))];
 
         _fixture.AddTranscript("01JA", lines);
 
@@ -121,8 +202,9 @@ public sealed class LibraryUiAndExportTests : IDisposable
         MeetingViewModel meeting = Open("01JA");
 
         Assert.True(meeting.SummaryIsStale);
-        Assert.Contains("version 1", meeting.StaleNotice, StringComparison.Ordinal);
-        Assert.Contains("version 2", meeting.StaleNotice, StringComparison.Ordinal);
+        Assert.Contains("transcript changed", meeting.StaleNotice, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Generate the brief again", meeting.StaleNotice, StringComparison.Ordinal);
+        Assert.DoesNotContain("version", meeting.StaleNotice, StringComparison.OrdinalIgnoreCase);
 
         // Still readable, and its citations still resolve against its own revision.
         SummaryLine decision = Assert.Single(meeting.SummaryLines);
@@ -245,6 +327,42 @@ public sealed class LibraryUiAndExportTests : IDisposable
         Assert.NotNull(library.OpenMeeting);
         Assert.Equal("01JA", library.OpenMeeting!.SessionId);
         Assert.Single(library.OpenMeeting.Lines);
+    }
+
+    [Fact]
+    public async Task StoppingARecordingWhileTheLibraryIsOpenAddsItsRow()
+    {
+        using SqliteLibraryIndex index = _fixture.NewIndex();
+        using LibraryViewModel library = new(
+            index, _fixture.Projection, _fixture.Transcripts, _fixture.Summaries, _fixture.Aliases);
+        await library.InitializeAsync();
+        Assert.Empty(library.Meetings);
+
+        FakeCaptureEngineFactory engines = new();
+        using RecordingController controller = new(
+            _fixture.Sessions, engines, new FakeCaptureClock(), new FakeDiskSpaceProbe());
+
+        RecordingStateChangedEventArgs? terminal = null;
+        controller.StateChanged += (_, e) =>
+        {
+            if (e.State is Contracts.Sessions.SessionState.Recorded
+                or Contracts.Sessions.SessionState.NeedsAttention
+                or Contracts.Sessions.SessionState.Failed)
+            {
+                terminal = e;
+            }
+        };
+
+        controller.Start(new RecordingRequest(
+            "render-id", "Headphones", "capture-id", "Microphone"));
+        string sessionId = Assert.IsType<string>(controller.SessionId);
+        engines.Latest.EmitChunk(SourceTrack.Microphone);
+        controller.Stop();
+
+        Assert.NotNull(terminal);
+        Assert.Equal(sessionId, terminal!.SessionId);
+        Assert.True(await library.RefreshMeetingAsync(terminal.SessionId!));
+        Assert.Contains(library.Meetings, row => row.SessionId == sessionId);
     }
 
     // -- exports -----------------------------------------------------------------------------------

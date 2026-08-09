@@ -28,6 +28,7 @@ public sealed class SetupServices : IDisposable
         WorkerEnvironmentInstaller worker,
         LlamaRuntimeStager llama,
         RuntimeRegistry runtimes,
+        ModelProvisioner provisioning,
         IReadOnlyList<string> manifestProblems)
     {
         Layout = layout;
@@ -36,6 +37,7 @@ public sealed class SetupServices : IDisposable
         WorkerEnvironment = worker;
         Llama = llama;
         Runtimes = runtimes;
+        Provisioning = provisioning;
         ManifestProblems = manifestProblems;
     }
 
@@ -64,8 +66,12 @@ public sealed class SetupServices : IDisposable
         WorkerEnvironmentInstaller worker = new(registry, python, resolved);
         LlamaRuntimeStager llama = new(registry);
 
+        ModelProvisioner provisioning = new(
+            registry, llama, new ModelQualificationStore(resolved.ModelsRoot), resolved);
+
         return new SetupServices(
-            resolved, registry, python, worker, llama, new RuntimeRegistry(registry, python, worker, llama), problems);
+            resolved, registry, python, worker, llama,
+            new RuntimeRegistry(registry, python, worker, llama), provisioning, problems);
     }
 
     public AppLayout Layout { get; }
@@ -79,6 +85,17 @@ public sealed class SetupServices : IDisposable
     public LlamaRuntimeStager Llama { get; }
 
     public RuntimeRegistry Runtimes { get; }
+
+    /// <summary>
+    /// Installing a model, and proving it works.
+    ///
+    /// <para>
+    /// Separate from <see cref="Artifacts"/> because downloading verified bytes and having a
+    /// usable model are different achievements, and treating them as one is what let an NVIDIA
+    /// model whose runtime did not exist appear as installed.
+    /// </para>
+    /// </summary>
+    public ModelProvisioner Provisioning { get; }
 
     /// <summary>Non-fatal complaints about the manifest, if any. An empty list is the usual case.</summary>
     public IReadOnlyList<string> ManifestProblems { get; }
@@ -105,6 +122,10 @@ public sealed class SetupServices : IDisposable
             ? null
             : WorkerLaunchOptions.ForAppLocalPython(environment.PythonExecutable, Layout.WorkerPackageRoot);
     }
+
+    /// <summary>The optional, explicitly configured Linux NeMo worker. Never inferred from PATH.</summary>
+    public WorkerLaunchOptions? TryResolveNemoWorkerLaunch() =>
+        WorkerLaunchOptions.TryForWslNemo(Layout.WorkerPackageRoot);
 
     public void Dispose()
     {

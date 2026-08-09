@@ -24,6 +24,16 @@ def test_a_worker_answers_hello_with_ready() -> None:
     assert ready["worker_version"] == protocol.WORKER_VERSION
 
 
+def test_linux_ready_carries_a_pid_reuse_safe_process_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(protocol.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(protocol, "_linux_process_start_token", lambda process_id: "123456")
+
+    ready = protocol.ready(["nemo"], "3.12")
+
+    assert ready["process_id"] > 0
+    assert ready["process_start_token"] == "123456"
+
+
 def test_a_host_that_cannot_speak_this_version_is_refused() -> None:
     run = run_worker([hello_line(versions=[2, 3])])
 

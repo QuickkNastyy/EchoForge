@@ -92,6 +92,31 @@ public sealed class OfflineAndDiagnosticsTests : IDisposable
         Assert.Equal("1", environment["PYTHONNOUSERSITE"]);
     }
 
+    [Fact]
+    public void IsolatedWslWorkerForwardsOnlyThePinnedRootAndOfflinePolicy()
+    {
+        Dictionary<string, string?> environment = new(StringComparer.Ordinal)
+        {
+            ["PYTHONPATH"] = @"C:\untrusted",
+            ["HF_ENDPOINT"] = "https://mirror.invalid",
+        };
+        WorkerLaunchOptions options = new()
+        {
+            PythonExecutable = @"C:\Windows\System32\wsl.exe",
+            WorkerRoot = _fixture.Layout.WorkerPackageRoot,
+            InterpreterArguments = ["--distribution", "Ubuntu", "--exec", "/venv/bin/python"],
+            IsWsl = true,
+        };
+
+        options.ApplyEnvironment(environment);
+
+        Assert.Equal("1", environment["ECHOFORGE_WSL"]);
+        Assert.Equal(_fixture.Layout.WorkerPackageRoot, environment["PYTHONPATH"]);
+        Assert.DoesNotContain("HF_ENDPOINT", environment.Keys);
+        Assert.Contains("PYTHONPATH/p", environment["WSLENV"], StringComparison.Ordinal);
+        Assert.Contains("HF_HUB_OFFLINE", environment["WSLENV"], StringComparison.Ordinal);
+    }
+
     [WorkerFact]
     public async Task AnInstalledWorkerCannotReachTheNetwork()
     {

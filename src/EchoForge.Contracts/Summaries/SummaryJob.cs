@@ -23,10 +23,13 @@ public sealed record SummaryOptions
     /// </summary>
     public const string ComparisonBackend = "ministral-3-14b";
 
+    public const string GptOssBackend = "gpt-oss-20b";
+
     public const string MockBackend = "mock-summary";
 
     /// <summary>Every backend that loads a real model and needs a verified runtime.</summary>
-    public static readonly IReadOnlyList<string> LocalModelBackends = [ProductionBackend, ComparisonBackend];
+    public static readonly IReadOnlyList<string> LocalModelBackends =
+        [ProductionBackend, GptOssBackend, ComparisonBackend];
 
     /// <summary>True for any run that needs llama.cpp and a GGUF, whichever model it is.</summary>
     public bool IsProduction => LocalModelBackends.Contains(Backend, StringComparer.Ordinal);
@@ -38,12 +41,19 @@ public sealed record SummaryOptions
     public string SummaryProfile { get; init; } = string.Empty;
 
     /// <summary>
+    /// The exact immutable transcript revision to summarize. Null preserves the historical
+    /// behavior of using the session's selected revision.
+    /// </summary>
+    public int? TranscriptRevision { get; init; }
+
+    /// <summary>
     /// Fixed on purpose. A summary that changed between two runs over one transcript could not be
     /// reviewed against its own evidence, and reprocessing would stop meaning anything.
     /// </summary>
     public int Seed { get; init; } = 7;
 
-    public string PromptVersion { get; init; } = "meeting-summary-v1";
+    /// <summary>V2 adds the evidence-grounded final narrative pass; V1 remains readable history.</summary>
+    public string PromptVersion { get; init; } = "meeting-summary-v2";
 
     /// <summary>
     /// Roughly how much transcript goes into one extraction. The plan's 8K-12K token range, held
@@ -254,6 +264,9 @@ public sealed record SummaryRevisionRecord
     [JsonPropertyName("model_id")]
     public string ModelId { get; init; } = string.Empty;
 
+    [JsonPropertyName("model_revision")]
+    public string ModelRevision { get; init; } = string.Empty;
+
     [JsonPropertyName("worker_version")]
     public string WorkerVersion { get; init; } = string.Empty;
 
@@ -296,6 +309,33 @@ public sealed record SummaryRevisionRecord
 
     [JsonPropertyName("context_tokens")]
     public int ContextTokens { get; init; }
+
+    [JsonPropertyName("requested_context_tokens")]
+    public int RequestedContextTokens { get; init; }
+
+    [JsonPropertyName("processing_seconds")]
+    public double? ProcessingSeconds { get; init; }
+
+    [JsonPropertyName("model_load_seconds")]
+    public double? ModelLoadSeconds { get; init; }
+
+    [JsonPropertyName("extraction_seconds")]
+    public double? ExtractionSeconds { get; init; }
+
+    [JsonPropertyName("synthesis_seconds")]
+    public double? SynthesisSeconds { get; init; }
+
+    [JsonPropertyName("narrative_seconds")]
+    public double? NarrativeSeconds { get; init; }
+
+    [JsonPropertyName("peak_vram_bytes")]
+    public long? PeakVramBytes { get; init; }
+
+    [JsonPropertyName("generation_tokens_per_second")]
+    public double? GenerationTokensPerSecond { get; init; }
+
+    [JsonPropertyName("fell_back")]
+    public bool FellBack { get; init; }
 
     public bool WasRepaired => RepairAttempt > 0;
 

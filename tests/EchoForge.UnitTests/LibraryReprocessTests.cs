@@ -259,8 +259,9 @@ public sealed class LibraryReprocessTests : IDisposable
         string revisionOne = _transcripts.RevisionPath(SessionId, 1);
         byte[] before = await File.ReadAllBytesAsync(revisionOne);
 
+        TranscriptionCoordinator coordinator = NewTranscription();
         CoordinatorReprocessor slow = new(
-            NewTranscription(),
+            coordinator,
             null,
             () => new TranscriptionOptions
             {
@@ -272,7 +273,15 @@ public sealed class LibraryReprocessTests : IDisposable
         using CancellationTokenSource cancellation = new();
         Task<ReprocessOutcome> work = slow.TranscribeAgainAsync(SessionId, cancellation.Token);
 
-        await Task.Delay(200);
+        // Waited for, not slept through. A fixed delay assumes the worker process is up and
+        // watching its input within that time, and the first launch after a build is not: the
+        // cancel then arrives before anything is listening for it, the job runs to completion,
+        // and the test fails for a reason that has nothing to do with cancellation.
+        while (!coordinator.IsRunning)
+        {
+            await Task.Delay(25);
+        }
+
         await cancellation.CancelAsync();
 
         ReprocessOutcome outcome = await work;

@@ -83,6 +83,14 @@ public sealed record ReadyMessage : WorkerMessage
 
     [JsonPropertyName("backends")]
     public IReadOnlyList<string> Backends { get; init; } = [];
+
+    /// <summary>Linux guest PID, present for the explicitly isolated WSL NeMo worker.</summary>
+    [JsonPropertyName("process_id")]
+    public int? ProcessId { get; init; }
+
+    /// <summary>Linux /proc start tick paired with <see cref="ProcessId"/> to defeat PID reuse.</summary>
+    [JsonPropertyName("process_start_token")]
+    public string? ProcessStartToken { get; init; }
 }
 
 /// <summary>The request validated and work began.</summary>

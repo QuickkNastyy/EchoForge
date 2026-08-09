@@ -1,0 +1,76 @@
+<Window x:Class="EchoForge.App.TranscriptComparisonWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Compare transcript revisions" Width="1180" Height="760"
+        MinWidth="820" MinHeight="520" WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource Surface}" Foreground="{DynamicResource Ink}">
+  <Grid Margin="20">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
+
+    <StackPanel Grid.Row="0">
+      <TextBlock Text="TRANSCRIPT COVERAGE COMPARISON" FontWeight="SemiBold" Foreground="{DynamicResource InkDim}" />
+      <TextBlock Margin="0,6,0,0" Text="Missing spoken regions are highlighted more strongly than wording or punctuation differences. More text alone is not treated as a win."
+                 TextWrapping="Wrap" Foreground="{DynamicResource InkDim}" />
+    </StackPanel>
+
+    <Grid Grid.Row="1" Margin="0,16,0,12">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="92" />
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="12" />
+        <ColumnDefinition Width="*" />
+      </Grid.ColumnDefinitions>
+      <StackPanel Grid.Column="1">
+        <TextBlock Text="{Binding LeftHeading}" FontSize="17" FontWeight="SemiBold" />
+        <TextBlock Margin="0,4,0,0" Text="{Binding LeftDetails}" Foreground="{DynamicResource InkDim}" TextWrapping="Wrap" />
+        <TextBlock Margin="0,4,0,0" Text="{Binding LeftMetrics}" Foreground="{DynamicResource InkDim}" TextWrapping="Wrap" />
+      </StackPanel>
+      <StackPanel Grid.Column="3">
+        <TextBlock Text="{Binding RightHeading}" FontSize="17" FontWeight="SemiBold" />
+        <TextBlock Margin="0,4,0,0" Text="{Binding RightDetails}" Foreground="{DynamicResource InkDim}" TextWrapping="Wrap" />
+        <TextBlock Margin="0,4,0,0" Text="{Binding RightMetrics}" Foreground="{DynamicResource InkDim}" TextWrapping="Wrap" />
+      </StackPanel>
+    </Grid>
+
+    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <ItemsControl ItemsSource="{Binding Rows}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate>
+            <Border Margin="0,0,0,7" Padding="9" CornerRadius="4" BorderThickness="1" Background="{DynamicResource CardFill}">
+              <Border.Style>
+                <Style TargetType="Border">
+                  <Setter Property="BorderBrush" Value="{DynamicResource Line}" />
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsMissing}" Value="True">
+                      <Setter Property="BorderBrush" Value="{DynamicResource Rec}" />
+                      <Setter Property="Background" Value="{DynamicResource RecWash}" />
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Border.Style>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="84" />
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="12" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                  <TextBlock Text="{Binding Speaker}" FontWeight="SemiBold" Foreground="{DynamicResource Remote}" />
+                  <TextBlock Margin="0,3,0,0" Text="{Binding Timestamp}" Foreground="{DynamicResource InkDim}" />
+                  <TextBlock Margin="0,3,0,0" Text="{Binding DifferenceLabel}" FontSize="10" Foreground="{DynamicResource Warn}" TextWrapping="Wrap" />
+                </StackPanel>
+                <TextBlock Grid.Column="1" Text="{Binding LeftText}" TextWrapping="Wrap" />
+                <TextBlock Grid.Column="3" Text="{Binding RightText}" TextWrapping="Wrap" />
+              </Grid>
+            </Border>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </ScrollViewer>
+  </Grid>
+</Window>

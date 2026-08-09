@@ -15,6 +15,7 @@ Remote. There is no code path here that could produce anything else.
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -31,7 +32,23 @@ SPEAKER_REMOTE_NAME: Final[str] = "Remote"
 
 UNDETERMINED_LANGUAGE: Final[str] = "und"
 
-TRANSCRIPT_SCHEMA_VERSION: Final[int] = 1
+TRANSCRIPT_SCHEMA_VERSION: Final[int] = 2
+VAD_MODES: Final[tuple[str, ...]] = ("accuracy", "balanced", "fast", "off")
+
+
+def _native_path(value: str) -> str:
+    """Translate a host path only inside the explicitly launched WSL worker.
+
+    Requests remain Windows-native on disk and on the wire. The isolated NeMo process sees the
+    same files through WSL's ``/mnt/<drive>`` mount; no historical format changes for this.
+    """
+    if os.environ.get("ECHOFORGE_WSL") != "1":
+        return value
+    if len(value) >= 3 and value[1] == ":" and value[2] in ("\\", "/"):
+        drive = value[0].lower()
+        rest = value[3:].replace("\\", "/")
+        return f"/mnt/{drive}/{rest}"
+    return value.replace("\\", "/")
 
 
 def speaker_for(source_track: str) -> tuple[str, str]:
@@ -278,6 +295,9 @@ class TimingMap:
 @dataclass(frozen=True, slots=True)
 class RequestOptions:
     backend: str
+    model_id: str | None = None
+    model_revision: str | None = None
+    model_artifact_sha256: str | None = None
     profile: str | None = None
     language: str | None = None
     segment_seconds: float | None = None
@@ -289,16 +309,23 @@ class RequestOptions:
     model_path: str | None = None
 
     compute_profile: str | None = None
+    allow_cpu_fallback: bool = True
     beam_size: int | None = None
 
     #: Conservative voice-activity filtering, using the Silero model inside the pinned wheel.
     vad_filter: bool = True
+    vad_mode: str = "balanced"
 
     word_timestamps: bool = True
 
     #: Seeded into the recogniser as an initial prompt: names, jargon, acronyms.
     initial_prompt: str | None = None
     glossary: tuple[str, ...] = ()
+    window_strategy: str | None = None
+    window_seconds: float | None = None
+    overlap_seconds: float | None = None
+    timestamp_capability: str | None = None
+    timestamp_precision: str | None = None
 
     @staticmethod
     def from_json(obj: Any) -> RequestOptions:
@@ -320,20 +347,68 @@ class RequestOptions:
         if beam is not None:
             beam = _as_int(beam, "options.beam_size", minimum=1)
 
+        vad_mode = obj.get("vad_mode")
+        if vad_mode is None:
+            vad_mode = (
+                "off"
+                if obj.get("backend") == "mock" or not bool(obj.get("vad_filter", True))
+                else "balanced"
+            )
+        vad_mode = _as_str(vad_mode, "options.vad_mode").lower()
+        if vad_mode not in VAD_MODES:
+            raise _invalid(f"options.vad_mode must be one of {', '.join(VAD_MODES)}")
+
+        window_seconds = obj.get("window_seconds")
+        if window_seconds is not None:
+            window_seconds = _as_number(window_seconds, "options.window_seconds", minimum=0.001)
+        overlap_seconds = obj.get("overlap_seconds")
+        if overlap_seconds is not None:
+            overlap_seconds = _as_number(overlap_seconds, "options.overlap_seconds", minimum=0.0)
+        if window_seconds is not None and overlap_seconds is not None and overlap_seconds >= window_seconds:
+            raise _invalid("options.overlap_seconds must be shorter than options.window_seconds")
+
         return RequestOptions(
             backend=_as_str(_require(obj, "backend", "options"), "options.backend"),
+            model_id=obj.get("model_id") if isinstance(obj.get("model_id"), str) else None,
+            model_revision=(
+                obj.get("model_revision") if isinstance(obj.get("model_revision"), str) else None
+            ),
+            model_artifact_sha256=(
+                obj.get("model_artifact_sha256")
+                if isinstance(obj.get("model_artifact_sha256"), str)
+                else None
+            ),
             profile=obj.get("profile") if isinstance(obj.get("profile"), str) else None,
             language=obj.get("language") if isinstance(obj.get("language"), str) else None,
             segment_seconds=segment_seconds,
             test_mode=obj.get("test_mode") if isinstance(obj.get("test_mode"), str) else None,
             test_delay_seconds=delay,
-            model_path=obj.get("model_path") if isinstance(obj.get("model_path"), str) else None,
+            model_path=(
+                _native_path(obj["model_path"]) if isinstance(obj.get("model_path"), str) else None
+            ),
             compute_profile=obj.get("compute_profile") if isinstance(obj.get("compute_profile"), str) else None,
+            allow_cpu_fallback=bool(obj.get("allow_cpu_fallback", True)),
             beam_size=beam,
             vad_filter=bool(obj.get("vad_filter", True)),
+            vad_mode=vad_mode,
             word_timestamps=bool(obj.get("word_timestamps", True)),
             initial_prompt=obj.get("initial_prompt") if isinstance(obj.get("initial_prompt"), str) else None,
             glossary=tuple(str(term) for term in (glossary or []) if str(term).strip()),
+            window_strategy=(
+                obj.get("window_strategy") if isinstance(obj.get("window_strategy"), str) else None
+            ),
+            window_seconds=window_seconds,
+            overlap_seconds=overlap_seconds,
+            timestamp_capability=(
+                obj.get("timestamp_capability")
+                if isinstance(obj.get("timestamp_capability"), str)
+                else None
+            ),
+            timestamp_precision=(
+                obj.get("timestamp_precision")
+                if isinstance(obj.get("timestamp_precision"), str)
+                else None
+            ),
         )
 
 
@@ -413,8 +488,12 @@ class TranscriptionRequest:
             created_at_utc=_as_str(
                 _require(obj, "created_at_utc", "request"), "request.created_at_utc"
             ),
-            session_root=_as_str(_require(obj, "session_root", "request"), "request.session_root"),
-            output_path=_as_str(_require(obj, "output_path", "request"), "request.output_path"),
+            session_root=_native_path(
+                _as_str(_require(obj, "session_root", "request"), "request.session_root")
+            ),
+            output_path=_native_path(
+                _as_str(_require(obj, "output_path", "request"), "request.output_path")
+            ),
             duration_seconds=_as_number(
                 _require(obj, "duration_seconds", "request"),
                 "request.duration_seconds",
@@ -521,9 +600,12 @@ class TranscriptModel:
     compute_type: str
     recognizes_speech: bool
     worker_version: str
+    requested_compute_type: str | None = None
+    backend_runtime_version: str | None = None
+    artifact_sha256: str | None = None
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        model = {
             "runtime": self.runtime,
             "backend": self.backend,
             "model_id": self.model_id,
@@ -532,6 +614,13 @@ class TranscriptModel:
             "recognizes_speech": self.recognizes_speech,
             "worker_version": self.worker_version,
         }
+        if self.requested_compute_type is not None:
+            model["requested_compute_type"] = self.requested_compute_type
+        if self.backend_runtime_version is not None:
+            model["backend_runtime_version"] = self.backend_runtime_version
+        if self.artifact_sha256 is not None:
+            model["artifact_sha256"] = self.artifact_sha256
+        return model
 
 
 @dataclass(frozen=True, slots=True)
@@ -545,6 +634,7 @@ class Transcript:
     epochs: tuple[RequestEpoch, ...]
     languages: tuple[tuple[str, str, float | None], ...]
     segments: tuple[Segment, ...]
+    run: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         tracks_present = [language[0] for language in self.languages]
@@ -554,7 +644,7 @@ class Transcript:
                 speaker_id, speaker_name = speaker_for(track)
                 speakers.append({"id": speaker_id, "name": speaker_name, "source_track": track})
 
-        return {
+        document = {
             "schema_version": TRANSCRIPT_SCHEMA_VERSION,
             "session_id": self.session_id,
             "transcript_revision": self.transcript_revision,
@@ -562,6 +652,7 @@ class Transcript:
             "source_manifest_sha256": self.source_manifest_sha256,
             "duration_seconds": self.duration_seconds,
             "model": self.model.to_json(),
+            "run": self.run,
             "epochs": [
                 {
                     "index": e.index,
@@ -577,3 +668,4 @@ class Transcript:
             ],
             "segments": [s.to_json() for s in self.segments],
         }
+        return document

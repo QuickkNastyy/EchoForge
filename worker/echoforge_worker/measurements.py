@@ -66,6 +66,7 @@ class RunMeasurements:
     model_load_seconds: float = 0.0
     extraction_seconds: float = 0.0
     synthesis_seconds: float = 0.0
+    narrative_seconds: float = 0.0
     repair_seconds: float = 0.0
 
     prompt_tokens: int = 0
@@ -116,7 +117,10 @@ class RunMeasurements:
         payload["prompt_tokens_per_second"] = round(self.prompt_tokens_per_second, 3)
         payload["generation_tokens_per_second"] = round(self.generation_tokens_per_second, 3)
 
-        for key in ("total_seconds", "model_load_seconds", "extraction_seconds", "synthesis_seconds", "repair_seconds"):
+        for key in (
+            "total_seconds", "model_load_seconds", "extraction_seconds", "synthesis_seconds",
+            "narrative_seconds", "repair_seconds",
+        ):
             payload[key] = round(payload[key], 4)
 
         return payload

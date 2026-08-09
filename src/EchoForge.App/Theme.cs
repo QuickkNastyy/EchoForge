@@ -24,52 +24,58 @@ public enum AppTheme
 /// The two palettes, and the one operation that swaps between them.
 ///
 /// <para>
-/// Switching does not reload a dictionary or re-resolve a single <c>StaticResource</c>. Every brush
-/// in the palette is one shared instance whose colour is bound to <c>PaletteSource</c>, so changing
-/// the palette repaints everything drawn with it — chrome, text, meters, and the two ribbons, which
-/// take the same brush objects rather than freezing private copies. That is the whole mechanism: no
-/// restart, no rebuilt visual tree, and no second set of keys for anyone to forget to use. See
-/// <c>PaletteDictionary</c> for why the brushes have to be built the way they are.
+/// Palette brushes are immutable once WPF can render them. A switch replaces the values in the
+/// merged <c>PaletteDictionary</c>; controls reference palette keys with <c>DynamicResource</c>, so
+/// WPF invalidates those resource references without mutating any Freezable already owned by the
+/// render thread. Custom-drawn ribbons listen for <see cref="Changed"/> and redraw from the same
+/// frozen resources.
 /// </para>
 ///
 /// <para>
-/// Both palettes come from <c>docs/design/ui-mockups.html</c> unchanged. Colour still carries
-/// meaning in either one: amber is You, teal is Remote, red is capture and appears nowhere else.
-/// The light values are darker, not lighter, because they have to hold the same contrast against a
-/// white ground that the dark ones hold against graphite.
+/// The dark palette is the approved "Graphite" direction: neutral charcoal surfaces with a slight
+/// cool cast, quiet hairline borders, light neutral text, and one muted green accent. Semantic
+/// colours keep their jobs: green is You and the primary action, teal is Remote, red is capture,
+/// amber is a warning. The light palette remains a clean neutral counterpart with the same
+/// contrast hierarchy.
 /// </para>
 /// </summary>
 public static class Theme
 {
     private static readonly Dictionary<string, (Color Dark, Color Light)> Palette = new(StringComparer.Ordinal)
     {
-        ["Ground"] = (Rgb("#0D1318"), Rgb("#EDF0F3")),
-        ["Surface"] = (Rgb("#141C23"), Rgb("#FFFFFF")),
-        ["Raised"] = (Rgb("#1D2831"), Rgb("#E7ECF1")),
-        ["Sunken"] = (Rgb("#0A1015"), Rgb("#F5F7F9")),
+        ["Ground"] = (Rgb("#0E1012"), Rgb("#EEF1F3")),
+        ["Surface"] = (Rgb("#14161A"), Rgb("#F7F9FA")),
+        ["CardFill"] = (Rgb("#17191D"), Rgb("#FFFFFF")),
+        ["Panel"] = (Rgb("#111316"), Rgb("#ECEFF2")),
+        ["Raised"] = (Rgb("#1D2025"), Rgb("#E7ECF0")),
+        ["Sunken"] = (Rgb("#101215"), Rgb("#F1F4F6")),
 
-        // rgba(255,255,255,.09) and rgba(10,20,30,.11) from the design, and their stronger pair.
-        ["Line"] = (Rgb("#17FFFFFF"), Rgb("#1C0A141E")),
-        ["LineStrong"] = (Rgb("#29FFFFFF"), Rgb("#330A141E")),
+        // rgba(255,255,255,.06) and rgba(10,20,30,.11) hairlines, and their stronger pair.
+        ["Line"] = (Rgb("#12FFFFFF"), Rgb("#1C0A141E")),
+        ["LineStrong"] = (Rgb("#22FFFFFF"), Rgb("#330A141E")),
 
-        ["Ink"] = (Rgb("#E6EDF3"), Rgb("#0E1720")),
-        ["InkDim"] = (Rgb("#8496A6"), Rgb("#54687A")),
-        ["InkFaint"] = (Rgb("#5B6C7B"), Rgb("#7B8B99")),
-        ["Focus"] = (Rgb("#9CC4F0"), Rgb("#1D5FA8")),
+        ["Ink"] = (Rgb("#E7E9EB"), Rgb("#101820")),
+        ["InkDim"] = (Rgb("#9AA0A6"), Rgb("#55636F")),
+        ["InkFaint"] = (Rgb("#6E7478"), Rgb("#7D8994")),
+        ["Focus"] = (Rgb("#63B981"), Rgb("#1E7A46")),
+        ["FocusWash"] = (Rgb("#2463B981"), Rgb("#E3F1E8")),
 
-        ["You"] = (Rgb("#F2A93B"), Rgb("#B36C10")),
-        ["Remote"] = (Rgb("#3FBFC7"), Rgb("#0B767E")),
-        ["Rec"] = (Rgb("#E2453D"), Rgb("#C22C25")),
+        // Dark text for a solid green plate, white for the deep green the light theme uses.
+        ["OnAccent"] = (Rgb("#0D1A11"), Rgb("#FFFFFF")),
 
-        ["YouWash"] = (Rgb("#24F2A93B"), Rgb("#1FB36C10")),
-        ["RemoteWash"] = (Rgb("#243FBFC7"), Rgb("#1F0B767E")),
-        ["RecWash"] = (Rgb("#21E2453D"), Rgb("#1AC22C25")),
+        ["You"] = (Rgb("#5FBF7E"), Rgb("#1E7A46")),
+        ["Remote"] = (Rgb("#58A8AD"), Rgb("#0B767E")),
+        ["Rec"] = (Rgb("#D9534E"), Rgb("#C22C25")),
 
-        ["Warn"] = (Rgb("#D8A657"), Rgb("#8A5B0F")),
+        ["YouWash"] = (Rgb("#245FBF7E"), Rgb("#1F1E7A46")),
+        ["RemoteWash"] = (Rgb("#2458A8AD"), Rgb("#1F0B767E")),
+        ["RecWash"] = (Rgb("#21D9534E"), Rgb("#1AC22C25")),
+
+        ["Warn"] = (Rgb("#D6A054"), Rgb("#8A5B0F")),
         ["WarnWash"] = (Rgb("#1E1A12"), Rgb("#FBF2E0")),
 
-        ["Hover"] = (Rgb("#2C3A46"), Rgb("#DAE1E8")),
-        ["Disabled"] = (Rgb("#18222B"), Rgb("#DFE5EB")),
+        ["Hover"] = (Rgb("#23262B"), Rgb("#DEE4E9")),
+        ["Disabled"] = (Rgb("#1B1E22"), Rgb("#E2E7EB")),
     };
 
     /// <summary>Every tone in one palette, for the dictionary that builds the brushes.</summary>
@@ -108,11 +114,18 @@ public static class Theme
     /// </summary>
     public static void Apply(AppTheme theme)
     {
-        Current = theme;
+        System.Windows.Threading.Dispatcher? dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            dispatcher.Invoke(() => Apply(theme));
+            return;
+        }
 
-        // One notification. Every palette brush binds its colour here, so the whole application
-        // repaints from this line, including the two ribbons that draw with the same brushes.
-        PaletteSource.Instance.Load(theme);
+        // Never mutate a brush already handed to WPF's render thread. The crash dump from the live
+        // theme-switch failure terminates inside wpfgfx_cor3.dll while those old bound brushes were
+        // being repainted. Replacing frozen resources is WPF's supported cross-render boundary.
+        PaletteDictionary.TryApplyToApplication(theme);
+        Current = theme;
 
         Changed?.Invoke(null, EventArgs.Empty);
     }
@@ -142,15 +155,15 @@ public static class Theme
     /// A brush from the palette by key.
     ///
     /// <para>
-    /// The shared instance, never a copy — a control that drew with a copy would keep the colour it
-    /// started with and quietly stop following the theme. Returns transparent rather than throwing
+    /// Returns the frozen brush currently stored under the palette key. Custom-drawn controls ask
+    /// again on each render after <see cref="Changed"/> invalidates them. Returns transparent
     /// when there is no application, which is what a designer surface and a bare unit test see.
     /// </para>
     /// </summary>
     public static Brush Brush(string key) =>
         System.Windows.Application.Current?.TryFindResource(key) as Brush ?? Brushes.Transparent;
 
-    /// <summary>A pen over a palette brush, unfrozen for the same reason the brushes are.</summary>
+    /// <summary>A short-lived drawing pen over the current immutable palette brush.</summary>
     public static Pen Pen(string key, double thickness) => new(Brush(key), thickness);
 
     private static Color Rgb(string hex) => (Color)ColorConverter.ConvertFromString(hex)!;

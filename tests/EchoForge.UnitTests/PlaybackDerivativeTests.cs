@@ -236,6 +236,36 @@ public sealed class PlaybackDerivativeTests : IDisposable
     }
 
     [Fact]
+    public async Task AudioEnergyEnvelopeKeepsTracksSeparatePreservesSilenceAndIsReused()
+    {
+        TranscriptionRequest request = _fixture.Build(
+            Mic(1, 2.0, 3000),
+            Mic(1, 2.0, 8000, gapBefore: 4.0),
+            Sys(1, 8.0, 6000, channels: 1));
+
+        PlaybackBuildResult first = await Builder().BuildAsync(request);
+        Assert.True(first.Succeeded, first.Detail);
+        PlaybackEnergyEnvelope envelope = Assert.IsType<PlaybackEnergyEnvelope>(first.Envelope);
+
+        Assert.Equal(PlaybackEnergyEnvelope.DefaultBuckets, envelope.Buckets);
+        Assert.True(envelope.HasData);
+        Assert.True(envelope.You[4] > 0.25f);
+        Assert.Equal(0f, envelope.You[envelope.Buckets / 2], 3);
+        Assert.True(envelope.Remote[envelope.Buckets / 2] > 0.5f);
+
+        string directory = PlaybackDerivativeBuilder.PlaybackDirectory(_fixture.Paths, new PlaybackOptions());
+        string cache = PlaybackEnergyBuilder.PathFor(directory);
+        Assert.True(File.Exists(cache));
+        DateTime written = File.GetLastWriteTimeUtc(cache);
+
+        PlaybackBuildResult second = await Builder().BuildAsync(request);
+        PlaybackEnergyEnvelope reused = Assert.IsType<PlaybackEnergyEnvelope>(second.Envelope);
+        Assert.Equal(envelope.You, reused.You);
+        Assert.Equal(envelope.Remote, reused.Remote);
+        Assert.Equal(written, File.GetLastWriteTimeUtc(cache));
+    }
+
+    [Fact]
     public async Task OneTrackEndingEarlyLeavesSilenceRatherThanShorteningTheMeeting()
     {
         TranscriptionRequest request = _fixture.Build(

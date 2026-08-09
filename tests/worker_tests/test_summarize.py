@@ -371,7 +371,8 @@ def test_a_transcript_with_nothing_notable_produces_an_empty_but_valid_summary(t
 
     assert summary["decisions"] == []
     assert summary["action_items"] == []
-    assert summary["schema_version"] == 1
+    assert summary["schema_version"] == 2
+    assert summary["narrative"] is None
     assert summary["model"]["produces_summaries"] is False
 
 

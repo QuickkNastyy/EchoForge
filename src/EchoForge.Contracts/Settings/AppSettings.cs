@@ -19,7 +19,23 @@ public sealed record AppSettings
     /// </summary>
     public string Theme { get; init; } = "dark";
 
-    public int SchemaVersion { get; init; } = 1;
+    /// <summary>Explicit model choice. Null means hardware recommendation may choose initially.</summary>
+    public string? AsrModelId { get; init; }
+
+    /// <summary>Explicit compute choice. Null means hardware recommendation may choose initially.</summary>
+    public string? TranscriptionComputeProfile { get; init; }
+
+    public string? TranscriptionVadMode { get; init; }
+
+    /// <summary>Null means automatic language detection.</summary>
+    public string? TranscriptionLanguage { get; init; }
+
+    /// <summary>Optional names, companies, acronyms, products, and locations used for ASR biasing.</summary>
+    public IReadOnlyList<string> TranscriptionGlossary { get; init; } = [];
+
+    public string? SummaryModelId { get; init; }
+
+    public int SchemaVersion { get; init; } = 2;
 }
 
 /// <summary>Loads and saves <see cref="AppSettings"/>. Injected so the UI can be tested.</summary>

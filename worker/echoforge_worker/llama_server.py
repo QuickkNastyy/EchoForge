@@ -100,6 +100,14 @@ CPU_ONLY_LADDER: Final[tuple[LlamaProfile, ...]] = (
     LlamaProfile("cpu-8k", 8192, 0, "q8_0", "CPU only"),
 )
 
+#: gpt-oss-20b's 12.1 GB weights leave less headroom on a physical 16 GB card. Every GPU rung
+#: keeps all layers resident and reduces context instead of spilling layers into Windows shared
+#: GPU memory. Failure after the 8K rung is surfaced; it never masquerades as a fit.
+GPT_OSS_LADDER: Final[tuple[LlamaProfile, ...]] = (
+    LlamaProfile("gpt-oss-cuda-16k", 16384, 99, "q8_0", "GPU, 16K context"),
+    LlamaProfile("gpt-oss-cuda-8k", 8192, 99, "q8_0", "GPU, 8K context"),
+)
+
 
 class LlamaServerError(RuntimeError):
     """The server could not be started or could not answer. Carries no meeting content."""

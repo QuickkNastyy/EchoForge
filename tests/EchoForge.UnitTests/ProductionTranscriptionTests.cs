@@ -1,7 +1,9 @@
 using System.Security.Cryptography;
 using EchoForge.App;
 using EchoForge.Contracts.Artifacts;
+using EchoForge.Contracts.Inference;
 using EchoForge.Contracts.Processing;
+using EchoForge.Contracts.Settings;
 using EchoForge.Contracts.Transcripts;
 using EchoForge.Contracts.Workers;
 using EchoForge.Core.Exports;
@@ -45,7 +47,7 @@ public sealed class ProductionTranscriptionTests : IDisposable
     private static byte[] Payload(int length, byte seed) =>
         [.. Enumerable.Range(0, length).Select(i => (byte)((i * 13 + seed) & 0xFF))];
 
-    private static ArtifactEntry ModelFile(string id, string fileName, byte[] content) => new()
+    private static ArtifactEntry ModelFile(string id, string fileName, byte[] content, params string[] profiles) => new()
     {
         ArtifactId = id,
         Kind = "speech-model",
@@ -58,12 +60,12 @@ public sealed class ProductionTranscriptionTests : IDisposable
         License = "MIT",
         LicenseFile = "third_party/licenses/onnxruntime-1.28.0-LICENSE.txt",
         RuntimeVersion = "test",
-        Profiles = ["cpu-int8"],
+        Profiles = profiles.Length == 0 ? ["cpu-int8"] : profiles,
         VerifiedUtc = new DateTimeOffset(2026, 8, 6, 0, 0, 0, TimeSpan.Zero),
     };
 
     /// <summary>A registry holding a model whose files are already installed and verified.</summary>
-    private ArtifactRegistry RegistryWithInstalledModel(out ArtifactEntry[] entries)
+    private ArtifactRegistry RegistryWithInstalledModel(out ArtifactEntry[] entries, params string[] profiles)
     {
         byte[] weights = Payload(2048, 1);
         byte[] config = Payload(64, 2);
@@ -71,9 +73,9 @@ public sealed class ProductionTranscriptionTests : IDisposable
 
         entries =
         [
-            ModelFile("stt.test.model", "model.bin", weights),
-            ModelFile("stt.test.config", "config.json", config),
-            ModelFile("stt.test.tokenizer", "tokenizer.json", tokenizer),
+            ModelFile("stt.test.model", "model.bin", weights, profiles),
+            ModelFile("stt.test.config", "config.json", config, profiles),
+            ModelFile("stt.test.tokenizer", "tokenizer.json", tokenizer, profiles),
         ];
 
         ArtifactRegistry registry = new(
@@ -129,6 +131,36 @@ public sealed class ProductionTranscriptionTests : IDisposable
             Assert.True(File.Exists(path), entry.FileName);
             Assert.Equal(entry.SizeBytes, new FileInfo(path).Length);
         }
+    }
+
+    [Fact]
+    public async Task ADependencyCanKeepItsSourceNameAndUseACollisionFreeStagedName()
+    {
+        byte[] primaryConfig = Payload(64, 8);
+        byte[] dependencyConfig = Payload(96, 9);
+        ArtifactEntry[] entries =
+        [
+            ModelFile("stt.test.primary-config", "config.json", primaryConfig),
+            ModelFile("stt.test.dependency-config", "config.json", dependencyConfig) with
+            {
+                StageFileName = "dependency-config.json",
+            },
+        ];
+        using ArtifactRegistry registry = new(
+            new ArtifactManifest { Artifacts = entries }, Path.Combine(_temp.Path, "collision-models"));
+
+        byte[][] payloads = [primaryConfig, dependencyConfig];
+        for (int i = 0; i < entries.Length; i++)
+        {
+            Directory.CreateDirectory(registry.InstallDirectory(entries[i]));
+            await File.WriteAllBytesAsync(registry.InstallPath(entries[i]), payloads[i]);
+        }
+        await VerifyAllAsync(registry, entries);
+
+        string staged = Assert.IsType<string>(registry.TryStageModelDirectory(ProcessingProfile.CpuInt8));
+        Assert.Equal(primaryConfig, await File.ReadAllBytesAsync(Path.Combine(staged, "config.json")));
+        Assert.Equal(dependencyConfig, await File.ReadAllBytesAsync(Path.Combine(staged, "dependency-config.json")));
+        Assert.Equal("config.json", entries[1].FileName);
     }
 
     [Fact]
@@ -267,6 +299,69 @@ public sealed class ProductionTranscriptionTests : IDisposable
         // Choosing the placeholder deliberately still warns, which is the case the notice is for.
         verified.SelectedBackend = verified.Backends.First(b => !b.RecognizesSpeech);
         Assert.True(verified.IsPlaceholderBackend);
+    }
+
+    [Fact]
+    public async Task RecommendedAccuracyModelAndCudaFp16BecomeTheInitialChoiceOnCapableHardware()
+    {
+        ArtifactRegistry registry = RegistryWithInstalledModel(
+            out ArtifactEntry[] entries,
+            ProcessingProfile.AsrWhisperLargeV3,
+            ProcessingProfile.AsrWhisperLargeV3Turbo,
+            ProcessingProfile.CudaFp16,
+            ProcessingProfile.CpuInt8);
+        await VerifyAllAsync(registry, entries);
+        FakeSettingsStore settings = new();
+
+        TranscriptionViewModel viewModel = Track(new TranscriptionViewModel(
+            Coordinator(registry),
+            new NoPrompt(),
+            settings,
+            AsrModelIds.WhisperLargeV3,
+            ProcessingProfile.CudaFp16));
+
+        Assert.Equal(AsrModelIds.WhisperLargeV3, viewModel.SelectedAsrModel.Id);
+        Assert.Equal(ProcessingProfile.CudaFp16, viewModel.SelectedComputeProfile.Id);
+        Assert.Equal(VadMode.Accuracy, viewModel.SelectedVadMode.Mode);
+    }
+
+    [Fact]
+    public async Task ExplicitUserSelectionsSurviveAHardwareRecommendation()
+    {
+        ArtifactRegistry registry = RegistryWithInstalledModel(
+            out ArtifactEntry[] entries,
+            ProcessingProfile.AsrWhisperLargeV3,
+            ProcessingProfile.AsrWhisperLargeV3Turbo,
+            ProcessingProfile.CudaFp16,
+            ProcessingProfile.CpuInt8);
+        await VerifyAllAsync(registry, entries);
+        FakeSettingsStore settings = new()
+        {
+            Current = new AppSettings
+            {
+                AsrModelId = AsrModelIds.WhisperLargeV3Turbo,
+                TranscriptionComputeProfile = ProcessingProfile.CpuInt8,
+                TranscriptionVadMode = "fast",
+                TranscriptionLanguage = "en",
+                TranscriptionGlossary = ["EchoForge", "CTranslate2"],
+            },
+        };
+
+        TranscriptionViewModel viewModel = Track(new TranscriptionViewModel(
+            Coordinator(registry),
+            new NoPrompt(),
+            settings,
+            AsrModelIds.WhisperLargeV3,
+            ProcessingProfile.CudaFp16));
+
+        Assert.Equal(AsrModelIds.WhisperLargeV3Turbo, viewModel.SelectedAsrModel.Id);
+        Assert.Equal(ProcessingProfile.CpuInt8, viewModel.SelectedComputeProfile.Id);
+        Assert.Equal(VadMode.Fast, viewModel.SelectedVadMode.Mode);
+        Assert.Equal("en", viewModel.SelectedLanguage.Code);
+        Assert.Equal(["EchoForge", "CTranslate2"], viewModel.CurrentOptions().Glossary);
+
+        viewModel.Glossary = "EchoForge, WASAPI, EchoForge";
+        Assert.Equal(["EchoForge", "WASAPI"], settings.Current.TranscriptionGlossary);
     }
 
     [Fact]

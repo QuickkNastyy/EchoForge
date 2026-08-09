@@ -10,12 +10,13 @@ namespace EchoForge.Infrastructure.Playback;
 public sealed record PlaybackPreparation(
     PlaybackDerivativeRecord? Record,
     string? AudioPath,
+    PlaybackEnergyEnvelope? Envelope,
     string? Code,
     string? Message)
 {
     public bool Succeeded => Record is not null && AudioPath is not null;
 
-    public static PlaybackPreparation Fail(string code, string message) => new(null, null, code, message);
+    public static PlaybackPreparation Fail(string code, string message) => new(null, null, null, code, message);
 }
 
 /// <summary>
@@ -109,7 +110,7 @@ public sealed class PlaybackPreparer(ISessionStore sessions)
             string audioPath = Path.Combine(
                 PlaybackDerivativeBuilder.PlaybackDirectory(paths, options), "playback.wav");
 
-            return new PlaybackPreparation(result.Record, audioPath, null, null);
+            return new PlaybackPreparation(result.Record, audioPath, result.Envelope, null, null);
         }
         finally
         {

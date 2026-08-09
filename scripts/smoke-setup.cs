@@ -128,6 +128,8 @@ Console.WriteLine("Recommendation");
 
 SetupRecommendation recommendation = ProfileRecommender.Recommend(hardware);
 
+Console.WriteLine("  asr model      " + recommendation.Asr.ModelId
+    + "  artifacts=" + recommendation.Asr.ArtifactProfileId);
 Console.WriteLine("  transcription  " + recommendation.Transcription.ProfileId
     + (recommendation.Transcription.IsFallback ? "  (fallback)" : string.Empty));
 Console.WriteLine("                 " + recommendation.Transcription.Summary);
@@ -159,7 +161,9 @@ Console.WriteLine();
 Console.WriteLine("Components");
 
 SetupSnapshot snapshot = setup.Runtimes.Snapshot(
-    recommendation.Transcription.ProfileId, recommendation.Summarization.ProfileId);
+    recommendation.Transcription.ProfileId,
+    recommendation.Summarization.ProfileId,
+    recommendation.Asr.ArtifactProfileId);
 
 foreach (RuntimeComponentState component in snapshot.Components)
 {

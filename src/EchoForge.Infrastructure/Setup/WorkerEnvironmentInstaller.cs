@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -84,6 +85,9 @@ public sealed class WorkerEnvironmentInstaller
 
     public string Root => _layout.WorkerEnvironmentRoot;
 
+    /// <summary>The exact shipped worker package used for capability probing and job launches.</summary>
+    public string WorkerPackageRoot => _layout.WorkerPackageRoot;
+
     public static string ExecutableIn(string root) => Path.Combine(root, "Scripts", "python.exe");
 
     public long BytesRequired => Wheels.Sum(w => w.SizeBytes);
@@ -106,7 +110,11 @@ public sealed class WorkerEnvironmentInstaller
         }
 
         EnvironmentStamp? stamp = ReadStamp(Root);
-        if (stamp is null || !stamp.Packages.SequenceEqual(WheelDigests(), StringComparer.Ordinal))
+        string? requirementsSha256 = RequirementsSha256();
+        if (stamp is null ||
+            requirementsSha256 is null ||
+            !string.Equals(stamp.RequirementsSha256, requirementsSha256, StringComparison.Ordinal) ||
+            !stamp.Packages.SequenceEqual(WheelDigests(), StringComparer.Ordinal))
         {
             return null;
         }
@@ -300,7 +308,10 @@ public sealed class WorkerEnvironmentInstaller
             // Imported rather than assumed. A wheel set that installs and does not import is a
             // broken environment that would fail on the first meeting instead of here.
             ProcessResult probe = await RunAsync(
-                environmentPython, ["-c", ProbeScript], linked.Token).ConfigureAwait(false);
+                environmentPython,
+                ["-c", ProbeScript],
+                linked.Token,
+                _layout.WorkerPackageRoot).ConfigureAwait(false);
 
             if (probe.ExitCode != 0)
             {
@@ -390,16 +401,32 @@ public sealed class WorkerEnvironmentInstaller
 
     private const string ProbeScript =
         "import sys, faster_whisper, ctranslate2, av, onnxruntime; " +
+        "from echoforge_worker.compute import cuda_device_count; " +
         "print('python ' + '.'.join(str(p) for p in sys.version_info[:3])); " +
         "print('faster-whisper ' + faster_whisper.__version__); " +
         "print('ctranslate2 ' + ctranslate2.__version__); " +
         "print('onnxruntime ' + onnxruntime.__version__); " +
-        "print('cuda-devices ' + str(ctranslate2.get_cuda_device_count()))";
+        "print('cuda-devices ' + str(cuda_device_count()))";
 
     private IReadOnlyList<string> WheelDigests() =>
     [
         .. Wheels.Select(w => string.Create(CultureInfo.InvariantCulture, $"{w.ArtifactId}:{w.Sha256}"))
     ];
+
+    private string? RequirementsSha256()
+    {
+        string path = RequirementsPath();
+        try
+        {
+            return File.Exists(path)
+                ? Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path)))
+                : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
 
     private static string StampPath(string root) => Path.Combine(root, StampFileName);
 
@@ -428,6 +455,7 @@ public sealed class WorkerEnvironmentInstaller
             PythonRevision = python.Revision,
             PythonVersion = python.Version,
             PackageSummary = summary,
+            RequirementsSha256 = RequirementsSha256() ?? string.Empty,
             Packages = [.. WheelDigests()],
             InstalledUtc = DateTimeOffset.UtcNow,
         };
@@ -463,7 +491,10 @@ public sealed class WorkerEnvironmentInstaller
     /// </para>
     /// </summary>
     private static async Task<ProcessResult> RunAsync(
-        string executable, string[] arguments, CancellationToken cancellationToken)
+        string executable,
+        string[] arguments,
+        CancellationToken cancellationToken,
+        string? pythonPath = null)
     {
         ProcessStartInfo startInfo = new()
         {
@@ -482,6 +513,10 @@ public sealed class WorkerEnvironmentInstaller
         }
 
         OfflineEnvironment.Apply(startInfo.Environment);
+        if (!string.IsNullOrWhiteSpace(pythonPath))
+        {
+            startInfo.Environment["PYTHONPATH"] = Path.GetFullPath(pythonPath);
+        }
         startInfo.Environment["PIP_NO_INPUT"] = "1";
         startInfo.Environment["PIP_DISABLE_PIP_VERSION_CHECK"] = "1";
         startInfo.Environment["PIP_NO_INDEX"] = "1";
@@ -533,6 +568,9 @@ internal sealed record EnvironmentStamp
 
     [JsonPropertyName("package_summary")]
     public string PackageSummary { get; init; } = string.Empty;
+
+    [JsonPropertyName("requirements_sha256")]
+    public string RequirementsSha256 { get; init; } = string.Empty;
 
     [JsonPropertyName("packages")]
     public IReadOnlyList<string> Packages { get; init; } = [];

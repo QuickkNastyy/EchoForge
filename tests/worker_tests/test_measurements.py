@@ -17,6 +17,7 @@ from echoforge_worker.measurements import (
 )
 from echoforge_worker.model_profiles import (
     GEMMA_4_12B,
+    GPT_OSS_20B,
     MINISTRAL_3_14B,
     available_model_profiles,
     is_local_model,
@@ -27,8 +28,9 @@ from echoforge_worker.model_profiles import (
 
 
 def test_both_bake_off_candidates_are_resolvable() -> None:
-    assert available_model_profiles() == ["gemma-4-12b", "ministral-3-14b"]
+    assert available_model_profiles() == ["gemma-4-12b", "gpt-oss-20b", "ministral-3-14b"]
     assert resolve_model_profile("gemma-4-12b") is GEMMA_4_12B
+    assert resolve_model_profile("gpt-oss-20b") is GPT_OSS_20B
     assert resolve_model_profile("ministral-3-14b") is MINISTRAL_3_14B
 
 
@@ -41,6 +43,7 @@ def test_only_one_candidate_may_be_the_default() -> None:
     # A bake-off candidate is something EchoForge measures. Installing it must never be a way for
     # it to become the summariser.
     assert GEMMA_4_12B.is_default_candidate
+    assert not GPT_OSS_20B.is_default_candidate
     assert not MINISTRAL_3_14B.is_default_candidate
 
 
@@ -56,8 +59,17 @@ def test_gemma_pins_reasoning_off_and_ministral_needs_nothing() -> None:
     assert MINISTRAL_3_14B.reasoning_note
 
 
+def test_gpt_oss_pins_harmony_and_bounds_private_reasoning() -> None:
+    assert GPT_OSS_20B.model_id == "gpt-oss-20b-mxfp4"
+    assert GPT_OSS_20B.quantization == "MXFP4"
+    assert "--jinja" in GPT_OSS_20B.server_args
+    assert "--reasoning-budget" in GPT_OSS_20B.server_args
+    assert '{"reasoning_effort":"low"}' in GPT_OSS_20B.server_args
+    assert "final content" in GPT_OSS_20B.reasoning_note.casefold()
+
+
 def test_every_profile_records_its_quantization_and_identity() -> None:
-    for profile in (GEMMA_4_12B, MINISTRAL_3_14B):
+    for profile in (GEMMA_4_12B, GPT_OSS_20B, MINISTRAL_3_14B):
         assert profile.backend and profile.model_id and profile.display_name
         assert profile.quantization
         assert profile.reasoning_note

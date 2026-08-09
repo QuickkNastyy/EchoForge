@@ -26,10 +26,10 @@ public sealed class EvidenceFocusConverter : IMultiValueConverter
 
     public object Convert(object[] values, Type targetType, object? parameter, CultureInfo culture)
     {
-        string? segmentId = values.Length > 0 ? values[0] as string : null;
+        IReadOnlyCollection<string>? segmentIds = values.Length > 0 ? values[0] as IReadOnlyCollection<string> : null;
         string? cited = values.Length > 1 ? values[1] as string : null;
 
-        bool isCited = cited is not null && string.Equals(segmentId, cited, StringComparison.Ordinal);
+        bool isCited = cited is not null && segmentIds?.Contains(cited, StringComparer.Ordinal) == true;
 
         return parameter as string == "mark"
             ? isCited ? Visibility.Visible : Visibility.Collapsed

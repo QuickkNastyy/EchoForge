@@ -4,10 +4,14 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Windows.Threading;
 using EchoForge.Contracts.Artifacts;
+using EchoForge.Contracts.Inference;
 using EchoForge.Contracts.Processing;
+using EchoForge.Contracts.Settings;
 using EchoForge.Contracts.Transcripts;
 using EchoForge.Contracts.Workers;
 using EchoForge.Core.Exports;
+using EchoForge.Core.Inference;
+using EchoForge.Core.Transcripts;
 using EchoForge.Infrastructure.Processing;
 
 namespace EchoForge.App;
@@ -36,6 +40,49 @@ public sealed record BackendOption(string Id, string Label, bool RecognizesSpeec
 /// <summary>A selectable compute profile. The worker may climb down from it, and says so.</summary>
 public sealed record ComputeProfileOption(string Id, string Label);
 
+/// <summary>A model and its current verified installation/usability state.</summary>
+public sealed record AsrModelOption(
+    AsrModelDefinition Definition,
+    bool Installed,
+    bool Usable,
+    string Status)
+{
+    public string Id => Definition.Id;
+    public string Label => $"{Definition.DisplayName} — {Status}";
+}
+
+public sealed record VadModeOption(VadMode Mode, string Label, string Description);
+
+/// <summary>One model in a sequential, same-recording comparison run.</summary>
+public sealed class AsrComparisonChoice(AsrModelOption model) : INotifyPropertyChanged
+{
+    private bool _isSelected;
+
+    public AsrModelOption Model { get; } = model;
+
+    public string Label => Model.Definition.DisplayName;
+
+    public bool IsEnabled => Model.Usable;
+
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set
+        {
+            bool selected = value && IsEnabled;
+            if (_isSelected == selected)
+            {
+                return;
+            }
+
+            _isSelected = selected;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelected)));
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+}
+
 /// <summary>A language, or automatic detection when the code is null.</summary>
 public sealed record LanguageOption(string? Code, string Label);
 
@@ -54,6 +101,9 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly TranscriptionCoordinator _coordinator;
     private readonly IExportDestinationPrompt _exportPrompt;
+    private readonly ISettingsStore? _settings;
+    private readonly string? _recommendedModelId;
+    private readonly string? _recommendedComputeProfile;
     private readonly OperationGate _gate = new();
 
     private string? _sessionId;
@@ -69,18 +119,30 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
     private string _progressDescription = string.Empty;
     private double _progressPercent;
 
-    public TranscriptionViewModel(TranscriptionCoordinator coordinator, IExportDestinationPrompt exportPrompt)
+    public TranscriptionViewModel(
+        TranscriptionCoordinator coordinator,
+        IExportDestinationPrompt exportPrompt,
+        ISettingsStore? settings = null,
+        string? recommendedModelId = null,
+        string? recommendedComputeProfile = null)
     {
         ArgumentNullException.ThrowIfNull(coordinator);
         ArgumentNullException.ThrowIfNull(exportPrompt);
 
         _coordinator = coordinator;
         _exportPrompt = exportPrompt;
+        _settings = settings;
+        _recommendedModelId = recommendedModelId;
+        _recommendedComputeProfile = recommendedComputeProfile;
 
         TranscribeCommand = new AsyncRelayCommand(TranscribeAsync, _gate, () => CanTranscribe, m => Error = m);
         TranscribeAgainCommand = new AsyncRelayCommand(TranscribeAsync, _gate, () => CanTranscribeAgain, m => Error = m);
         CancelCommand = new AsyncRelayCommand(CancelAsync, _gate, () => CanCancel, m => Error = m);
         ExportCommand = new AsyncRelayCommand(ExportAsync, _gate, () => CanExport, m => Error = m);
+        RunModelComparisonCommand = new AsyncRelayCommand(
+            RunModelComparisonAsync, _gate, () => CanRunModelComparison, m => Error = m);
+        CompareRevisionsCommand = new AsyncRelayCommand(
+            CompareRevisionsAsync, _gate, () => CanCompareRevisions, m => Error = m);
         PrepareProductionCommand = new AsyncRelayCommand(
             () => PrepareAsync(installMissing: false), _gate, () => CanPrepare, m => Error = m);
         InstallModelsCommand = new AsyncRelayCommand(
@@ -91,6 +153,9 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         _coordinator.StateChanged += OnCoordinatorStateChanged;
         _coordinator.ProgressChanged += OnCoordinatorProgress;
         _coordinator.PreparationProgress += OnPreparationProgress;
+
+        RebuildModels();
+        RestoreInferenceSelections();
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -103,6 +168,13 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
 
     public AsyncRelayCommand ExportCommand { get; }
 
+    public AsyncRelayCommand RunModelComparisonCommand { get; }
+
+    public AsyncRelayCommand CompareRevisionsCommand { get; }
+
+    /// <summary>Provided by the composition root so comparison remains testable without a Window.</summary>
+    public Action<TranscriptComparisonResult>? ShowComparison { get; set; }
+
     /// <summary>Checks artifacts and prepares audio, without downloading anything.</summary>
     public AsyncRelayCommand PrepareProductionCommand { get; }
 
@@ -110,6 +182,23 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
     public AsyncRelayCommand InstallModelsCommand { get; }
 
     public ObservableCollection<TranscriptRevisionOption> Revisions { get; } = [];
+
+    public ObservableCollection<AsrComparisonChoice> ComparisonModels { get; } = [];
+
+    private TranscriptRevisionOption? _comparisonLeftRevision;
+    private TranscriptRevisionOption? _comparisonRightRevision;
+
+    public TranscriptRevisionOption? ComparisonLeftRevision
+    {
+        get => _comparisonLeftRevision;
+        set { _comparisonLeftRevision = value; OnChanged(); RaiseCommands(); }
+    }
+
+    public TranscriptRevisionOption? ComparisonRightRevision
+    {
+        get => _comparisonRightRevision;
+        set { _comparisonRightRevision = value; OnChanged(); RaiseCommands(); }
+    }
 
     public ObservableCollection<ExportFormatOption> ExportFormats { get; } =
     [
@@ -195,9 +284,17 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
                 return string.Empty;
             }
 
+            double? elapsed = selected.TotalProcessingSeconds ?? selected.ProcessingSeconds;
+            string timing = elapsed is > 0
+                ? string.Create(CultureInfo.InvariantCulture,
+                    $" · {TimeSpan.FromSeconds(elapsed.Value):hh\\:mm\\:ss} processing")
+                : string.Empty;
             return string.Create(
                 CultureInfo.InvariantCulture,
-                $"Version {selected.Revision} · {selected.SegmentCount} segments · {TimeSpan.FromSeconds(selected.DurationSeconds):hh\\:mm\\:ss}");
+                $"Version {selected.Revision} · {selected.ModelId} · " +
+                $"requested {selected.RequestedComputeProfile} / actual {selected.ActualComputeProfile} · " +
+                $"{selected.VadMode} VAD · {selected.SegmentCount} segments · " +
+                $"{TimeSpan.FromSeconds(selected.DurationSeconds):hh\\:mm\\:ss} source{timing}");
         }
     }
 
@@ -234,7 +331,8 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
 
             return selected is null
                 ? worker
-                : $"{selected.Backend} · {selected.ModelId} · {worker}";
+                : $"{selected.Backend} · {selected.ModelId}@{selected.ModelRevision} · " +
+                  $"requested {selected.RequestedComputeProfile} / actual {selected.ActualComputeProfile} · {worker}";
         }
     }
 
@@ -265,15 +363,24 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public bool CanTranscribe =>
         HasSession && _sessionSettled && _hostReady && !_shuttingDown &&
-        !IsWorking && !_coordinator.IsRunning && !_coordinator.IsQueued && !HasTranscript;
+        SelectedAsrModel.Usable && !IsWorking && !_coordinator.IsRunning && !_coordinator.IsQueued && !HasTranscript;
 
     public bool CanTranscribeAgain =>
         HasSession && _sessionSettled && _hostReady && !_shuttingDown &&
-        !IsWorking && !_coordinator.IsRunning && !_coordinator.IsQueued && HasTranscript;
+        SelectedAsrModel.Usable && !IsWorking && !_coordinator.IsRunning && !_coordinator.IsQueued && HasTranscript;
 
     public bool CanCancel => IsWorking && !_shuttingDown;
 
     public bool CanExport => HasTranscript && !_shuttingDown && !IsWorking;
+
+    public bool CanRunModelComparison =>
+        HasSession && _sessionSettled && _hostReady && !_shuttingDown && !IsWorking
+        && !_coordinator.IsRunning && !_coordinator.IsQueued
+        && ComparisonModels.Count(choice => choice.IsSelected && choice.IsEnabled) >= 2;
+
+    public bool CanCompareRevisions =>
+        ComparisonLeftRevision is { } left && ComparisonRightRevision is { } right
+        && left.Revision != right.Revision && !_shuttingDown && !IsWorking;
 
     /// <summary>
     /// Production preparation is available for a settled recording, when nothing else is running
@@ -307,6 +414,78 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
 
     // -- what to run, and how ------------------------------------------------------------------
 
+    public ObservableCollection<AsrModelOption> AsrModels { get; } = [];
+
+    private AsrModelOption? _selectedAsrModel;
+
+    /// <summary>Model identity is independent of backend and compute.</summary>
+    public AsrModelOption SelectedAsrModel
+    {
+        get => _selectedAsrModel ??= ChooseInitialModel();
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            if (ReferenceEquals(_selectedAsrModel, value))
+            {
+                return;
+            }
+
+            _selectedAsrModel = value;
+            _selectedBackend = Backends.FirstOrDefault(option =>
+                string.Equals(option.Id, value.Definition.BackendId, StringComparison.Ordinal))
+                ?? Backends[0];
+            CoerceSelectionsForModel(value.Definition);
+            PersistInferenceSettings(modelId: value.Id);
+            OnChanged();
+            OnChanged(nameof(SelectedBackend));
+            OnChanged(nameof(IsProductionSelected));
+            OnChanged(nameof(IsPlaceholderBackend));
+            OnChanged(nameof(PlaceholderWarning));
+            OnChanged(nameof(SupportsGlossary));
+            OnChanged(nameof(ModelCapabilitySummary));
+            RaiseCommands();
+        }
+    }
+
+    public bool SupportsGlossary => SelectedAsrModel.Definition.SupportsGlossaryPrompt;
+
+    public string ModelCapabilitySummary
+    {
+        get
+        {
+            AsrModelDefinition model = SelectedAsrModel.Definition;
+            string maturity = model.Maturity == ModelMaturity.Experimental ? "Experimental" : "Production";
+            return $"{model.ShortDescription}  {maturity} · {model.BackendId} · {model.TimestampPrecision}.";
+        }
+    }
+
+    public ObservableCollection<VadModeOption> VadModes { get; } =
+    [
+        new(VadMode.Accuracy, "Accuracy", "Whisper receives every sample; no destructive VAD filtering."),
+        new(VadMode.Balanced, "Balanced", "Permissive VAD removes only sustained silence."),
+        new(VadMode.Fast, "Fast", "More aggressive silence removal for throughput."),
+        new(VadMode.Off, "No VAD / diagnostic", "Every planned sample reaches the ASR backend."),
+    ];
+
+    private VadModeOption? _selectedVadMode;
+
+    public VadModeOption SelectedVadMode
+    {
+        get => _selectedVadMode ??= VadModes.First(option => option.Mode == DefaultVadMode(SelectedAsrModel.Id));
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            if (!SelectedAsrModel.Definition.SupportedVadModes.Contains(value.Mode))
+            {
+                return;
+            }
+
+            _selectedVadMode = value;
+            PersistInferenceSettings(vadMode: Wire(value.Mode));
+            OnChanged();
+        }
+    }
+
     /// <summary>
     /// The backends this build can offer. The placeholder is always present and always says
     /// what it is; production appears only where its artifacts and runtime exist.
@@ -315,6 +494,7 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
     [
         new(WorkerProtocol.MockBackend, "Deterministic placeholder (no speech recognition)", RecognizesSpeech: false),
         new("faster-whisper", "faster-whisper (real speech recognition)", RecognizesSpeech: true),
+        new(AsrBackendIds.Nemo, "NVIDIA NeMo (real speech recognition; isolated runtime required)", RecognizesSpeech: true),
     ];
 
     private BackendOption? _selectedBackend;
@@ -330,12 +510,23 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public BackendOption SelectedBackend
     {
-        get => _selectedBackend ??= ProductionInstalled
-            ? Backends.FirstOrDefault(b => b.RecognizesSpeech) ?? Backends[0]
-            : Backends[0];
+        get => _selectedBackend ??= Backends.FirstOrDefault(option =>
+            string.Equals(option.Id, SelectedAsrModel.Definition.BackendId, StringComparison.Ordinal)) ?? Backends[0];
         set
         {
             _selectedBackend = value;
+            AsrModelOption? corresponding = AsrModels.FirstOrDefault(model =>
+                string.Equals(model.Definition.BackendId, value.Id, StringComparison.Ordinal)
+                && (model.Installed || !value.RecognizesSpeech));
+            if (corresponding is not null)
+            {
+                _selectedAsrModel = corresponding;
+                CoerceSelectionsForModel(corresponding.Definition);
+                PersistInferenceSettings(modelId: corresponding.Id);
+                OnChanged(nameof(SelectedAsrModel));
+                OnChanged(nameof(SupportsGlossary));
+                OnChanged(nameof(ModelCapabilitySummary));
+            }
             OnChanged();
             OnChanged(nameof(IsProductionSelected));
             OnChanged(nameof(IsPlaceholderBackend));
@@ -354,8 +545,9 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
     /// </para>
     /// </summary>
     public bool ProductionInstalled =>
-        _coordinator.Preparation is { Registry: { } registry } &&
-        registry.Profiles().Any(profile => profile.Artifacts.Count > 0 && registry.IsProfileReady(profile));
+        AsrModels.Any(model => model.Definition.Maturity == ModelMaturity.Production
+                               && model.Definition.BackendId != AsrBackendIds.Mock
+                               && model.Installed);
 
     public bool IsProductionSelected => SelectedBackend.RecognizesSpeech;
 
@@ -363,15 +555,27 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
     [
         new(ProcessingProfile.CpuInt8, "CPU INT8 — works everywhere, slowest"),
         new(ProcessingProfile.CudaInt8Float16, "GPU INT8/FP16 — lower memory"),
-        new(ProcessingProfile.CudaFp16, "GPU FP16 — highest quality"),
+        new(ProcessingProfile.CudaFp16, "GPU FP16 — full precision"),
+        new(ComputeProfileIds.CudaBFloat16, "GPU BF16 — NeMo models"),
     ];
 
     private ComputeProfileOption? _selectedComputeProfile;
 
     public ComputeProfileOption SelectedComputeProfile
     {
-        get => _selectedComputeProfile ??= ComputeProfiles[0];
-        set { _selectedComputeProfile = value; OnChanged(); }
+        get => _selectedComputeProfile ??= ResolveInitialComputeProfile();
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            if (!SelectedAsrModel.Definition.SupportedComputeProfiles.Contains(value.Id, StringComparer.Ordinal))
+            {
+                return;
+            }
+
+            _selectedComputeProfile = value;
+            PersistInferenceSettings(computeProfile: value.Id);
+            OnChanged();
+        }
     }
 
     /// <summary>
@@ -397,7 +601,20 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
     public LanguageOption SelectedLanguage
     {
         get => _selectedLanguage ??= Languages[0];
-        set { _selectedLanguage = value; OnChanged(); }
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            if (SelectedAsrModel.Definition.Languages.Count == 1
+                && string.Equals(SelectedAsrModel.Definition.Languages[0], "en", StringComparison.Ordinal)
+                && !string.Equals(value.Code, "en", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _selectedLanguage = value;
+            PersistInferenceSettings(language: value.Code ?? "auto");
+            OnChanged();
+        }
     }
 
     private string _glossary = string.Empty;
@@ -409,7 +626,16 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
     public string Glossary
     {
         get => _glossary;
-        set { _glossary = value ?? string.Empty; OnChanged(); }
+        set
+        {
+            _glossary = value ?? string.Empty;
+            OnChanged();
+            if (_settings is not null)
+            {
+                AppSettings current = _settings.Load();
+                _settings.Save(current with { TranscriptionGlossary = GlossaryTerms(_glossary) });
+            }
+        }
     }
 
     /// <summary>
@@ -472,10 +698,15 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public TranscriptionOptions CurrentOptions() => new()
     {
-        Backend = SelectedBackend.Id,
+        Backend = SelectedAsrModel.Definition.BackendId,
+        ModelId = SelectedAsrModel.Id,
         ComputeProfile = SelectedComputeProfile.Id,
         Language = SelectedLanguage.Code,
-        Glossary = [.. Glossary.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+        VadMode = SelectedVadMode.Mode,
+        VadFilter = SelectedVadMode.Mode is not (VadMode.Accuracy or VadMode.Off),
+        Glossary = SupportsGlossary
+            ? GlossaryTerms(Glossary)
+            : [],
     };
 
     private async Task TranscribeAsync()
@@ -529,6 +760,130 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         RefreshFromCoordinator();
     }
 
+    /// <summary>
+    /// Runs every selected model one at a time. Each coordinator call owns one short-lived worker,
+    /// and the next call is not made until that process has exited and its revision is durable.
+    /// </summary>
+    private async Task RunModelComparisonAsync()
+    {
+        if (_sessionId is not { } sessionId)
+        {
+            return;
+        }
+
+        List<AsrModelOption> models =
+        [
+            .. ComparisonModels
+                .Where(choice => choice.IsSelected && choice.IsEnabled)
+                .Select(choice => choice.Model)
+        ];
+        if (models.Count < 2)
+        {
+            Error = "Select at least two installed, usable transcription models.";
+            return;
+        }
+
+        Error = null;
+        Notice = $"Running 1 of {models.Count}: {models[0].Definition.DisplayName}.";
+        List<int> revisions = [];
+
+        for (int index = 0; index < models.Count; index++)
+        {
+            AsrModelDefinition model = models[index].Definition;
+            Notice = $"Running {index + 1} of {models.Count}: {model.DisplayName}. Models are loaded sequentially.";
+
+            string compute = model.SupportedComputeProfiles.Contains(
+                    SelectedComputeProfile.Id, StringComparer.Ordinal)
+                ? SelectedComputeProfile.Id
+                : model.SupportedComputeProfiles.Contains(ProcessingProfile.CudaFp16, StringComparer.Ordinal)
+                    ? ProcessingProfile.CudaFp16
+                    : model.SupportedComputeProfiles[0];
+            VadMode vad = model.SupportedVadModes.Contains(SelectedVadMode.Mode)
+                ? SelectedVadMode.Mode
+                : model.SupportedVadModes.Contains(VadMode.Accuracy) ? VadMode.Accuracy : model.SupportedVadModes[0];
+            string? language = model.Languages.Count == 1 && model.Languages[0] == "en"
+                ? "en"
+                : SelectedLanguage.Code;
+
+            TranscriptionOptions options = CurrentOptions() with
+            {
+                Backend = model.BackendId,
+                ModelId = model.Id,
+                ComputeProfile = compute,
+                VadMode = vad,
+                VadFilter = vad is not (VadMode.Accuracy or VadMode.Off),
+                Language = language,
+                Glossary = model.SupportsGlossaryPrompt ? CurrentOptions().Glossary : [],
+            };
+
+            TranscriptionTicket ticket = await Task
+                .Run(() => _coordinator.Request(sessionId, options))
+                .ConfigureAwait(true);
+            if (!ticket.Accepted)
+            {
+                Error = ticket.Message;
+                break;
+            }
+
+            TranscriptionRunResult result = await ticket.Completion.ConfigureAwait(true);
+            if (!result.Succeeded)
+            {
+                if (result.State == ProcessingStageState.Cancelled)
+                {
+                    Notice = $"Comparison cancelled after {revisions.Count} completed model runs.";
+                }
+                else
+                {
+                    Error = $"{model.DisplayName}: {result.Message}";
+                }
+                break;
+            }
+
+            if (result.Revision is { } revision)
+            {
+                revisions.Add(revision);
+            }
+            RefreshFromCoordinator();
+        }
+
+        if (revisions.Count == models.Count)
+        {
+            Notice = $"Comparison runs complete. {revisions.Count} immutable transcript revisions were saved.";
+            RebuildRevisions();
+            ComparisonLeftRevision = Revisions.FirstOrDefault(option => option.Revision == revisions[^2]);
+            ComparisonRightRevision = Revisions.FirstOrDefault(option => option.Revision == revisions[^1]);
+        }
+
+        RefreshFromCoordinator();
+    }
+
+    private async Task CompareRevisionsAsync()
+    {
+        if (_sessionId is not { } sessionId
+            || ComparisonLeftRevision is not { } left
+            || ComparisonRightRevision is not { } right)
+        {
+            return;
+        }
+
+        TranscriptComparisonResult? comparison = await Task.Run(() =>
+        {
+            TranscriptDocument? leftDocument = _coordinator.ReadTranscript(sessionId, left.Revision);
+            TranscriptDocument? rightDocument = _coordinator.ReadTranscript(sessionId, right.Revision);
+            return leftDocument is null || rightDocument is null
+                ? null
+                : TranscriptComparer.Compare(leftDocument, rightDocument);
+        }).ConfigureAwait(true);
+
+        if (comparison is null)
+        {
+            Error = "One of those transcript revisions could not be read.";
+            return;
+        }
+
+        ShowComparison?.Invoke(comparison);
+    }
+
     private Task CancelAsync()
     {
         Notice = null;
@@ -557,7 +912,7 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             PreparationResult result = await _coordinator
-                .PrepareAsync(sessionId, ProcessingProfile.CpuInt8, installMissing)
+                .PrepareAsync(sessionId, ArtifactProfileFor(SelectedAsrModel.Definition), installMissing)
                 .ConfigureAwait(true);
 
             ProductionStatus = result.Message;
@@ -575,6 +930,7 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         }
         finally
         {
+            RebuildModels();
             IsPreparing = false;
             OnChanged(nameof(IsPreparing));
             OnChanged(nameof(ProductionStatus));
@@ -687,6 +1043,17 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
 
         RebuildRevisions();
 
+        TranscriptRevisionRecord? selected = _state.Selected;
+        FallbackNotice = selected is not null
+                         && !string.IsNullOrWhiteSpace(selected.RequestedComputeProfile)
+                         && !string.IsNullOrWhiteSpace(selected.ActualComputeProfile)
+                         && !string.Equals(
+                             selected.RequestedComputeProfile,
+                             selected.ActualComputeProfile,
+                             StringComparison.Ordinal)
+            ? $"Compute fallback: requested {selected.RequestedComputeProfile}, actually ran {selected.ActualComputeProfile}."
+            : null;
+
         foreach (string name in RefreshedProperties)
         {
             OnChanged(name);
@@ -697,6 +1064,8 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
 
     private void RebuildRevisions()
     {
+        int? leftRevision = _comparisonLeftRevision?.Revision;
+        int? rightRevision = _comparisonRightRevision?.Revision;
         List<TranscriptRevisionOption> wanted =
         [
             .. _state.Revisions
@@ -706,7 +1075,9 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
                     r.Revision,
                     string.Create(
                         CultureInfo.InvariantCulture,
-                        $"Version {r.Revision} · {r.CreatedUtc.ToLocalTime():d MMM HH:mm} · {r.SegmentCount} segments{(r.RecognizesSpeech ? string.Empty : " · placeholder")}"),
+                        $"Version {r.Revision} · {r.ModelId} · {r.ActualComputeProfile} · {r.VadMode} · " +
+                        $"{r.CreatedUtc.ToLocalTime():MMM d, h:mm tt} · {r.SegmentCount} segments" +
+                        $"{(r.RecognizesSpeech ? string.Empty : " · placeholder")}"),
                     r.RecognizesSpeech))
         ];
 
@@ -720,7 +1091,250 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         {
             Revisions.Add(option);
         }
+
+        _comparisonLeftRevision = leftRevision is { } left
+            ? Revisions.FirstOrDefault(option => option.Revision == left)
+            : Revisions.Skip(1).FirstOrDefault();
+        _comparisonRightRevision = rightRevision is { } right
+            ? Revisions.FirstOrDefault(option => option.Revision == right)
+            : Revisions.FirstOrDefault();
+        OnChanged(nameof(ComparisonLeftRevision));
+        OnChanged(nameof(ComparisonRightRevision));
     }
+
+    private void RebuildModels()
+    {
+        string? selectedId = _selectedAsrModel?.Id;
+        HashSet<string> compared =
+        [
+            .. ComparisonModels
+                .Where(choice => choice.IsSelected)
+                .Select(choice => choice.Model.Id)
+        ];
+        List<AsrModelOption> wanted = [];
+
+        foreach (AsrModelDefinition definition in InferenceModelRegistry.AsrModels)
+        {
+            bool installed = IsModelInstalled(definition);
+            bool usable = definition.BackendId switch
+            {
+                AsrBackendIds.Mock => true,
+                AsrBackendIds.FasterWhisper => installed,
+                // NeMo remains isolated from faster-whisper. It is usable only when the host has
+                // an explicit WSL2 worker launch in addition to verified model artifacts.
+                AsrBackendIds.Nemo => installed && _coordinator.SupportsBackend(AsrBackendIds.Nemo),
+                _ => false,
+            };
+
+            string status = usable
+                ? "Installed"
+                : installed
+                    ? "Installed; isolated runtime unavailable"
+                    : definition.BackendId == AsrBackendIds.Mock ? "Available" : "Install";
+            wanted.Add(new AsrModelOption(definition, installed, usable, status));
+        }
+
+        AsrModels.Clear();
+        foreach (AsrModelOption model in wanted)
+        {
+            AsrModels.Add(model);
+        }
+
+        if (selectedId is not null)
+        {
+            _selectedAsrModel = AsrModels.FirstOrDefault(model => model.Id == selectedId)
+                ?? _selectedAsrModel;
+        }
+
+        foreach (AsrComparisonChoice choice in ComparisonModels)
+        {
+            choice.PropertyChanged -= OnComparisonChoiceChanged;
+        }
+
+        ComparisonModels.Clear();
+        foreach (AsrModelOption model in AsrModels.Where(model => model.Definition.BackendId != AsrBackendIds.Mock))
+        {
+            AsrComparisonChoice choice = new(model) { IsSelected = compared.Contains(model.Id) };
+            choice.PropertyChanged += OnComparisonChoiceChanged;
+            ComparisonModels.Add(choice);
+        }
+
+        OnChanged(nameof(AsrModels));
+        OnChanged(nameof(ComparisonModels));
+        OnChanged(nameof(ProductionInstalled));
+    }
+
+    private void OnComparisonChoiceChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(AsrComparisonChoice.IsSelected))
+        {
+            OnChanged(nameof(CanRunModelComparison));
+            RaiseCommands();
+        }
+    }
+
+    private bool IsModelInstalled(AsrModelDefinition definition)
+    {
+        if (definition.BackendId == AsrBackendIds.Mock)
+        {
+            return true;
+        }
+
+        if (_coordinator.Preparation is not { Registry: { } registry })
+        {
+            return false;
+        }
+
+        if (registry.Profile(definition.ArtifactProfileId) is { } profile
+            && profile.Artifacts.Any(artifact => artifact.Kind == "speech-model"))
+        {
+            return registry.IsProfileReady(profile);
+        }
+
+        // Manifests written before model/compute separation place Turbo in each compute profile.
+        return definition.Id == AsrModelIds.WhisperLargeV3Turbo
+               && registry.Profiles().Any(profile =>
+                   profile.Id is ProcessingProfile.CpuInt8
+                       or ProcessingProfile.CudaFp16
+                       or ProcessingProfile.CudaInt8Float16
+                   && profile.Artifacts.Any(artifact => artifact.Kind == "speech-model")
+                   && registry.IsProfileReady(profile));
+    }
+
+    private AsrModelOption ChooseInitialModel()
+    {
+        string? remembered = _settings?.Load().AsrModelId;
+        if (!string.IsNullOrWhiteSpace(remembered)
+            && AsrModels.FirstOrDefault(model => model.Id == remembered) is { } chosen)
+        {
+            return chosen;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_recommendedModelId)
+            && AsrModels.FirstOrDefault(model => model.Id == _recommendedModelId && model.Usable) is { } recommended)
+        {
+            return recommended;
+        }
+
+        return AsrModels.FirstOrDefault(model =>
+                   model.Id == AsrModelIds.WhisperLargeV3Turbo && model.Usable)
+               ?? AsrModels.First(model => model.Id == AsrModelIds.Mock);
+    }
+
+    private void RestoreInferenceSelections()
+    {
+        _selectedAsrModel = ChooseInitialModel();
+        _selectedBackend = Backends.FirstOrDefault(option =>
+            option.Id == _selectedAsrModel.Definition.BackendId) ?? Backends[0];
+        _selectedComputeProfile = ResolveInitialComputeProfile();
+
+        AppSettings? settings = _settings?.Load();
+        VadMode desiredVad = ParseVad(settings?.TranscriptionVadMode)
+                             ?? DefaultVadMode(_selectedAsrModel.Id);
+        _selectedVadMode = VadModes.First(option =>
+            option.Mode == (_selectedAsrModel.Definition.SupportedVadModes.Contains(desiredVad)
+                ? desiredVad
+                : DefaultVadMode(_selectedAsrModel.Id)));
+
+        string? desiredLanguage = settings?.TranscriptionLanguage;
+        if (_selectedAsrModel.Definition.Languages.Count == 1
+            && _selectedAsrModel.Definition.Languages[0] == "en")
+        {
+            desiredLanguage = "en";
+        }
+
+        _selectedLanguage = Languages.FirstOrDefault(option => option.Code == desiredLanguage) ?? Languages[0];
+        _glossary = string.Join(", ", settings?.TranscriptionGlossary ?? []);
+    }
+
+    private ComputeProfileOption ResolveInitialComputeProfile()
+    {
+        AsrModelDefinition model = _selectedAsrModel?.Definition ?? ChooseInitialModel().Definition;
+        string? remembered = _settings?.Load().TranscriptionComputeProfile;
+        string? desired = !string.IsNullOrWhiteSpace(remembered) ? remembered : _recommendedComputeProfile;
+
+        return ComputeProfiles.FirstOrDefault(option =>
+                   option.Id == desired && model.SupportedComputeProfiles.Contains(option.Id, StringComparer.Ordinal))
+               ?? ComputeProfiles.FirstOrDefault(option =>
+                   option.Id == ProcessingProfile.CudaFp16
+                   && model.SupportedComputeProfiles.Contains(option.Id, StringComparer.Ordinal)
+                   && string.Equals(_recommendedComputeProfile, ProcessingProfile.CudaFp16, StringComparison.Ordinal))
+               ?? ComputeProfiles.First(option => model.SupportedComputeProfiles.Contains(option.Id, StringComparer.Ordinal));
+    }
+
+    private void CoerceSelectionsForModel(AsrModelDefinition model)
+    {
+        if (_selectedComputeProfile is null
+            || !model.SupportedComputeProfiles.Contains(_selectedComputeProfile.Id, StringComparer.Ordinal))
+        {
+            _selectedComputeProfile = ResolveInitialComputeProfile();
+            OnChanged(nameof(SelectedComputeProfile));
+        }
+
+        if (_selectedVadMode is null || !model.SupportedVadModes.Contains(_selectedVadMode.Mode))
+        {
+            _selectedVadMode = VadModes.First(option => option.Mode == DefaultVadMode(model.Id));
+            OnChanged(nameof(SelectedVadMode));
+        }
+
+        if (model.Languages.Count == 1 && model.Languages[0] == "en")
+        {
+            _selectedLanguage = Languages.First(option => option.Code == "en");
+            OnChanged(nameof(SelectedLanguage));
+        }
+    }
+
+    private string ArtifactProfileFor(AsrModelDefinition model) =>
+        _coordinator.Preparation?.Registry.Profile(model.ArtifactProfileId) is not null
+            ? model.ArtifactProfileId
+            : model.Id == AsrModelIds.WhisperLargeV3Turbo
+                ? SelectedComputeProfile.Id
+                : model.ArtifactProfileId;
+
+    private void PersistInferenceSettings(
+        string? modelId = null,
+        string? computeProfile = null,
+        string? vadMode = null,
+        string? language = null)
+    {
+        if (_settings is null)
+        {
+            return;
+        }
+
+        AppSettings current = _settings.Load();
+        _settings.Save(current with
+        {
+            AsrModelId = modelId ?? current.AsrModelId,
+            TranscriptionComputeProfile = computeProfile ?? current.TranscriptionComputeProfile,
+            TranscriptionVadMode = vadMode ?? current.TranscriptionVadMode,
+            TranscriptionLanguage = language == "auto"
+                ? null
+                : language ?? current.TranscriptionLanguage,
+        });
+    }
+
+    private static VadMode DefaultVadMode(string modelId) => modelId switch
+    {
+        AsrModelIds.Mock => VadMode.Off,
+        AsrModelIds.WhisperLargeV3Turbo => VadMode.Balanced,
+        _ => VadMode.Accuracy,
+    };
+
+    private static VadMode? ParseVad(string? value) => value?.ToLowerInvariant() switch
+    {
+        "accuracy" => VadMode.Accuracy,
+        "balanced" => VadMode.Balanced,
+        "fast" => VadMode.Fast,
+        "off" => VadMode.Off,
+        _ => null,
+    };
+
+    private static string Wire(VadMode mode) => mode.ToString().ToLowerInvariant();
+
+    private static IReadOnlyList<string> GlossaryTerms(string value) =>
+        [.. value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)];
 
     private static readonly string[] RefreshedProperties =
     [
@@ -731,6 +1345,10 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         nameof(CanPrepare), nameof(SupportsProduction), nameof(ProductionInstalled), nameof(IsPreparing),
         nameof(ProductionStatus), nameof(HasProductionStatus), nameof(ProductionPlanSummary),
         nameof(FallbackNotice), nameof(HasFallbackNotice), nameof(IsProductionSelected),
+        nameof(SelectedAsrModel), nameof(AsrModels), nameof(SelectedVadMode), nameof(SupportsGlossary),
+        nameof(ModelCapabilitySummary), nameof(SelectedComputeProfile), nameof(SelectedLanguage),
+        nameof(ComparisonLeftRevision), nameof(ComparisonRightRevision),
+        nameof(CanRunModelComparison), nameof(CanCompareRevisions),
     ];
 
     private void RaiseCommands()
@@ -739,6 +1357,8 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         TranscribeAgainCommand.RaiseCanExecuteChanged();
         CancelCommand.RaiseCanExecuteChanged();
         ExportCommand.RaiseCanExecuteChanged();
+        RunModelComparisonCommand.RaiseCanExecuteChanged();
+        CompareRevisionsCommand.RaiseCanExecuteChanged();
         PrepareProductionCommand.RaiseCanExecuteChanged();
         InstallModelsCommand.RaiseCanExecuteChanged();
     }
@@ -771,5 +1391,9 @@ public sealed class TranscriptionViewModel : INotifyPropertyChanged, IDisposable
         _coordinator.StateChanged -= OnCoordinatorStateChanged;
         _coordinator.ProgressChanged -= OnCoordinatorProgress;
         _coordinator.PreparationProgress -= OnPreparationProgress;
+        foreach (AsrComparisonChoice choice in ComparisonModels)
+        {
+            choice.PropertyChanged -= OnComparisonChoiceChanged;
+        }
     }
 }

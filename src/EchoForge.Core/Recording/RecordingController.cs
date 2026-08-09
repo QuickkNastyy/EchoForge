@@ -42,11 +42,18 @@ public enum CapturePhase
 }
 
 /// <summary>Raised whenever the authoritative recording state changes.</summary>
-public sealed class RecordingStateChangedEventArgs(SessionState state, string? reason) : EventArgs
+public sealed class RecordingStateChangedEventArgs(SessionState state, string? reason, string? sessionId = null) : EventArgs
 {
     public SessionState State { get; } = state;
 
     public string? Reason { get; } = reason;
+
+    /// <summary>
+    /// The session that owned this transition when it was raised. Carried with the event rather
+    /// than looked up afterwards so a terminal transition cannot lose its identity if the
+    /// controller advances to another session before a listener handles it.
+    /// </summary>
+    public string? SessionId { get; } = sessionId;
 }
 
 /// <summary>
@@ -1237,7 +1244,7 @@ public sealed class RecordingController : IDisposable
         }
 
         State = state;
-        StateChanged?.Invoke(this, new RecordingStateChangedEventArgs(state, reason));
+        StateChanged?.Invoke(this, new RecordingStateChangedEventArgs(state, reason, SessionId));
     }
 
     private static string Text(long value) => value.ToString(CultureInfo.InvariantCulture);

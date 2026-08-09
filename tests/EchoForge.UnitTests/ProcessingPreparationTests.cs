@@ -161,7 +161,7 @@ public sealed class ProcessingPreparationTests : IDisposable
     }
 
     [Fact]
-    public async Task PreparationSaysPlainlyThatRecognitionIsNotImplemented()
+    public async Task PreparationSaysThatInferenceRunsInASeparateWorker()
     {
         WorkerTestEnvironment.CreateRecordedSession(_sessions, SessionId);
         byte[] content = Payload();
@@ -171,7 +171,7 @@ public sealed class ProcessingPreparationTests : IDisposable
         PreparationResult result = await coordinator.PrepareAsync(
             SessionId, ProcessingProfile.CpuInt8, installMissing: true);
 
-        Assert.Contains("not implemented", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("short-lived ASR worker", result.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

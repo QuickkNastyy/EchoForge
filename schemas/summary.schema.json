@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://echoforge.local/schemas/summary.schema.json",
-  "title": "EchoForge canonical summary, version 1",
-  "description": "One immutable summary revision, generated from one exact transcript revision. Every factual item carries evidence: the pair transcript_revision + segment_id, plus times EchoForge derived from that segment rather than took from model output. A summary is a reviewable draft, not an unquestionable record, and the schema is built so that an unsupported claim cannot be represented as a supported one.",
+  "title": "EchoForge canonical summary, versions 1-3",
+  "description": "One immutable summary revision, generated from one exact transcript revision. Every factual item carries evidence: the pair transcript_revision + segment_id, plus times EchoForge derived from that segment rather than took from model output. A summary is a reviewable draft, not an unquestionable record, and the schema is built so that an unsupported claim cannot be represented as a supported one. Version 3 adds the meeting brief: an ordered action plan, and sections that keep speculative ideas out of the list of things somebody has to do. Versions 1 and 2 remain readable exactly as they were written and are never rewritten in place.",
 
   "type": "object",
   "additionalProperties": false,
@@ -26,7 +26,7 @@
   ],
 
   "properties": {
-    "schema_version": { "type": "integer", "const": 1 },
+    "schema_version": { "type": "integer", "enum": [1, 2, 3] },
     "session_id": { "type": "string", "minLength": 1 },
     "summary_revision": { "type": "integer", "minimum": 1 },
     "created_at_utc": { "type": "string", "format": "date-time" },
@@ -51,6 +51,7 @@
 
     "prompt_version": { "type": "string", "minLength": 1 },
     "model": { "$ref": "#/$defs/model" },
+    "run": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/run" }] },
 
     "repair_attempt": {
       "description": "0 when this document was generated first time, 1 when the first answer was refused and it was generated once more. At most one re-ask is allowed: a model told what was wrong with an unsupported answer will often produce a supported one, but asking repeatedly is how a generator eventually stumbles onto output that satisfies the checks without satisfying the transcript. A repair is another chance to answer, never a lower bar to clear - the same validator judges both.",
@@ -78,13 +79,69 @@
 
     "title": { "type": "string" },
     "overview": { "type": "string" },
+    "narrative": {
+      "description": "Evidence-grounded final prose. Null for schema-v1 history and for the explicitly labelled placeholder.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["summary", "main_topics", "important_details", "follow_ups"],
+          "properties": {
+            "summary": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/narrative_block" } },
+            "main_topics": { "type": "array", "items": { "$ref": "#/$defs/narrative_block" } },
+            "important_details": { "type": "array", "items": { "$ref": "#/$defs/narrative_block" } },
+            "follow_ups": { "type": "array", "items": { "$ref": "#/$defs/narrative_block" } }
+          }
+        }
+      ]
+    },
+
+    "brief": {
+      "description": "The document a person reads after the meeting. Null for schema-v1/v2 history and for the explicitly labelled placeholder. Sections are omitted when the meeting has nothing for them: a brief that prints an empty Risks heading every time teaches the reader to skim past the one meeting where it says something.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["summary", "action_plan"],
+          "properties": {
+            "summary": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/narrative_block" } },
+            "action_plan": { "type": "array", "items": { "$ref": "#/$defs/plan_step" } },
+            "decisions": { "type": "array", "items": { "$ref": "#/$defs/narrative_block" } },
+            "blockers": { "type": "array", "items": { "$ref": "#/$defs/narrative_block" } },
+            "important_context": { "type": "array", "items": { "$ref": "#/$defs/narrative_block" } },
+            "follow_ups": { "type": "array", "items": { "$ref": "#/$defs/narrative_block" } },
+            "open_questions": { "type": "array", "items": { "$ref": "#/$defs/narrative_block" } },
+            "backlog": { "type": "array", "items": { "$ref": "#/$defs/narrative_block" } },
+            "risks": { "type": "array", "items": { "$ref": "#/$defs/narrative_block" } }
+          }
+        }
+      ]
+    },
 
     "key_points": { "type": "array", "items": { "$ref": "#/$defs/item" } },
     "decisions": { "type": "array", "items": { "$ref": "#/$defs/supported_item" } },
     "action_items": { "type": "array", "items": { "$ref": "#/$defs/action" } },
     "open_questions": { "type": "array", "items": { "$ref": "#/$defs/item" } },
     "risks": { "type": "array", "items": { "$ref": "#/$defs/item" } },
-    "blockers": { "type": "array", "items": { "$ref": "#/$defs/item" } }
+    "blockers": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+
+    "future_ideas": {
+      "description": "Wanted eventually rather than now. Absent in v1/v2 history, where a speculative aside and an assignment for tomorrow landed in the same list.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/item" }
+    },
+    "important_context": {
+      "description": "Worth remembering, and not itself work.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/item" }
+    },
+    "dependencies": {
+      "description": "'A has to happen before B', as the meeting stated it. What lets the plan be ordered without inventing an order.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/item" }
+    }
   },
 
   "$defs": {
@@ -109,6 +166,44 @@
           "type": "boolean"
         },
         "worker_version": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "run": {
+      "description": "Content-free performance and fallback telemetry. It contains no transcript, prompt, or summary prose.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend": { "type": "string" },
+        "model_id": { "type": "string" },
+        "model_revision": { "type": "string" },
+        "quantization": { "type": "string" },
+        "llama_version": { "type": "string" },
+        "prompt_version": { "type": "string" },
+        "requested_context": { "type": "integer", "minimum": 0 },
+        "actual_context": { "type": "integer", "minimum": 0 },
+        "requested_gpu_layers": { "type": "integer", "minimum": 0 },
+        "kv_cache_type": { "type": "string" },
+        "runtime_tier": { "type": "string" },
+        "fell_back": { "type": "boolean" },
+        "fallback_steps": { "type": "array", "items": { "type": "string" } },
+        "used_cpu_only": { "type": "boolean" },
+        "oom_retries": { "type": "integer", "minimum": 0 },
+        "total_seconds": { "type": "number", "minimum": 0 },
+        "model_load_seconds": { "type": "number", "minimum": 0 },
+        "extraction_seconds": { "type": "number", "minimum": 0 },
+        "synthesis_seconds": { "type": "number", "minimum": 0 },
+        "narrative_seconds": { "type": "number", "minimum": 0 },
+        "repair_seconds": { "type": "number", "minimum": 0 },
+        "prompt_tokens": { "type": "integer", "minimum": 0 },
+        "completion_tokens": { "type": "integer", "minimum": 0 },
+        "peak_vram_bytes": { "type": "integer", "minimum": 0 },
+        "vram_source": { "type": "string" },
+        "repair_attempts": { "type": "integer", "minimum": 0 },
+        "synthesis_levels": { "type": "integer", "minimum": 0 },
+        "chunks": { "type": "integer", "minimum": 0 },
+        "prompt_tokens_per_second": { "type": "number", "minimum": 0 },
+        "generation_tokens_per_second": { "type": "number", "minimum": 0 }
       }
     },
 
@@ -159,6 +254,70 @@
       ]
     },
 
+    "plan_basis": {
+      "description": "Why a step says what it says. 'explicit' is something the meeting stated; 'grounded_inference' is a relationship it implied strongly enough to act on - 'do A before B' when the meeting said B needs A; 'recommendation' is EchoForge ordering work the meeting left unordered. Keeping them apart is what lets the brief be useful about sequencing without presenting sequencing as something somebody said.",
+      "enum": ["explicit", "grounded_inference", "recommendation"]
+    },
+
+    "plan_step": {
+      "description": "One numbered step of the action plan. Ordered as one sequence and split by audience only for display, so that two lists can never disagree about what comes first.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "order", "title", "audience", "timing", "basis", "supporting_item_ids", "evidence"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "order": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "detail": { "type": "string" },
+        "audience": {
+          "description": "'you' is the microphone holder, 'others' is somebody named as doing the work, 'unassigned' is real work nobody claimed - the normal case in real meetings, and not a gap to fill.",
+          "enum": ["you", "others", "unassigned"]
+        },
+        "timing": {
+          "description": "Taken from the meeting - a stated deadline, a customer demo, an unresolved prerequisite, an explicit 'not now' - and never from generic business assumptions.",
+          "enum": ["immediate", "next", "later"]
+        },
+        "basis": { "$ref": "#/$defs/plan_basis" },
+        "depends_on": { "type": ["string", "null"] },
+        "depends_on_step_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "owner": { "type": ["string", "null"] },
+        "owner_status": { "$ref": "#/$defs/certainty" },
+        "due_date": { "type": ["string", "null"], "format": "date" },
+        "due_date_text": { "type": ["string", "null"] },
+        "due_date_status": { "$ref": "#/$defs/certainty" },
+        "supporting_item_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence" } }
+      },
+      "allOf": [
+        {
+          "description": "An unknown owner is null here for the same reason it is on an action item.",
+          "if": { "properties": { "owner_status": { "const": "unknown" } }, "required": ["owner_status"] },
+          "then": { "properties": { "owner": { "type": "null" } } }
+        },
+        {
+          "description": "A step addressed to somebody else has to name them.",
+          "if": { "properties": { "audience": { "const": "others" } }, "required": ["audience"] },
+          "then": { "properties": { "owner": { "type": "string", "minLength": 1 } }, "required": ["owner"] }
+        },
+        {
+          "if": { "properties": { "due_date_status": { "const": "unknown" } }, "required": ["due_date_status"] },
+          "then": { "properties": { "due_date": { "type": "null" } } }
+        }
+      ]
+    },
+
+    "narrative_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text", "supporting_item_ids", "evidence"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "supporting_item_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence" } }
+      }
+    },
+
     "action": {
       "type": "object",
       "additionalProperties": false,
@@ -185,7 +344,20 @@
           "description": "What was actually said - 'by Friday', 'end of the month'. Kept even when no date could be resolved.",
           "type": ["string", "null"]
         },
-        "due_date_status": { "$ref": "#/$defs/certainty" }
+        "due_date_status": { "$ref": "#/$defs/certainty" },
+
+        "classification": {
+          "description": "How this commitment relates to the meeting. 'Stop the recording' and 'Andy will give Storm access' are both imperative sentences somebody said; only one is work that exists once the call ends. Absent in v1/v2 history, where every imperative sentence became an action item. Only post_meeting_commitment and inferred_next_step ever reach the action plan.",
+          "type": ["string", "null"],
+          "enum": [
+            "post_meeting_commitment",
+            "ephemeral_instruction",
+            "completed_in_meeting",
+            "future_idea",
+            "inferred_next_step",
+            null
+          ]
+        }
       },
 
       "allOf": [

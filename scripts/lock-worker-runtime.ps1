@@ -3,7 +3,8 @@
     Regenerates the pinned production Python runtime in artifacts/manifest.json.
 
 .DESCRIPTION
-    Resolves faster-whisper's complete Windows / CPython 3.12 dependency closure with uv, then
+    Resolves faster-whisper and its pinned CUDA runtime's complete Windows / CPython 3.12
+    dependency closure with uv, then
     for each resolved version asks the package index for the one wheel that platform actually
     installs, downloads it, verifies its length and SHA-256 against the index, extracts its
     licence text, and writes the result into the manifest.
@@ -193,6 +194,13 @@ foreach ($package in $resolved) {
     if ($declared.Length -gt 64) { $declared = 'see retained text' }
     if ($declared.Length -lt 2) { $declared = 'see retained text' }
 
+    $profiles = if ($package.Name.StartsWith('nvidia-', [StringComparison]::OrdinalIgnoreCase)) {
+        @('cuda-fp16', 'cuda-int8-float16')
+    }
+    else {
+        @('cpu-int8', 'cuda-fp16', 'cuda-int8-float16')
+    }
+
     $generated += [ordered]@{
         artifact_id     = $artifactId
         kind            = 'runtime'
@@ -206,7 +214,7 @@ foreach ($package in $resolved) {
         license_file    = "third_party/licenses/$licenseName"
         provenance      = "Resolved by uv for Windows / CPython 3.12 from worker/requirements-production.in, then downloaded and hashed locally; size and digest match the package index. Regenerate with scripts/lock-worker-runtime.ps1."
         runtime_version = "CPython 3.12 on Windows x64; $($package.Name) $($package.Version)"
-        profiles        = @('cpu-int8', 'cuda-fp16', 'cuda-int8-float16')
+        profiles        = $profiles
         verified_utc    = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddT00:00:00Z')
     }
 }

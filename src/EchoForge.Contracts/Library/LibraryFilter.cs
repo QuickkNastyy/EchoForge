@@ -31,6 +31,20 @@ public sealed record LibraryFilter
     public bool IsReversed => Since is { } since && Until is { } until && since > until;
 
     /// <summary>
+    /// Whether one meeting falls inside this range.
+    ///
+    /// <para>
+    /// The same question the index answers when it builds the list, asked about a single meeting.
+    /// It is needed when a recording finishes while the list is already on screen: the row has to
+    /// go in without re-reading everything, and it must not appear if the user is looking at a
+    /// filtered range it does not belong to.
+    /// </para>
+    /// </summary>
+    public bool Includes(DateTimeOffset createdUtc) =>
+        (Since is not { } since || createdUtc >= since) &&
+        (Until is not { } until || createdUtc <= until);
+
+    /// <summary>
     /// Builds a filter from local calendar dates, inclusive of both days.
     ///
     /// <para>

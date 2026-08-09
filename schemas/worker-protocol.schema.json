@@ -38,6 +38,7 @@
         "transcribing_microphone",
         "transcribing_system",
         "merging",
+        "planning",
         "validating",
         "writing_output",
         "finished"
@@ -91,11 +92,17 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["protocol_version", "type", "worker_version", "supported_protocol_versions", "backends"],
+      "dependentRequired": {
+        "process_id": ["process_start_token"],
+        "process_start_token": ["process_id"]
+      },
       "properties": {
         "protocol_version": { "$ref": "#/$defs/protocol_version" },
         "type": { "const": "ready" },
         "worker_version": { "type": "string", "minLength": 1 },
         "python_version": { "type": "string" },
+        "process_id": { "type": "integer", "minimum": 1 },
+        "process_start_token": { "type": "string", "pattern": "^[0-9]+$" },
         "supported_protocol_versions": {
           "type": "array",
           "minItems": 1,
@@ -264,7 +271,48 @@
           "maxItems": 2,
           "items": { "$ref": "#/$defs/request_track" }
         },
+        "derivatives": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/request_derivative" }
+        },
+        "windows": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/request_window" }
+        },
         "options": { "$ref": "#/$defs/request_options" }
+      }
+    },
+
+    "request_derivative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_track", "relative_path", "timing_map_relative_path", "sample_rate", "channels", "total_frames", "sha256"],
+      "properties": {
+        "source_track": { "$ref": "#/$defs/source_track" },
+        "relative_path": { "type": "string", "minLength": 1 },
+        "timing_map_relative_path": { "type": "string", "minLength": 1 },
+        "sample_rate": { "type": "integer", "exclusiveMinimum": 0 },
+        "channels": { "type": "integer", "exclusiveMinimum": 0 },
+        "total_frames": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+
+    "request_window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source_track", "epoch", "start_frame", "end_frame", "session_start_seconds", "session_end_seconds", "input_fingerprint"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "source_track": { "$ref": "#/$defs/source_track" },
+        "epoch": { "type": "integer", "minimum": 1 },
+        "start_frame": { "type": "integer", "minimum": 0 },
+        "end_frame": { "type": "integer", "minimum": 0 },
+        "session_start_seconds": { "type": "number", "minimum": 0 },
+        "session_end_seconds": { "type": "number", "minimum": 0 },
+        "overlap_before_seconds": { "type": "number", "minimum": 0 },
+        "overlap_after_seconds": { "type": "number", "minimum": 0 },
+        "input_fingerprint": { "type": "string", "minLength": 1 }
       }
     },
 
@@ -337,6 +385,12 @@
           "type": "string",
           "minLength": 1
         },
+        "model_id": { "type": ["string", "null"] },
+        "model_revision": { "type": ["string", "null"] },
+        "model_artifact_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        },
         "profile": { "type": ["string", "null"] },
         "language": {
           "description": "Null means the backend decides. The mock backend always reports 'und'.",
@@ -363,6 +417,20 @@
           ]
         },
         "test_delay_seconds": { "type": ["number", "null"], "minimum": 0 }
+        ,"model_path": { "type": ["string", "null"] }
+        ,"compute_profile": { "type": ["string", "null"] }
+        ,"allow_cpu_fallback": { "type": "boolean" }
+        ,"beam_size": { "type": ["integer", "null"], "minimum": 1 }
+        ,"vad_filter": { "type": "boolean" }
+        ,"vad_mode": { "type": ["string", "null"], "enum": [null, "accuracy", "balanced", "fast", "off"] }
+        ,"word_timestamps": { "type": "boolean" }
+        ,"initial_prompt": { "type": ["string", "null"] }
+        ,"glossary": { "type": "array", "items": { "type": "string" } }
+        ,"window_strategy": { "type": ["string", "null"] }
+        ,"window_seconds": { "type": ["number", "null"], "exclusiveMinimum": 0 }
+        ,"overlap_seconds": { "type": ["number", "null"], "minimum": 0 }
+        ,"timestamp_capability": { "type": ["string", "null"] }
+        ,"timestamp_precision": { "type": ["string", "null"] }
       }
     }
   },

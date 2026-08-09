@@ -44,6 +44,8 @@ public sealed class PlaybackViewModel : INotifyPropertyChanged, IDisposable
     private double _preparation;
     private double _position;
     private double _duration;
+    private PlaybackEnergyEnvelope? _energyEnvelope;
+    private double? _pendingSeekSeconds;
     private PlaybackMix _mix = PlaybackMix.Default;
     private bool _hasYou = true;
     private bool _hasRemote = true;
@@ -160,6 +162,13 @@ public sealed class PlaybackViewModel : INotifyPropertyChanged, IDisposable
         private set { _duration = value; Changed(); Changed(nameof(DurationText)); Changed(nameof(PositionFraction)); }
     }
 
+    /// <summary>The cached two-lane audio energy shape for recordings that have no transcript yet.</summary>
+    public PlaybackEnergyEnvelope? EnergyEnvelope
+    {
+        get => _energyEnvelope;
+        private set { _energyEnvelope = value; Changed(); }
+    }
+
     /// <summary>Where the playhead sits on the timeline, 0..1. The ribbon draws it.</summary>
     public double PositionFraction => _duration > 0 ? Math.Clamp(_position / _duration, 0, 1) : 0;
 
@@ -257,12 +266,14 @@ public sealed class PlaybackViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
+        PlaybackDerivativeRecord record = prepared.Record!;
+        HasYouTrack = record.For("microphone")?.HasAudio ?? false;
+        HasRemoteTrack = record.For("system")?.HasAudio ?? false;
+        DurationSeconds = record.DurationSeconds;
+        EnergyEnvelope = prepared.Envelope;
+
         try
         {
-            PlaybackDerivativeRecord record = prepared.Record!;
-            HasYouTrack = record.For("microphone")?.HasAudio ?? false;
-            HasRemoteTrack = record.For("system")?.HasAudio ?? false;
-
             _engine = new PlaybackEngine(
                 WavPlaybackAudioSource.Open(prepared.AudioPath!),
                 _devices(),
@@ -284,6 +295,12 @@ public sealed class PlaybackViewModel : INotifyPropertyChanged, IDisposable
         DurationSeconds = _engine.DurationSeconds;
         Message = _engine.Message;
         State = _engine.State;
+
+        if (_pendingSeekSeconds is { } pending)
+        {
+            _pendingSeekSeconds = null;
+            _engine.Seek(Math.Clamp(pending, 0, DurationSeconds));
+        }
 
         Sample();
     }
@@ -320,7 +337,17 @@ public sealed class PlaybackViewModel : INotifyPropertyChanged, IDisposable
     public void SeekTo(double sessionSeconds)
     {
         SeekNotice = null;
-        _engine?.Seek(sessionSeconds);
+
+        if (_engine is null)
+        {
+            _pendingSeekSeconds = Math.Max(0, sessionSeconds);
+            PositionSeconds = DurationSeconds > 0
+                ? Math.Clamp(_pendingSeekSeconds.Value, 0, DurationSeconds)
+                : _pendingSeekSeconds.Value;
+            return;
+        }
+
+        _engine.Seek(sessionSeconds);
         Sample();
     }
 

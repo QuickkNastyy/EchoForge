@@ -36,9 +36,45 @@ public static class TranscriptValidator
 
         List<string> problems = [];
 
-        if (transcript.SchemaVersion != 1)
+        if (transcript.SchemaVersion is not (1 or 2))
         {
             problems.Add(Invariant($"schema_version {transcript.SchemaVersion} is not supported"));
+        }
+
+        if (transcript.SchemaVersion >= 2 && transcript.Run is null)
+        {
+            problems.Add("schema_version 2 requires run metadata");
+        }
+
+        if (transcript.Run is { } run)
+        {
+            if (run.AudioDurationSeconds < 0 || run.VadRetainedSeconds < 0 || run.VadExcludedSeconds < 0)
+            {
+                problems.Add("run audio/VAD durations cannot be negative");
+            }
+
+            if (run.SourceDurationSeconds < 0 || run.TotalProcessingSeconds < 0 || run.RealTimeFactor < 0)
+            {
+                problems.Add("run source/processing measurements cannot be negative");
+            }
+
+            if ((run.WarningCount is { } warningCount && warningCount < run.Warnings.Count) ||
+                (run.FallbackCount is { } fallbackCount &&
+                 (fallbackCount < 0 || (run.WarningCount is { } totalWarnings && fallbackCount > totalWarnings))))
+            {
+                problems.Add("run warning/fallback counts are inconsistent");
+            }
+
+            if (run.VadRetainedSeconds > run.AudioDurationSeconds + Tolerance)
+            {
+                problems.Add("run vad_retained_seconds exceeds audio_duration_seconds");
+            }
+
+            if (run.WindowSeconds < 0 || run.OverlapSeconds < 0 ||
+                run.OverlapSeconds >= run.WindowSeconds && run.WindowSeconds > 0)
+            {
+                problems.Add("run window settings are invalid");
+            }
         }
 
         if (string.IsNullOrWhiteSpace(transcript.SessionId))

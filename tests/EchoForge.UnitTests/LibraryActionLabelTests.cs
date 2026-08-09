@@ -26,11 +26,30 @@ public sealed class LibraryActionLabelTests : IDisposable
 
         public bool CanSummarize { get; set; }
 
+        public bool BlockProcessing { get; set; }
+
+        public bool Cancelled { get; private set; }
+
+        public void Cancel() => Cancelled = true;
+
         public Task<ReprocessOutcome> TranscribeAgainAsync(string sessionId, CancellationToken cancellationToken = default) =>
             Task.FromResult(new ReprocessOutcome(true, "transcribed", "done", 1));
 
         public Task<ReprocessOutcome> SummarizeAgainAsync(string sessionId, CancellationToken cancellationToken = default) =>
             Task.FromResult(new ReprocessOutcome(true, "summarized", "done", 1));
+
+        public async Task<ReprocessOutcome> ProcessMeetingAsync(
+            string sessionId,
+            IProgress<string>? stage = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (BlockProcessing)
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            return new ReprocessOutcome(true, "processed", "processed", 1);
+        }
     }
 
     private async Task<LibraryViewModel> OpenLibraryAsync(IMeetingReprocessor? reprocessor)
@@ -107,6 +126,26 @@ public sealed class LibraryActionLabelTests : IDisposable
         Assert.True(library.OpenMeeting!.HasSummary);
         Assert.Equal("Transcribe again", library.TranscribeActionLabel);
         Assert.Equal("Generate summary again", library.SummarizeActionLabel);
+    }
+
+    [Fact]
+    public async Task CancelProcessingCancelsTheTokenAndTheActiveReprocessor()
+    {
+        _fixture.AddSession("01JCANCEL", "Long processing");
+        FakeReprocessor reprocessor = new() { CanTranscribe = true, CanSummarize = true, BlockProcessing = true };
+        using LibraryViewModel library = await OpenLibraryAsync(reprocessor);
+        library.SelectedMeeting = library.Meetings[0];
+
+        library.ProcessMeetingCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(() => library.IsProcessing, TimeSpan.FromSeconds(2)));
+        Assert.True(library.CancelProcessingCommand.CanExecute(null));
+
+        library.CancelProcessingCommand.Execute(null);
+
+        Assert.True(reprocessor.Cancelled);
+        Assert.False(library.CancelProcessingCommand.CanExecute(null));
+        Assert.True(SpinWait.SpinUntil(() => !library.IsProcessing, TimeSpan.FromSeconds(2)));
+        Assert.Contains("cancelled", library.Status ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

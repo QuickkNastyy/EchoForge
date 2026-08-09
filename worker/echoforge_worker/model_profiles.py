@@ -89,8 +89,34 @@ MINISTRAL_3_14B: Final[SummaryModelProfile] = SummaryModelProfile(
     is_default_candidate=False,
 )
 
+#: OpenAI gpt-oss-20b, native MXFP4 converted by ggml-org. Optional comparison model.
+GPT_OSS_20B: Final[SummaryModelProfile] = SummaryModelProfile(
+    backend="gpt-oss-20b",
+    model_id="gpt-oss-20b-mxfp4",
+    display_name="gpt-oss-20b (MXFP4)",
+    quantization="MXFP4",
+    # The GGUF carries the Harmony/Jinja template. Reasoning is kept low and returned in
+    # reasoning_content by llama.cpp; EchoForge reads only final message.content.
+    server_args=(
+        "--jinja",
+        "--reasoning",
+        "on",
+        "--reasoning-format",
+        "auto",
+        "--reasoning-budget",
+        "1024",
+        "--chat-template-kwargs",
+        '{"reasoning_effort":"low"}',
+    ),
+    reasoning_note=(
+        "Harmony template enabled with low reasoning effort and a bounded private reasoning "
+        "budget. Only the final content channel is persisted or shown."
+    ),
+    is_default_candidate=False,
+)
+
 _PROFILES: Final[dict[str, SummaryModelProfile]] = {
-    profile.backend: profile for profile in (GEMMA_4_12B, MINISTRAL_3_14B)
+    profile.backend: profile for profile in (GEMMA_4_12B, MINISTRAL_3_14B, GPT_OSS_20B)
 }
 
 

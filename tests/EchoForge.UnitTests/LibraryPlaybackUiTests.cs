@@ -8,6 +8,7 @@ using EchoForge.Infrastructure.Library;
 using EchoForge.Infrastructure.Playback;
 using EchoForge.Infrastructure.Processing;
 using EchoForge.Infrastructure.Sessions;
+using EchoForge.Infrastructure.Summaries;
 
 namespace EchoForge.UnitTests;
 
@@ -35,6 +36,12 @@ public sealed class FakeReprocessor : IMeetingReprocessor
         Summarized.Add(sessionId);
         return Task.FromResult(Outcome);
     }
+
+    public Task<ReprocessOutcome> ProcessMeetingAsync(
+        string sessionId,
+        IProgress<string>? stage = null,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new ReprocessOutcome(true, "processed", "processed", 1));
 }
 
 /// <summary>A confirmation whose answer the test chooses.</summary>
@@ -239,6 +246,38 @@ public sealed class LibraryPlaybackUiTests : IDisposable
         Assert.Equal(0, playback.PositionSeconds, 6);
 
         harness.Dispose();
+    }
+
+    [Fact]
+    public async Task AnUnprocessedMeetingGetsAnAudioShapeAndKeepsASeekMadeBeforePreparation()
+    {
+        using PlaybackFixture fixture = new("01JRAWMEETING");
+        fixture.Build(new PlaybackChunkSpec(SourceTrack.Microphone, 1, 30.0, 3000));
+
+        FileTranscriptionStore transcripts = new(fixture.Sessions);
+        FileSummaryStore summaries = new(fixture.Sessions);
+        FileSpeakerAliasStore aliases = new(fixture.Sessions);
+        LibraryProjection projection = new(fixture.Sessions, transcripts, summaries, aliases);
+        LibraryEntry entry = Assert.IsType<LibraryDocument>(projection.Build(fixture.SessionId)).Entry;
+
+        using PlaybackViewModel playback = new(
+            fixture.SessionId,
+            new PlaybackPreparer(fixture.Sessions),
+            () => new FakePlaybackDevice(),
+            startTimer: false);
+        using MeetingViewModel meeting = new(entry, transcripts, summaries, aliases, playback);
+
+        Assert.False(meeting.HasTranscript);
+        Assert.False(meeting.Shape.HasData);
+        Assert.Equal(entry.Duration.TotalSeconds, meeting.TimelineSeconds, 3);
+
+        playback.SeekTo(meeting.TimelineSeconds / 2);
+        await playback.PrepareAsync();
+
+        Assert.NotNull(playback.EnergyEnvelope);
+        Assert.True(meeting.Shape.HasData);
+        Assert.Contains(meeting.Shape.You, level => level > 0);
+        Assert.Equal(15.0, playback.PositionSeconds, 2);
     }
 
     [Fact]

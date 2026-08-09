@@ -11,9 +11,9 @@ namespace EchoForge.Infrastructure.Setup;
 /// <b>An NVIDIA adapter is not a CUDA device.</b> A driver older than the pinned CTranslate2, a
 /// laptop whose discrete adapter is switched off, a card the process is not allowed to see — all
 /// of them enumerate perfectly through DXGI and then fail to run anything. The only answer worth
-/// having is the one from the library that will do the work, so this runs
-/// <c>ctranslate2.get_cuda_device_count()</c> in the environment EchoForge built, and reports what
-/// it said.
+/// having is the one from the library that will do the work. This runs the worker's effective
+/// CUDA probe in the environment EchoForge built. That probe both asks CTranslate2 for devices and
+/// loads the exact pinned cuBLAS DLLs that CTranslate2 otherwise defers until first inference.
 /// </para>
 ///
 /// <para>
@@ -39,10 +39,16 @@ public sealed class CudaProbe
 
         return environment is null
             ? Task.FromResult(CudaAvailability.AdapterWithoutRuntime)
-            : RunAsync(environment.PythonExecutable, cancellationToken);
+            : RunAsync(
+                environment.PythonExecutable,
+                _environment.WorkerPackageRoot,
+                cancellationToken);
     }
 
-    private static async Task<CudaAvailability> RunAsync(string python, CancellationToken cancellationToken)
+    private static async Task<CudaAvailability> RunAsync(
+        string python,
+        string workerPackageRoot,
+        CancellationToken cancellationToken)
     {
         ProcessStartInfo startInfo = new()
         {
@@ -56,11 +62,13 @@ public sealed class CudaProbe
         };
 
         startInfo.ArgumentList.Add("-c");
-        startInfo.ArgumentList.Add("import ctranslate2; print(ctranslate2.get_cuda_device_count())");
+        startInfo.ArgumentList.Add(
+            "from echoforge_worker.compute import cuda_device_count; print(cuda_device_count())");
 
         // Offline, like every other child EchoForge starts. Importing CTranslate2 should not be
         // able to reach anything, and this runs on a machine that may have no network at all.
         OfflineEnvironment.Apply(startInfo.Environment);
+        startInfo.Environment["PYTHONPATH"] = Path.GetFullPath(workerPackageRoot);
 
         using CancellationTokenSource timeout = new(Timeout);
         using CancellationTokenSource linked =

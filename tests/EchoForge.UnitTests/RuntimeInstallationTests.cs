@@ -345,6 +345,47 @@ public sealed class RuntimeInstallationTests : IDisposable
     }
 
     [Fact]
+    public async Task ARequirementsChangeInvalidatesAnOtherwiseMatchingWorkerEnvironment()
+    {
+        _fixture.AddPythonArchive();
+        ArtifactEntry wheel = _fixture.AddWheel("example");
+        _fixture.WriteRequirements("example==1.0.0\n");
+
+        using ArtifactRegistry registry = Registry();
+        PythonRuntimeInstaller python = _fixture.PythonInstaller(registry);
+        WorkerEnvironmentInstaller worker = _fixture.WorkerInstaller(registry, python);
+        AppLocalPython installed = Assert.IsType<AppLocalPython>(await python.EnsureAsync());
+        await registry.EnsureAsync(wheel.ArtifactId);
+
+        Directory.CreateDirectory(Path.Combine(worker.Root, "Scripts"));
+        await File.WriteAllTextAsync(WorkerEnvironmentInstaller.ExecutableIn(worker.Root), "not python");
+
+        string requirementsPath = Path.Combine(_fixture.Layout.WorkerPackageRoot, "requirements-production.txt");
+        string requirementsSha256 = Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(requirementsPath)));
+        EnvironmentStamp stamp = new()
+        {
+            PythonRevision = installed.Revision,
+            PythonVersion = installed.Version,
+            PackageSummary = "test",
+            RequirementsSha256 = requirementsSha256,
+            Packages = [$"{wheel.ArtifactId}:{wheel.Sha256}"],
+            InstalledUtc = DateTimeOffset.UtcNow,
+        };
+        await using (FileStream stream = File.Create(Path.Combine(worker.Root, "echoforge-environment.json")))
+        {
+            await System.Text.Json.JsonSerializer.SerializeAsync(
+                stream, stamp, EnvironmentStampContext.Default.EnvironmentStamp);
+        }
+
+        Assert.NotNull(worker.TryResolve());
+
+        _fixture.WriteRequirements("example==1.0.0\nnew-package==2.0.0\n");
+
+        Assert.Null(worker.TryResolve());
+        Assert.Equal(RuntimeComponentStatus.Corrupt, worker.Status().Status);
+    }
+
+    [Fact]
     public async Task RepairVerifiesWhatIsOnDiskBeforeDownloadingAnything()
     {
         _fixture.AddPythonArchive();

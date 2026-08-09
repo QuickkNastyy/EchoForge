@@ -1,5 +1,6 @@
 using System.Globalization;
 using EchoForge.Contracts.Artifacts;
+using EchoForge.Contracts.Inference;
 using EchoForge.Contracts.Setup;
 
 namespace EchoForge.Core.Setup;
@@ -23,12 +24,28 @@ public sealed record ProfileRecommendation(
     public bool IsPlaceholder => string.Equals(ProfileId, ProcessingProfile.Mock, StringComparison.Ordinal);
 }
 
+/// <summary>
+/// The independently selected ASR model and compute profile.
+///
+/// <para>
+/// A model is an artifact/runtime identity; a compute profile is how that model is executed.
+/// Keeping both values here prevents setup from inferring one from the other.
+/// </para>
+/// </summary>
+public sealed record TranscriptionRecommendation(
+    string ModelId,
+    string ArtifactProfileId,
+    ProfileRecommendation Compute);
+
 /// <summary>What EchoForge suggests installing on this machine, and why.</summary>
 public sealed record SetupRecommendation(
-    ProfileRecommendation Transcription,
+    TranscriptionRecommendation Asr,
     ProfileRecommendation Summarization,
     IReadOnlyList<string> Warnings)
 {
+    /// <summary>Compatibility name for callers concerned only with compute.</summary>
+    public ProfileRecommendation Transcription => Asr.Compute;
+
     /// <summary>True when nothing worth installing was found. Recording still works.</summary>
     public bool RecordingOnly => Transcription.IsPlaceholder;
 }
@@ -70,6 +87,13 @@ public static class ProfileRecommender
     /// </para>
     /// </summary>
     public const long GpuSpeechVramBytes = 4L * 1024 * 1024 * 1024;
+
+    /// <summary>
+    /// Video memory required before the full Large V3 accuracy-oriented checkpoint is the
+    /// recommendation. Cards below this line can still run the smaller Turbo checkpoint on the
+    /// GPU; model choice and compute choice are intentionally separate decisions.
+    /// </summary>
+    public const long AccuracySpeechVramBytes = 8L * 1024 * 1024 * 1024;
 
     /// <summary>
     /// Video memory the GPU summary profile needs.
@@ -128,7 +152,7 @@ public static class ProfileRecommender
 
     // -- speech ---------------------------------------------------------------------------------
 
-    private static ProfileRecommendation RecommendTranscription(HardwareSnapshot hardware)
+    private static TranscriptionRecommendation RecommendTranscription(HardwareSnapshot hardware)
     {
         List<string> reasons = [];
         GpuInfo? nvidia = hardware.PrimaryNvidia;
@@ -142,11 +166,28 @@ public static class ProfileRecommender
                     reasons.Add($"{nvidia.Model} reports {Describe(vram)} of video memory.");
                     reasons.Add("CTranslate2 can see a usable CUDA device on this machine.");
 
-                    return new ProfileRecommendation(
-                        ProcessingProfile.CudaFp16,
-                        "Speech recognition on your NVIDIA GPU.",
-                        reasons,
-                        IsFallback: false);
+                    bool accuracyModel = vram >= AccuracySpeechVramBytes;
+                    if (accuracyModel)
+                    {
+                        reasons.Add("The full Whisper Large V3 checkpoint fits the accuracy-oriented GPU recommendation.");
+                    }
+                    else
+                    {
+                        reasons.Add(string.Create(
+                            CultureInfo.CurrentCulture,
+                            $"The Turbo checkpoint is recommended below {Describe(AccuracySpeechVramBytes)} of video memory."));
+                    }
+
+                    return Whisper(
+                        accuracyModel ? AsrModelIds.WhisperLargeV3 : AsrModelIds.WhisperLargeV3Turbo,
+                        accuracyModel ? ProcessingProfile.AsrWhisperLargeV3 : ProcessingProfile.AsrWhisperLargeV3Turbo,
+                        new ProfileRecommendation(
+                            ProcessingProfile.CudaFp16,
+                            accuracyModel
+                                ? "Whisper Large V3 in the accuracy-oriented CUDA FP16 configuration."
+                                : "Whisper Large V3 Turbo on your NVIDIA GPU.",
+                            reasons,
+                            IsFallback: false));
                 }
 
                 reasons.Add(string.Create(
@@ -162,11 +203,14 @@ public static class ProfileRecommender
             reasons.Add($"{nvidia.Model} did not report how much video memory it has.");
             reasons.Add("CTranslate2 can see a usable CUDA device, so the lower-memory GPU profile is the safe choice.");
 
-            return new ProfileRecommendation(
-                ProcessingProfile.CudaInt8Float16,
-                "Speech recognition on your NVIDIA GPU, in the lower-memory mode.",
-                reasons,
-                IsFallback: true);
+            return Whisper(
+                AsrModelIds.WhisperLargeV3Turbo,
+                ProcessingProfile.AsrWhisperLargeV3Turbo,
+                new ProfileRecommendation(
+                    ProcessingProfile.CudaInt8Float16,
+                    "Whisper Large V3 Turbo on your NVIDIA GPU, in the lower-memory mode.",
+                    reasons,
+                    IsFallback: true));
         }
 
         if (nvidia is not null)
@@ -190,29 +234,40 @@ public static class ProfileRecommender
         return CpuTranscription(hardware, reasons);
     }
 
-    private static ProfileRecommendation CpuTranscription(HardwareSnapshot hardware, List<string> reasons)
+    private static TranscriptionRecommendation CpuTranscription(HardwareSnapshot hardware, List<string> reasons)
     {
         if (hardware.HasAvx2 == false)
         {
             reasons.Add("This processor does not report AVX2, so the CPU profile would be very slow.");
 
-            return new ProfileRecommendation(
+            return Whisper(
+                AsrModelIds.Mock,
                 ProcessingProfile.Mock,
-                "Recording only. Speech recognition is not recommended on this machine.",
-                reasons,
-                IsFallback: true);
+                new ProfileRecommendation(
+                    ProcessingProfile.Mock,
+                    "Recording only. Speech recognition is not recommended on this machine.",
+                    reasons,
+                    IsFallback: true));
         }
 
         reasons.Add(hardware.HasAvx2 == true
             ? string.Create(CultureInfo.CurrentCulture, $"This processor reports AVX2 and {hardware.LogicalCores} logical cores.")
             : "This processor's instruction set could not be read, so the CPU profile is the safe choice.");
 
-        return new ProfileRecommendation(
-            ProcessingProfile.CpuInt8,
-            "Speech recognition on the processor. It works everywhere, and it is slow.",
-            reasons,
-            IsFallback: true);
+        return Whisper(
+            AsrModelIds.WhisperLargeV3Turbo,
+            ProcessingProfile.AsrWhisperLargeV3Turbo,
+            new ProfileRecommendation(
+                ProcessingProfile.CpuInt8,
+                "Whisper Large V3 Turbo on the processor. It works everywhere, and it is slow.",
+                reasons,
+                IsFallback: true));
     }
+
+    private static TranscriptionRecommendation Whisper(
+        string modelId,
+        string artifactProfileId,
+        ProfileRecommendation compute) => new(modelId, artifactProfileId, compute);
 
     // -- summaries ------------------------------------------------------------------------------
 

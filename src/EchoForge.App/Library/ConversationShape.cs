@@ -1,3 +1,4 @@
+using EchoForge.Contracts.Playback;
 using EchoForge.Contracts.Transcripts;
 
 namespace EchoForge.App.Library;
@@ -7,11 +8,9 @@ namespace EchoForge.App.Library;
 /// Remote, over the recording's own time.
 ///
 /// <para>
-/// It is derived from the transcript's segments — not the audio — so it is cheap, deterministic, and
-/// carries no second copy of the recording. Each bucket holds the fraction of that slice of time the
-/// track was speaking (0 = silence, 1 = talking throughout), which is exactly the shape the library
-/// row and the detail timeline draw. A recording with no transcript has <see cref="HasData"/> false,
-/// and its ribbon well is simply quiet rather than faked.
+/// A transcript, when present, is the preferred source because speech density is more meaningful than
+/// raw amplitude. Before a transcript exists the aligned playback derivative supplies a bounded audio
+/// energy envelope instead. Neither representation carries a second copy of the recording.
 /// </para>
 /// </summary>
 public sealed record ConversationShape(float[] You, float[] Remote, bool HasData)
@@ -21,6 +20,13 @@ public sealed record ConversationShape(float[] You, float[] Remote, bool HasData
 
     public static readonly ConversationShape Empty =
         new(new float[DefaultBuckets], new float[DefaultBuckets], HasData: false);
+
+    /// <summary>Uses the cached aligned-audio envelope when the meeting has not been transcribed yet.</summary>
+    public static ConversationShape FromEnergyEnvelope(PlaybackEnergyEnvelope envelope)
+    {
+        ArgumentNullException.ThrowIfNull(envelope);
+        return new ConversationShape([.. envelope.You], [.. envelope.Remote], envelope.HasData);
+    }
 
     /// <summary>
     /// Buckets a transcript into two activity lanes by the time each segment covers.

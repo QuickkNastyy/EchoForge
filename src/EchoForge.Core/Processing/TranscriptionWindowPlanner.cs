@@ -74,6 +74,7 @@ public static class TranscriptionWindowPlanner
             SourceManifestSha256 = manifest,
             ProcessingProfile = processingProfile,
             PlanningVersion = options.PlanningVersion,
+            StrategyId = options.StrategyId,
             WindowSeconds = options.WindowSeconds,
             OverlapSeconds = options.OverlapSeconds,
             Windows = windows,
@@ -184,6 +185,7 @@ public static class TranscriptionWindowPlanner
             startFrame,
             endFrame,
             processingProfile,
+            options.StrategyId,
             options.PlanningVersion,
             manifest);
 

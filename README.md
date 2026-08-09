@@ -1,40 +1,48 @@
 # EchoForge
 
-A private, local-first Windows meeting utility:
+A private, local-first meeting assistant for Windows:
 
-**Record → Transcribe locally → Summarize locally → Extract actions.**
+**Record a meeting → Process it → Read what happened and what you need to do.**
 
 Audio never leaves the machine. After first-run setup, the entire workflow runs
 offline.
 
+EchoForge is one window with three destinations — **Record**, **Recordings**, **Settings**.
+Recording is just recording: no model pickers, no compute profiles, no glossary. Processing a
+meeting is one action that uses the defaults chosen once in Settings. What comes out is a
+**meeting brief**: a few paragraphs of what actually happened, then a numbered plan of what to do
+next, in the order the meeting supports, with everybody else's work and every speculative idea kept
+out of it.
+
 ## Status
 
-**Phase 0** (dual-track capture and recovery) is implementation-complete and
-automated-test green. Its long-duration and physical-hardware acceptance runs are
-deliberately deferred and tracked in
-[`docs/HARDENING_BACKLOG.md`](docs/HARDENING_BACKLOG.md); until those happen Phase 0
-is **not production-qualified**. Deferring a test is not passing it.
+Dual-track capture, crash recovery, immutable transcript/summary revisions, production local
+Whisper inference, whole-meeting briefs with an ordered action plan, one-click provisioning for
+every advertised model, and model comparison are implemented. Physical long-duration capture
+qualification remains deliberately deferred in
+[`docs/HARDENING_BACKLOG.md`](docs/HARDENING_BACKLOG.md); deferred is not passed.
 
-**Phase 1** (the recording application, session storage, crash recovery) is accepted.
+[`docs/MEETING_INTELLIGENCE.md`](docs/MEETING_INTELLIGENCE.md) describes what a brief contains,
+what counts as an action item and what does not, how ordering is grounded, and how long meetings
+are handled without losing their last twenty minutes.
 
-**Phase 2A** is complete, in two passes:
+Current local ASR choices are:
 
-- [Pass 1](docs/PHASE2A_PASS1_REPORT.md) — the NDJSON worker protocol, the transcript
-  schema and contracts, the Windows Job Object worker supervisor, and a deterministic
-  Python worker.
-- [Pass 2](docs/PHASE2A_PASS2_REPORT.md) — immutable transcript revisions with atomic
-  activation, the processing coordinator, the application surface, and JSON / TXT / SRT /
-  VTT exports.
+- Whisper Large V3 Turbo (production, multilingual, faster-whisper/CTranslate2);
+- Whisper Large V3 (production, multilingual, accuracy-oriented);
+- NVIDIA Parakeet Unified EN 0.6B (experimental, English, isolated NeMo runtime);
+- NVIDIA Canary-Qwen 2.5B (experimental, English, short-window isolated NeMo runtime).
 
-**Phase 2B, Pass 1** is complete: the production artifacts are pinned with verified
-digests, downloads are resumable and verified before activation, and recordings are
-converted to 16 kHz mono derivatives with timing maps and divided into overlapping
-transcription windows. See [`docs/PHASE2B_PASS1_REPORT.md`](docs/PHASE2B_PASS1_REPORT.md).
+**Install means ready.** For the NVIDIA models that includes building the entire isolated Linux
+runtime they need — an exact CPython 3.11 installed by a pinned `uv`, the hash-locked NeMo/PyTorch
+closure, a CUDA probe and a real inference on this GPU — with no shell, no `pip`, and no
+environment variable for the user to set. A model is only shown as Ready once it has produced
+output here; weights on disk with no runtime that can load them is reported as exactly that.
 
-The transcription backend in this build still performs **no speech recognition**. It reads
-the real audio and emits deterministic placeholder text, and it says so on the worker
-handshake, in every transcript it writes, in the app, and in the exported file. Pass 2
-replaces it with faster-whisper behind the same interface.
+Current local summary choices are Gemma 4 12B QAT Q4_0, optional gpt-oss-20b MXFP4, and the
+optional Ministral 3 14B benchmark profile. Each summary is tied to the exact transcript revision
+it read. See [`docs/MODEL_PROCESSING_AND_COMPARISON.md`](docs/MODEL_PROCESSING_AND_COMPARISON.md)
+for exact pins, capabilities, VAD behavior, lifecycle guarantees, and limitations.
 
 `artifacts/manifest.json` lists every file EchoForge may download, each pinned to an
 immutable revision with a verified size and SHA-256; `scripts/verify-models.ps1` is the
@@ -48,18 +56,24 @@ strategy, the eight-phase implementation plan, acceptance criteria, and risks.
 
 ## Approach at a glance
 
-- **C# 14 / .NET 10 / WPF**, modular monolith.
+- **C# 14 / .NET 10 / WPF**, modular monolith, one window with three pages.
 - **NAudio over WASAPI shared mode** — one loopback client on the selected render
   endpoint plus one microphone capture client, running concurrently.
 - Immutable **60-second PCM16 WAV chunks**, system and microphone kept as
   separate tracks, aligned on one monotonic QPC + audio-clock timeline.
-- **faster-whisper / CTranslate2** for speech-to-text, with a CPU fallback path.
+- A model/backend registry over **faster-whisper/CTranslate2** and an isolated
+  **NVIDIA NeMo/PyTorch** worker. Model identity, compute, VAD, and language are separate.
+- Accuracy VAD is non-destructive; Balanced/Fast use explicit pinned Silero parameters; Off is
+  available for diagnostic reruns.
 - A short-lived **llama.cpp** child process for summarization. No permanent
   local service.
+- ASR and summary comparison run models sequentially; only one GPU-heavy model is resident.
 - Canonical storage is **versioned JSON plus an append-only JSONL journal**.
   SQLite is a rebuildable index, never the source of truth.
-- Every decision and action item **cites transcript segment IDs**. Unsupported
-  owners and dates stay `null`.
+- Every decision, action item and plan step **cites transcript segment IDs**. Unsupported
+  owners and dates stay `null` — the plan-step schema has nowhere to put one.
+- The final brief reads the **whole meeting** when it fits, and an ordered digest covering all of
+  it when it does not. It may reason about order; it may not invent a commitment.
 
 ## Repository
 
@@ -73,12 +87,20 @@ dotnet build C:\EchoForge\EchoForge.slnx -c Debug --warnaserror
 dotnet test C:\EchoForge\EchoForge.slnx -c Debug
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\EchoForge\scripts\run-worker-tests.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\EchoForge\scripts\verify-models.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\EchoForge\scripts\lock-nemo-runtime.ps1 -Check
 ```
 
-The Python worker suite needs [uv](https://docs.astral.sh/uv/) and CPython 3.12. The
+Optional, local, and needing several gigabytes of weights plus a GPU:
+
+```powershell
+python C:\EchoForge\scripts\evaluate-meeting-briefs.py --model gemma-4-12b --model gpt-oss-20b
+```
+
+The Windows worker suite needs [uv](https://docs.astral.sh/uv/) and CPython 3.12. The
 .NET tests that launch the worker skip with an explanatory message when it is absent;
-everything else still runs. The app behaves the same way: without a usable Python 3.12
-the transcription panel does not appear and recording works exactly as before.
+everything else still runs. Optional NeMo ASR runs in a WSL2/Linux runtime EchoForge provisions
+itself from Settings; see [`worker-nemo/README.md`](worker-nemo/README.md). Without either
+inference runtime, recording, playback, and existing revisions continue to work.
 
 ## Recording consent
 

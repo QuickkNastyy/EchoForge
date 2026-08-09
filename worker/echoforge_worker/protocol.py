@@ -14,6 +14,8 @@ the implementation of that file, not a second opinion about it.
 from __future__ import annotations
 
 import json
+import os
+import platform
 import threading
 from typing import Any, Final, TextIO
 
@@ -35,6 +37,7 @@ class Stage:
     TRANSCRIBING_MICROPHONE: Final[str] = "transcribing_microphone"
     TRANSCRIBING_SYSTEM: Final[str] = "transcribing_system"
     MERGING: Final[str] = "merging"
+    PLANNING: Final[str] = "planning"
     VALIDATING: Final[str] = "validating"
     WRITING_OUTPUT: Final[str] = "writing_output"
     FINISHED: Final[str] = "finished"
@@ -48,6 +51,7 @@ class Stage:
             TRANSCRIBING_MICROPHONE,
             TRANSCRIBING_SYSTEM,
             MERGING,
+            PLANNING,
             VALIDATING,
             WRITING_OUTPUT,
             FINISHED,
@@ -159,7 +163,7 @@ class MessageWriter:
 
 
 def ready(backends: list[str], python_version: str) -> dict[str, Any]:
-    return {
+    message: dict[str, Any] = {
         "protocol_version": PROTOCOL_VERSION,
         "type": "ready",
         "worker_version": WORKER_VERSION,
@@ -167,6 +171,28 @@ def ready(backends: list[str], python_version: str) -> dict[str, Any]:
         "supported_protocol_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
         "backends": backends,
     }
+    # On WSL the Windows Job Object owns wsl.exe, not the Linux guest process. The host uses this
+    # PID plus Linux's immutable-per-process start tick to terminate exactly this worker if a
+    # graceful cancel fails. The token prevents PID reuse from targeting an unrelated process.
+    if platform.system() == "Linux":
+        token = _linux_process_start_token(os.getpid())
+        if token is not None:
+            message["process_id"] = os.getpid()
+            message["process_start_token"] = token
+    return message
+
+
+def _linux_process_start_token(process_id: int) -> str | None:
+    try:
+        with open(f"/proc/{process_id}/stat", encoding="utf-8") as handle:
+            stat = handle.read()
+        # comm may contain spaces and parentheses. Everything after its final ')' begins at
+        # field 3; starttime is field 22, therefore remainder index 19.
+        remainder = stat.rsplit(")", 1)[1].strip().split()
+        token = remainder[19]
+        return token if token.isdigit() else None
+    except (OSError, IndexError):
+        return None
 
 
 def started(job_id: str, backend: str, recognizes_speech: bool) -> dict[str, Any]:

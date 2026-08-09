@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "session_id": "01JSYNTHETIC002",
+  "transcript_revision": 1,
+  "created_at_utc": "2026-08-07T12:00:00+00:00",
+  "source_manifest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "duration_seconds": 600.0,
+  "model": {
+    "runtime": "echoforge-synthetic",
+    "backend": "written-by-hand",
+    "model_id": "none",
+    "revision": "none",
+    "compute_type": "none",
+    "recognizes_speech": false,
+    "worker_version": "0.1.0"
+  },
+  "epochs": [
+    {
+      "index": 1,
+      "start_seconds": 0.0,
+      "end_seconds": 600.0
+    }
+  ],
+  "speakers": [
+    {
+      "id": "speaker-you",
+      "name": "You",
+      "source_track": "microphone"
+    },
+    {
+      "id": "speaker-remote",
+      "name": "Remote",
+      "source_track": "system"
+    }
+  ],
+  "languages": [
+    {
+      "source_track": "microphone",
+      "code": "en",
+      "probability": null
+    }
+  ],
+  "segments": [
+    {
+      "id": "segment-000001",
+      "epoch": 1,
+      "start_seconds": 0.0,
+      "end_seconds": 10.0,
+      "speaker_id": "speaker-you",
+      "speaker_name": "You",
+      "source_track": "microphone",
+      "text": "Okay, I've started recording, can you hear me on your side?",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000002",
+      "epoch": 1,
+      "start_seconds": 12.0,
+      "end_seconds": 22.0,
+      "speaker_id": "speaker-remote",
+      "speaker_name": "Remote",
+      "source_track": "system",
+      "text": "Yeah, you're coming through clearly.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000003",
+      "epoch": 1,
+      "start_seconds": 24.0,
+      "end_seconds": 34.0,
+      "speaker_id": "speaker-you",
+      "speaker_name": "You",
+      "source_track": "microphone",
+      "text": "Good. I mainly want to check that both tracks are being captured separately.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000004",
+      "epoch": 1,
+      "start_seconds": 36.0,
+      "end_seconds": 46.0,
+      "speaker_id": "speaker-remote",
+      "speaker_name": "Remote",
+      "source_track": "system",
+      "text": "It looks like it. One thing though, the window seems to be getting smaller as it goes.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000005",
+      "epoch": 1,
+      "start_seconds": 48.0,
+      "end_seconds": 58.0,
+      "speaker_id": "speaker-you",
+      "speaker_name": "You",
+      "source_track": "microphone",
+      "text": "Yeah I noticed that too, the panel compacts itself while the recording runs.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000006",
+      "epoch": 1,
+      "start_seconds": 60.0,
+      "end_seconds": 70.0,
+      "speaker_id": "speaker-remote",
+      "speaker_name": "Remote",
+      "source_track": "system",
+      "text": "Not a problem, just something I noticed.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000007",
+      "epoch": 1,
+      "start_seconds": 72.0,
+      "end_seconds": 82.0,
+      "speaker_id": "speaker-you",
+      "speaker_name": "You",
+      "source_track": "microphone",
+      "text": "Right, I think we've got what we need. Stop the recording.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    },
+    {
+      "id": "segment-000008",
+      "epoch": 1,
+      "start_seconds": 84.0,
+      "end_seconds": 94.0,
+      "speaker_id": "speaker-remote",
+      "speaker_name": "Remote",
+      "source_track": "system",
+      "text": "Stopping it now.",
+      "confidence": null,
+      "language": "en",
+      "words": [],
+      "overlaps_segment_ids": []
+    }
+  ]
+}

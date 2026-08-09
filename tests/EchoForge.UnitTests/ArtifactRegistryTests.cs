@@ -100,6 +100,20 @@ public sealed class ArtifactRegistryTests : IDisposable
     }
 
     [Fact]
+    public void AStagedFilenameIsOptionalButMustRemainOneBasename()
+    {
+        ArtifactEntry historical = Entry("https://example.invalid/artifact.bin", Payload());
+        ArtifactEntry invalid = historical with { StageFileName = "dependency?.json" };
+
+        Assert.True(ArtifactManifestReader.Validate(
+            new ArtifactManifest { Artifacts = [historical] }).Succeeded);
+        ManifestLoadResult result = ArtifactManifestReader.Validate(
+            new ArtifactManifest { Artifacts = [invalid] });
+        Assert.False(result.Succeeded);
+        Assert.Contains(result.Problems, p => p.Contains("staged file", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void TheRepositoryManifestLoadsAndYieldsProfiles()
     {
         string manifestPath = Path.Combine(WorkerTestEnvironment.RepositoryRoot, "artifacts", "manifest.json");
@@ -113,6 +127,8 @@ public sealed class ArtifactRegistryTests : IDisposable
         IReadOnlyList<ProcessingProfile> profiles = registry!.Profiles();
         Assert.Contains(profiles, p => p.Id == ProcessingProfile.Mock);
         Assert.Contains(profiles, p => p.Id == ProcessingProfile.CpuInt8);
+        ProcessingProfile nemo = Assert.Single(profiles, p => p.Id == ProcessingProfile.AsrNemoRuntime);
+        Assert.Contains(nemo.Artifacts, artifact => artifact.ArtifactId == "runtime.uv-linux");
 
         ProcessingProfile mock = profiles.First(p => p.Id == ProcessingProfile.Mock);
         Assert.Empty(mock.Artifacts);

@@ -76,16 +76,22 @@ Windows x64 and pinned by digest in `artifacts/manifest.json`.
 | click | 8.4.2 | BSD-3-Clause | `click-8.4.2-LICENSE.txt` |
 | colorama | 0.4.6 | BSD-3-Clause | `colorama-0.4.6-LICENSE.txt` |
 | typing-extensions | 4.16.0 | PSF-2.0 | `typing-extensions-4.16.0-LICENSE.txt` |
+| NVIDIA cuBLAS CUDA 12 runtime | 12.9.2.10 | NVIDIA CUDA Toolkit EULA | `nvidia-cublas-cu12-12.9.2.10-LICENSE.txt` |
+| NVIDIA CUDA NVRTC runtime (cuBLAS dependency) | 12.9.86 | NVIDIA CUDA Toolkit EULA | `nvidia-cuda-nvrtc-cu12-12.9.86-LICENSE.txt` |
 
 Silero VAD has no entry of its own because faster-whisper 1.2.1 ships it inside its own wheel, so
 that wheel's digest already covers it.
+
+The CUDA 12 libraries above are publisher-owned PyPI wheels in the verified speech-worker closure.
+EchoForge adds their private DLL folder only to each short-lived worker process. It does not modify
+the machine PATH or rely on an unpinned system CUDA Toolkit.
 
 | Component | Version | Licence | Retained text |
 |---|---|---|---|
 | llama.cpp (CPU and CUDA builds) | b10298 | MIT | `llama-cpp-b10298-LICENSE.txt` |
 | NVIDIA CUDA runtime redistributables | 13.3 | NVIDIA CUDA Toolkit EULA | `nvidia-cuda-redistributable-NOTICE.md` |
 
-The CUDA runtime libraries are downloaded only when a user chooses the GPU summary profile. They
+The CUDA 13 runtime libraries are downloaded only when a user chooses the GPU summary profile. They
 are redistributed under the terms in the retained notice; a CPU-only installation never fetches
 them.
 
@@ -96,17 +102,23 @@ Downloaded and verified at setup, and only when the user chooses a profile that 
 | Model | Revision | Licence | Retained text |
 |---|---|---|---|
 | faster-whisper large-v3-turbo (CTranslate2) | pinned in the manifest | MIT | `faster-whisper-large-v3-turbo-ct2-MODEL-CARD.md` |
-| Gemma 4 12B IT QAT Q4_0 (GGUF) | pinned in the manifest | Gemma Terms of Use | `gemma-4-12b-it-qat-q4_0-MODEL-CARD.md` |
+| faster-whisper large-v3 (CTranslate2) | pinned in the manifest | MIT | `faster-whisper-large-v3-ct2-MODEL-CARD.md` |
+| NVIDIA Parakeet Unified EN 0.6B | pinned in the manifest | NVIDIA Open Model License | `parakeet-unified-en-0.6b-NOTICE.md` |
+| NVIDIA Canary-Qwen 2.5B | pinned in the manifest | CC-BY-4.0 | `canary-qwen-2.5b-NOTICE.md` |
+| Qwen 3 1.7B tokenizer/config dependency for Canary | pinned in the manifest | Apache-2.0 | `qwen3-1.7b-NOTICE.md` |
+| Gemma 4 12B IT QAT Q4_0 (GGUF) | pinned in the manifest | Apache-2.0 | `gemma-4-12b-it-qat-q4_0-MODEL-CARD.md` |
+| gpt-oss-20b MXFP4 (GGUF) | pinned in the manifest | Apache-2.0 | `gpt-oss-20b-NOTICE.md` |
 | Ministral 3 14B Instruct Q4_K_M (GGUF) | pinned in the manifest | Apache-2.0 | `ministral-3-14b-instruct-2512-MODEL-CARD.md` |
 
-**Ministral is optional and is never installed by default.** It exists so the default summariser can
-be measured against something; setup does not offer it as part of a recommended installation and no
-processing profile selects it on its own. It appears in this notice because the packaging layout
-makes it *available*, not because it is distributed.
+**gpt-oss and Ministral are optional and are never installed by default.** They exist for explicit
+local comparison/benchmark runs; setup does not include either in a recommended installation and no
+processing profile selects them on its own. They appear here because the packaging layout makes
+them *available*, not because their weights are bundled.
 
-Gemma is distributed under Google's Gemma Terms of Use rather than a standard open-source licence.
-The retained model card carries the terms and the use restrictions; they apply to the weights, and
-they are the user's to accept at the point the model is downloaded.
+Gemma 4 is Apache-2.0. The retained card calls out the difference from older Gemma releases so
+Gemma 3-era terms are not copied forward. The NeMo/PyTorch environment is separately provisioned
+inside WSL2 from `worker-nemo/requirements-production.in`; it is not bundled into or allowed to
+alter EchoForge's locked Windows faster-whisper environment.
 
 ---
 

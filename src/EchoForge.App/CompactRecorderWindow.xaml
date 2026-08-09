@@ -5,24 +5,29 @@
         WindowStyle="None" ResizeMode="NoResize" Topmost="True"
         SizeToContent="WidthAndHeight" ShowInTaskbar="False"
         Background="Transparent" AllowsTransparency="True"
-        Foreground="{StaticResource Ink}"
+        Foreground="{DynamicResource Ink}"
         FontFamily="{StaticResource UiFont}"
         MouseLeftButtonDown="OnDragged">
 
   <!--
-    The out-of-the-way recorder from the mockup. It is another view over the SAME MainViewModel — no
-    second controller, no second session authority — so the clock, the meters and the transport are
-    exactly the live ones. Closing it returns to the full window; it never stops the recording, which
-    only Stop does.
+    The out-of-the-way recorder. It is another view over the SAME MainViewModel — no second
+    controller, no second session authority — so the clock, the meters and the transport are
+    exactly the live ones. Closing it returns to the full window; it never stops the recording,
+    which only Stop does.
+
+    One readable line: the state chip, the clock, and the transport. The meters ride underneath,
+    thin, in their own colours. It drags by its own surface.
   -->
   <!--
-    A floating card rather than a window with a title bar. During a meeting the chrome is noise,
-    and the design shows none: the red dot, the clock and the transport are the whole control. It
-    drags by its own surface, and closing it returns to the full window without stopping anything.
+    The shadow is on an empty backing plate rather than on the card itself. A DropShadowEffect
+    applies to a Border's whole rendered subtree, so putting it on the card gave every pill, glyph
+    and clock digit inside its own blurred copy — a halo, not a shadow.
   -->
-  <Border Width="352" Padding="14,12" CornerRadius="9" Background="{StaticResource Surface}"
-          BorderBrush="{StaticResource LineStrong}" BorderThickness="1">
-    <StackPanel>
+  <Grid Margin="10">
+    <Border CornerRadius="12" Background="{DynamicResource CardFill}" Effect="{StaticResource FloatShadow}" />
+    <Border Padding="13,11" CornerRadius="12" Background="{DynamicResource CardFill}"
+            BorderBrush="{DynamicResource LineStrong}" BorderThickness="1">
+    <StackPanel Width="358">
       <Grid>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto" />
@@ -31,12 +36,17 @@
           <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
 
-        <Ellipse Grid.Column="0" Width="11" Height="11" Fill="{StaticResource Rec}" VerticalAlignment="Center"
-                 Visibility="{Binding IndicatorVisible, Converter={StaticResource BoolToVis}}" />
-        <Ellipse Grid.Column="0" Width="11" Height="11" Stroke="{StaticResource InkFaint}" StrokeThickness="2"
-                 VerticalAlignment="Center">
-          <Ellipse.Style>
-            <Style TargetType="Ellipse">
+        <!-- REC while capture is live; a quiet Ready chip when it is not. -->
+        <Border Grid.Column="0" Style="{StaticResource PillRec}" VerticalAlignment="Center"
+                Visibility="{Binding IndicatorVisible, Converter={StaticResource BoolToVis}}">
+          <StackPanel Orientation="Horizontal">
+            <Ellipse Style="{StaticResource PillDot}" Fill="{DynamicResource Rec}" />
+            <TextBlock Text="REC" Style="{StaticResource PillText}" Foreground="{DynamicResource Rec}" />
+          </StackPanel>
+        </Border>
+        <Border Grid.Column="0" VerticalAlignment="Center">
+          <Border.Style>
+            <Style TargetType="Border" BasedOn="{StaticResource Pill}">
               <Setter Property="Visibility" Value="Visible" />
               <Style.Triggers>
                 <DataTrigger Binding="{Binding IndicatorVisible}" Value="True">
@@ -44,48 +54,60 @@
                 </DataTrigger>
               </Style.Triggers>
             </Style>
-          </Ellipse.Style>
-        </Ellipse>
+          </Border.Style>
+          <StackPanel Orientation="Horizontal">
+            <Ellipse Style="{StaticResource PillDot}" Fill="{DynamicResource InkFaint}" />
+            <TextBlock Text="READY" Style="{StaticResource PillText}" />
+          </StackPanel>
+        </Border>
 
-        <TextBlock Grid.Column="1" Text="{Binding Elapsed}" Margin="12,0,0,0" VerticalAlignment="Center"
-                   FontFamily="{StaticResource ClockFont}" FontSize="21" FontWeight="Bold" />
+        <TextBlock Grid.Column="1" Text="{Binding Elapsed}" Margin="11,0,0,0" VerticalAlignment="Center"
+                   FontFamily="{StaticResource ClockFont}" FontSize="20" FontWeight="Bold" />
 
         <StackPanel Grid.Column="3" Orientation="Horizontal">
+          <Button Content="Start" Command="{Binding StartCommand}" MinWidth="56" Margin="0,0,6,0"
+                  Style="{StaticResource PrimaryButton}" ToolTip="Start recording"
+                  Visibility="{Binding ShowCaptureFacts, Converter={StaticResource InvBoolToVis}}" />
           <Button Content="❙❙" Command="{Binding PauseCommand}" Width="34" Margin="0,0,6,0" Padding="0,6"
                   ToolTip="Pause" Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}" />
           <Button Content="▶" Command="{Binding ResumeCommand}" Width="34" Margin="0,0,6,0" Padding="0,6"
                   Style="{StaticResource PrimaryButton}" ToolTip="Resume"
                   Visibility="{Binding IsPaused, Converter={StaticResource BoolToVis}}" />
-          <Button Content="■" Command="{Binding StopCommand}" Width="34" Padding="0,6"
-                  Style="{StaticResource DangerButton}" ToolTip="Stop recording" />
+          <Button Content="■" Command="{Binding StopCommand}" Width="34" Margin="0,0,6,0" Padding="0,6"
+                  Style="{StaticResource DangerButton}" ToolTip="Stop recording"
+                  Visibility="{Binding ShowCaptureFacts, Converter={StaticResource BoolToVis}}" />
+          <Button Width="34" Padding="0,6" Click="OnReturnToFull"
+                  ToolTip="Return to the full EchoForge window — a live recording keeps running"
+                  AutomationProperties.Name="Return to full EchoForge">
+            <Path Width="15" Height="15" Stretch="Uniform" Data="{StaticResource IconExpand}"
+                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                  StrokeThickness="1.7" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+          </Button>
         </StackPanel>
       </Grid>
 
       <Grid Margin="0,10,0,0">
         <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="54" />
+          <ColumnDefinition Width="48" />
           <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
-        <TextBlock Grid.Column="0" Text="You" Style="{StaticResource Label}" Foreground="{StaticResource You}"
+        <TextBlock Grid.Column="0" Text="You" Style="{StaticResource Label}" Foreground="{DynamicResource You}"
                    VerticalAlignment="Center" />
-        <ProgressBar Grid.Column="1" Style="{StaticResource Meter}" Height="7"
-                     Foreground="{StaticResource You}" Value="{Binding YouLevel, Mode=OneWay}" />
+        <ProgressBar Grid.Column="1" Style="{StaticResource Meter}" Height="6" BorderThickness="0"
+                     Foreground="{DynamicResource You}" Value="{Binding YouLevel, Mode=OneWay}" />
       </Grid>
 
-      <Grid Margin="0,7,0,0">
+      <Grid Margin="0,6,0,0">
         <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="54" />
+          <ColumnDefinition Width="48" />
           <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
-        <TextBlock Grid.Column="0" Text="Remote" Style="{StaticResource Label}" Foreground="{StaticResource Remote}"
+        <TextBlock Grid.Column="0" Text="Remote" Style="{StaticResource Label}" Foreground="{DynamicResource Remote}"
                    VerticalAlignment="Center" />
-        <ProgressBar Grid.Column="1" Style="{StaticResource Meter}" Height="7"
-                     Foreground="{StaticResource Remote}" Value="{Binding RemoteLevel, Mode=OneWay}" />
+        <ProgressBar Grid.Column="1" Style="{StaticResource Meter}" Height="6" BorderThickness="0"
+                     Foreground="{DynamicResource Remote}" Value="{Binding RemoteLevel, Mode=OneWay}" />
       </Grid>
-
-      <TextBlock Margin="0,9,0,0" Style="{StaticResource Label}" Foreground="{StaticResource InkFaint}"
-                 TextWrapping="Wrap"
-                 Text="Close to return to the full window — recording keeps running" />
     </StackPanel>
-  </Border>
+    </Border>
+  </Grid>
 </Window>

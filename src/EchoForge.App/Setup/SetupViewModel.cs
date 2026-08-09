@@ -5,7 +5,9 @@ using System.Runtime.CompilerServices;
 using System.Windows.Threading;
 using EchoForge.Contracts.Artifacts;
 using EchoForge.Contracts.Audio;
+using EchoForge.Contracts.Inference;
 using EchoForge.Contracts.Setup;
+using EchoForge.Core.Inference;
 using EchoForge.Core.Setup;
 using EchoForge.Infrastructure.Setup;
 
@@ -72,6 +74,60 @@ public sealed record CapabilityRow(CapabilityState State)
 }
 
 /// <summary>
+/// One model, and what it would take to be able to use it.
+///
+/// <para>
+/// <b>Readiness here is a capability, never a file listing.</b> The row that said "Installed" for
+/// a model whose runtime could not load it is the specific failure this record exists to make
+/// impossible: <see cref="Status"/> is derived from <see cref="Readiness"/>, and nothing reaches
+/// <see cref="ModelReadinessState.Ready"/> without the model having produced real output on this
+/// machine.
+/// </para>
+/// </summary>
+public sealed record ModelManagementRow(
+    string Category,
+    string Id,
+    string Name,
+    string ProfileId,
+    string Detail,
+    ModelReadinessState Readiness,
+    bool FilesPresent,
+    bool Experimental,
+    bool Recommended,
+    long BytesRequired,
+    string Qualification)
+{
+    public string Status => Readiness switch
+    {
+        ModelReadinessState.Ready => Recommended ? "Ready · recommended" : "Ready",
+        ModelReadinessState.InstallingRuntime => "Installing runtime…",
+        ModelReadinessState.InstallingDependencies => "Installing dependencies…",
+        ModelReadinessState.DownloadingModel => "Downloading…",
+        ModelReadinessState.Verifying => "Verifying…",
+        ModelReadinessState.Testing => "Testing…",
+        ModelReadinessState.RestartRequired => "Restart required",
+        ModelReadinessState.Failed => "Failed",
+        ModelReadinessState.RepairAvailable => "Downloaded · not usable yet",
+        _ => Recommended ? "Not installed · recommended" : "Not installed",
+    };
+
+    public bool IsReady => Readiness == ModelReadinessState.Ready;
+
+    public string Size => BytesRequired > 0 ? RuntimeRegistry.Describe(BytesRequired) : string.Empty;
+
+    public bool CanInstall => Readiness is not (ModelReadinessState.Ready
+        or ModelReadinessState.InstallingRuntime
+        or ModelReadinessState.InstallingDependencies
+        or ModelReadinessState.DownloadingModel
+        or ModelReadinessState.Verifying
+        or ModelReadinessState.Testing);
+
+    /// <summary>Repair is for something that was installed and stopped qualifying.</summary>
+    public bool CanRepair => FilesPresent &&
+        Readiness is ModelReadinessState.RepairAvailable or ModelReadinessState.Failed or ModelReadinessState.Ready;
+}
+
+/// <summary>
 /// First run, and every run after it that needs something installed.
 ///
 /// <para>
@@ -99,8 +155,10 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
     private SetupRecommendation? _recommendation;
     private SetupSnapshot? _snapshot;
     private ComponentRow? _selected;
+    private ModelManagementRow? _selectedModel;
     private string? _status;
     private string? _progressText;
+    private string? _modelProgressText;
     private double _progress;
     private bool _busy;
     private bool _disposed;
@@ -120,6 +178,15 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
 
         RepairSelectedCommand = new AsyncRelayCommand(
             () => RepairAsync(_selected), _gate, () => !_busy && _selected is { CanRepair: true }, m => Status = m);
+
+        InstallSelectedModelCommand = new AsyncRelayCommand(
+            InstallSelectedModelAsync, _gate, () => !_busy && _selectedModel is { CanInstall: true }, m => Status = m);
+
+        RepairSelectedModelCommand = new AsyncRelayCommand(
+            RepairSelectedModelAsync, _gate, () => !_busy && _selectedModel is { CanRepair: true }, m => Status = m);
+
+        FixProcessingCommand = new AsyncRelayCommand(
+            FixProcessingAsync, _gate, () => !_busy && !ProcessingAvailable, m => Status = m);
 
         CancelCommand = new RelayCommand(() => _work?.Cancel(), () => _busy);
     }
@@ -142,6 +209,8 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
 
     public ObservableCollection<CapabilityRow> Capabilities { get; } = [];
 
+    public ObservableCollection<ModelManagementRow> Models { get; } = [];
+
     public ObservableCollection<string> HardwareFacts { get; } = [];
 
     public ObservableCollection<string> RecommendationReasons { get; } = [];
@@ -156,6 +225,27 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
 
     public AsyncRelayCommand RepairSelectedCommand { get; }
 
+    public AsyncRelayCommand InstallSelectedModelCommand { get; }
+
+    public AsyncRelayCommand RepairSelectedModelCommand { get; }
+
+    /// <summary>
+    /// What provisioning is doing, in words.
+    ///
+    /// <para>
+    /// Separate from the byte counter above it. Building a Linux runtime and installing several
+    /// gigabytes of PyTorch takes minutes during which no artifact is downloading at all, and a
+    /// progress bar with nothing to say is how a working install looks like a hung one.
+    /// </para>
+    /// </summary>
+    public string? ModelProgressText
+    {
+        get => _modelProgressText;
+        private set { _modelProgressText = value; Changed(); Changed(nameof(HasModelProgress)); }
+    }
+
+    public bool HasModelProgress => !string.IsNullOrWhiteSpace(ModelProgressText);
+
     public RelayCommand CancelCommand { get; }
 
     public ComponentRow? SelectedComponent
@@ -164,11 +254,82 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
         set { _selected = value; Changed(); RaiseCommands(); }
     }
 
+    public ModelManagementRow? SelectedModel
+    {
+        get => _selectedModel;
+        set { _selectedModel = value; Changed(); RaiseCommands(); }
+    }
+
+    /// <summary>
+    /// Whether a recording can be turned into anything at all right now.
+    ///
+    /// <para>
+    /// Read from the components rather than from whether a view model happened to attach, because
+    /// this has to be answerable at exactly the moment nothing attached.
+    /// </para>
+    /// </summary>
+    public bool ProcessingAvailable =>
+        _snapshot is { } snapshot && (snapshot.CanTranscribe || snapshot.CanSummarize);
+
+    /// <summary>
+    /// The first thing standing in the way, in the words the component itself used.
+    ///
+    /// <para>
+    /// This exists because of a real installation that could record and could do nothing else, and
+    /// said so nowhere a person would look: the pages that would have explained it are the ones
+    /// that do not render until processing works. A screen that is empty precisely when something
+    /// is wrong is worse than no screen.
+    /// </para>
+    /// </summary>
+    public string ProcessingProblem
+    {
+        get
+        {
+            if (_snapshot is not { } snapshot)
+            {
+                return "EchoForge is still checking what this machine can do.";
+            }
+
+            ComponentRow? blocking = Components.FirstOrDefault(c => !c.IsReady && c.CanInstall || !c.IsReady && c.CanRepair);
+            return blocking is null
+                ? "Transcription and meeting briefs are not available yet."
+                : blocking.Name + ": " + blocking.Detail;
+        }
+    }
+
+    public bool HasProcessingProblem => !ProcessingAvailable;
+
+    /// <summary>
+    /// Repairs whatever is actually blocking processing, without making the user find it.
+    ///
+    /// <para>
+    /// It repairs rather than reinstalls where it can, so nothing already downloaded is fetched
+    /// again — the usual cause is an environment whose record of itself has fallen behind the
+    /// packages it is supposed to contain, and rebuilding that is quick.
+    /// </para>
+    /// </summary>
+    public AsyncRelayCommand FixProcessingCommand { get; }
+
+    private async Task FixProcessingAsync()
+    {
+        ComponentRow? blocking = Components.FirstOrDefault(c => !c.IsReady && (c.CanRepair || c.CanInstall));
+        if (blocking is null)
+        {
+            Status = "Nothing needs repairing; EchoForge could not tell what is missing.";
+            return;
+        }
+
+        SelectedComponent = blocking;
+        await (blocking.CanRepair ? RepairAsync(blocking) : InstallAsync(blocking)).ConfigureAwait(true);
+    }
+
     public string RecommendationSummary => _recommendation is null
         ? "Checking this machine…"
         : _recommendation.Transcription.Summary + "  " + _recommendation.Summarization.Summary;
 
     public string TranscriptionProfileId => _recommendation?.Transcription.ProfileId ?? ProcessingProfile.Mock;
+
+    public string AsrModelProfileId => _recommendation?.Asr.ArtifactProfileId ?? ProcessingProfile.Mock;
 
     public string SummaryProfileId => _recommendation?.Summarization.ProfileId ?? ProcessingProfile.Mock;
 
@@ -248,7 +409,10 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
         string transcription = TranscriptionProfileId;
         string summary = SummaryProfileId;
 
-        _snapshot = await Task.Run(() => _services.Runtimes.Snapshot(transcription, summary)).ConfigureAwait(true);
+        _snapshot = await Task.Run(() => _services.Runtimes.Snapshot(
+            transcription,
+            summary,
+            AsrModelProfileId)).ConfigureAwait(true);
 
         string? keep = _selected?.Id.ToString();
 
@@ -264,6 +428,8 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
             Capabilities.Add(new CapabilityRow(capability));
         }
 
+        BuildModelRows();
+
         _selected = keep is null
             ? null
             : Components.FirstOrDefault(c => string.Equals(c.Id.ToString(), keep, StringComparison.Ordinal));
@@ -271,12 +437,84 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
         foreach (string name in (string[])
         [
             nameof(SelectedComponent), nameof(OutstandingSummary), nameof(CanRecordNow),
+            nameof(SelectedModel),
+            nameof(ProcessingAvailable),
+            nameof(HasProcessingProblem),
+            nameof(ProcessingProblem),
         ])
         {
             Changed(name);
         }
 
         RaiseCommands();
+    }
+
+    private void BuildModelRows()
+    {
+        string? keep = _selectedModel?.Id;
+        Models.Clear();
+
+        foreach (AsrModelDefinition model in InferenceModelRegistry.AsrModels
+                     .Where(model => model.BackendId != AsrBackendIds.Mock))
+        {
+            ProcessingProfile? profile = _services.Artifacts.Profile(model.ArtifactProfileId);
+            bool filesPresent = profile is not null && _services.Artifacts.IsProfileReady(profile);
+
+            // Never "installed because the files are there", and never "not usable" just because
+            // this build has no qualification record for a model that has been working for weeks.
+            // Whisper runs in the worker environment, whose readiness the components list already
+            // establishes; the NVIDIA models need a Linux runtime that may not exist at all, so
+            // for those nothing short of having run the model counts.
+            bool nemo = model.BackendId == AsrBackendIds.Nemo;
+            bool runtimeReady = nemo
+                ? _services.TryResolveNemoWorkerLaunch() is not null
+                : _services.WorkerEnvironment.TryResolve() is not null;
+
+            ModelReadinessState readiness = _services.Provisioning.StateOf(
+                model.Id, model.ArtifactProfileId, model.ModelRevision,
+                runtimeReady, requiresQualification: nemo);
+
+            Models.Add(new ModelManagementRow(
+                "SPEECH",
+                model.Id,
+                model.DisplayName,
+                model.ArtifactProfileId,
+                model.ShortDescription,
+                readiness,
+                filesPresent,
+                model.Maturity == ModelMaturity.Experimental,
+                string.Equals(model.Id, _recommendation?.Asr.ModelId, StringComparison.Ordinal),
+                profile?.TotalBytes ?? 0,
+                _services.Provisioning.QualificationOf(model.Id, model.ModelRevision)?.Detail ?? string.Empty));
+        }
+
+        foreach (SummaryModelDefinition model in InferenceModelRegistry.SummaryModels)
+        {
+            ProcessingProfile? profile = _services.Artifacts.Profile(model.ArtifactProfileId);
+            bool filesPresent = _services.Llama.TryResolve(model.ArtifactProfileId) is not null;
+            ModelReadinessState readiness = _services.Provisioning.StateOf(
+                model.Id, model.ArtifactProfileId, model.ModelRevision,
+                runtimeReady: filesPresent, requiresQualification: false);
+
+            // A summary model this build never selects on its own is a comparison model, and
+            // saying so is the difference between "why is there a third summariser?" and a row
+            // that explains itself.
+            Models.Add(new ModelManagementRow(
+                model.Maturity == ModelMaturity.Production ? "SUMMARY" : "COMPARE",
+                model.Id,
+                model.DisplayName,
+                model.ArtifactProfileId,
+                model.ShortDescription,
+                readiness,
+                filesPresent,
+                model.Maturity == ModelMaturity.Experimental,
+                false,
+                profile?.TotalBytes ?? 0,
+                _services.Provisioning.QualificationOf(model.Id, model.ModelRevision)?.Detail ?? string.Empty));
+        }
+
+        _selectedModel = keep is null ? null : Models.FirstOrDefault(model => model.Id == keep);
+        Changed(nameof(Models));
     }
 
     private void BuildHardwareFacts()
@@ -343,7 +581,8 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
 
         foreach (string name in (string[])
         [
-            nameof(RecommendationSummary), nameof(TranscriptionProfileId), nameof(SummaryProfileId),
+            nameof(RecommendationSummary), nameof(TranscriptionProfileId), nameof(AsrModelProfileId),
+            nameof(SummaryProfileId),
         ])
         {
             Changed(name);
@@ -374,13 +613,42 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
 
         await RunAsync(async (token, progress) =>
         {
+            string transcriptionProfile = TranscriptionProfileId;
+            string summaryProfile = SummaryProfileId;
+            string asrModelProfile = AsrModelProfileId;
+
             foreach (RuntimeComponentId id in required)
             {
                 token.ThrowIfCancellationRequested();
 
                 await _services.Runtimes
-                    .InstallAsync(id, TranscriptionProfileId, SummaryProfileId, progress, token)
+                    .InstallAsync(
+                        id,
+                        transcriptionProfile,
+                        summaryProfile,
+                        asrModelProfile,
+                        progress,
+                        token)
                     .ConfigureAwait(false);
+
+                // On a new installation the first probe cannot ask CTranslate2 yet, so it makes a
+                // conservative CPU recommendation. Once the verified worker and private CUDA
+                // runtime exist, ask again before choosing which multi-gigabyte model to fetch.
+                // This is a capability check, not GPU-brand inference: a driver/runtime mismatch
+                // remains CPU and the setup never claims FP16 merely because an adapter exists.
+                if (id == RuntimeComponentId.WorkerEnvironment)
+                {
+                    HardwareSnapshot refreshed = await _services.HardwareProbe(_audio)
+                        .ProbeAsync(token)
+                        .ConfigureAwait(false);
+                    SetupRecommendation recommendation = ProfileRecommender.Recommend(refreshed);
+
+                    _hardware = refreshed;
+                    _recommendation = recommendation;
+                    transcriptionProfile = recommendation.Transcription.ProfileId;
+                    summaryProfile = recommendation.Summarization.ProfileId;
+                    asrModelProfile = recommendation.Asr.ArtifactProfileId;
+                }
             }
         }).ConfigureAwait(true);
     }
@@ -393,7 +661,13 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
         }
 
         await RunAsync((token, progress) => _services.Runtimes
-            .InstallAsync(row.Id, TranscriptionProfileId, SummaryProfileId, progress, token)).ConfigureAwait(true);
+            .InstallAsync(
+                row.Id,
+                TranscriptionProfileId,
+                SummaryProfileId,
+                AsrModelProfileId,
+                progress,
+                token)).ConfigureAwait(true);
     }
 
     private async Task RepairAsync(ComponentRow? row)
@@ -406,7 +680,56 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
         Status = "Repairing " + row.Name + ". Anything already downloaded is checked before anything is fetched.";
 
         await RunAsync((token, progress) => _services.Runtimes
-            .RepairAsync(row.Id, TranscriptionProfileId, SummaryProfileId, progress, token)).ConfigureAwait(true);
+            .RepairAsync(
+                row.Id,
+                TranscriptionProfileId,
+                SummaryProfileId,
+                AsrModelProfileId,
+                progress,
+                token)).ConfigureAwait(true);
+    }
+
+    /// <summary>
+    /// Install, which now means install <em>and prove</em>.
+    ///
+    /// <para>
+    /// The provisioner does whatever this particular model needs - for the NVIDIA ones that is an
+    /// entire isolated Linux runtime before a single byte of the checkpoint matters - and finishes
+    /// by running it. What comes back is either a qualification or a reason, and the reason is
+    /// what the row then says.
+    /// </para>
+    /// </summary>
+    private async Task InstallSelectedModelAsync()
+    {
+        if (_selectedModel is not { } model)
+        {
+            return;
+        }
+
+        await RunAsync(async (token, bytes) =>
+        {
+            Progress<ProvisionProgress> steps = new(update => Dispatch(() => ModelProgressText = update.Detail));
+
+            ModelQualification result = await _services.Provisioning
+                .InstallAsync(model.Id, steps, bytes, token)
+                .ConfigureAwait(false);
+
+            Dispatch(() => Status = result.IsReady
+                ? model.Name + " is ready. " + result.Detail
+                : model.Name + " is not ready. " + result.Detail);
+        }).ConfigureAwait(true);
+    }
+
+    /// <summary>Repair forgets the old verdict and asks the question again, from wherever it can.</summary>
+    private async Task RepairSelectedModelAsync()
+    {
+        if (_selectedModel is not { } model)
+        {
+            return;
+        }
+
+        _services.Provisioning.Forget(model.Id);
+        await InstallSelectedModelAsync().ConfigureAwait(true);
     }
 
     /// <summary>Runs one installation step with progress, cancellation, and a refresh afterwards.</summary>
@@ -443,9 +766,15 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
             cancellation.Dispose();
 
             ProgressText = null;
+            ModelProgressText = null;
             Progress = 0;
             IsBusy = false;
 
+            // Install-recommended may have been able to perform the definitive CUDA probe only
+            // after constructing the worker. Reflect that second, effective recommendation before
+            // rebuilding component/model rows.
+            BuildHardwareFacts();
+            BuildRecommendation();
             await ReloadSnapshotAsync().ConfigureAwait(true);
 
             // An install or repair may have put a worker runtime on disk that was not there at
@@ -469,6 +798,9 @@ public sealed class SetupViewModel : INotifyPropertyChanged, IDisposable
         InstallRecommendedCommand.RaiseCanExecuteChanged();
         InstallSelectedCommand.RaiseCanExecuteChanged();
         RepairSelectedCommand.RaiseCanExecuteChanged();
+        InstallSelectedModelCommand.RaiseCanExecuteChanged();
+        RepairSelectedModelCommand.RaiseCanExecuteChanged();
+        FixProcessingCommand.RaiseCanExecuteChanged();
         CancelCommand.RaiseCanExecuteChanged();
     }
 

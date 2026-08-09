@@ -20,13 +20,21 @@ namespace EchoForge.Infrastructure.Workers;
 public sealed class WorkerSupervisor
 {
     private readonly WorkerLaunchOptions _options;
+    private readonly WorkerLaunchOptions? _nemoOptions;
     private readonly ICaptureActivityGate _captureGate;
 
-    public WorkerSupervisor(WorkerLaunchOptions options, ICaptureActivityGate? captureGate = null)
+    public WorkerSupervisor(
+        WorkerLaunchOptions options,
+        ICaptureActivityGate? captureGate = null,
+        WorkerLaunchOptions? nemoOptions = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _captureGate = captureGate ?? NoRecordingInProgressGate.Instance;
+        _nemoOptions = nemoOptions;
     }
+
+    public bool SupportsBackend(string backend) =>
+        !string.Equals(backend, "nemo", StringComparison.Ordinal) || _nemoOptions is not null;
 
     /// <summary>
     /// Runs one transcription job.
@@ -53,8 +61,23 @@ public sealed class WorkerSupervisor
             return WorkerRunResult.Busy();
         }
 
+        bool needsNemo = string.Equals(request.Options.Backend, "nemo", StringComparison.Ordinal);
+        if (needsNemo && _nemoOptions is null)
+        {
+            return new WorkerRunResult
+            {
+                Outcome = WorkerOutcome.Failed,
+                Error = new WorkerError(
+                    WorkerErrorCodes.BackendUnavailable,
+                    WorkerStage.Handshake,
+                    "the isolated NeMo runtime was not configured"),
+            };
+        }
+
+        WorkerLaunchOptions selected = needsNemo ? _nemoOptions! : _options;
+
         using Run run = new(
-            _options,
+            selected,
             jobId,
             new StartJobMessage
             {
@@ -133,6 +156,8 @@ public sealed class WorkerSupervisor
         private bool _cancelRequested;
         private bool _terminated;
         private string? _protocolFailure;
+        private int? _guestProcessId;
+        private string? _guestProcessStartToken;
 
         public async Task<WorkerRunResult> ExecuteAsync(CancellationToken cancellationToken)
         {
@@ -187,6 +212,10 @@ public sealed class WorkerSupervisor
 
             // ArgumentList, never a command line built by hand: a worker root containing a
             // space or a quote must not be able to change what gets executed.
+            foreach (string argument in options.InterpreterArguments)
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
             startInfo.ArgumentList.Add("-X");
             startInfo.ArgumentList.Add("utf8");
             startInfo.ArgumentList.Add("-m");
@@ -390,7 +419,24 @@ public sealed class WorkerSupervisor
                 ready.ProtocolVersion,
                 ready.Backends);
 
+            if (options.IsWsl && ready.ProcessId is > 0 &&
+                ready.ProcessStartToken is { Length: > 0 } token && token.All(char.IsAsciiDigit))
+            {
+                _guestProcessId = ready.ProcessId;
+                _guestProcessStartToken = token;
+            }
+
             Send(startJob);
+
+            // A cancel that arrived before the handshake was recorded and never sent: there was
+            // nobody to send it to yet, and nothing looked at it again. The job then ran to
+            // completion and reported success, which is exactly what somebody who pressed Cancel
+            // did not ask for. Delivering it here is the whole fix — the window is small, but it
+            // is precisely the window in which an impatient user clicks.
+            if (_cancelRequested && _terminal is null)
+            {
+                Send(new CancelMessage { JobId = jobId, Reason = "user" });
+            }
 
             return true;
         }
@@ -575,8 +621,13 @@ public sealed class WorkerSupervisor
                 _terminated = true;
             }
 
-            // The Job Object first: it takes the whole tree, including anything the worker
-            // started that a plain kill would leave holding a GPU.
+            // A Windows Job Object contains wsl.exe but cannot authoritatively name a process
+            // inside the Linux guest. Kill the exact handshaken PID first, checking both its
+            // /proc start tick and command line so PID reuse cannot target another process.
+            TerminateWslGuest();
+
+            // The Job Object then takes the whole Windows tree, including any native child a
+            // worker started that a plain kill would leave holding a GPU.
             _job?.TerminateAll();
 
             Process? process = _process;
@@ -595,6 +646,55 @@ public sealed class WorkerSupervisor
             catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
             {
                 // It exited between the check and the kill, which is the outcome we wanted.
+            }
+        }
+
+        private void TerminateWslGuest()
+        {
+            if (!options.IsWsl || _guestProcessId is not { } processId ||
+                _guestProcessStartToken is not { } startToken ||
+                options.WslDistribution is not { Length: > 0 } distribution ||
+                options.WslPythonExecutable is not { Length: > 0 } linuxPython)
+            {
+                return;
+            }
+
+            const string script =
+                "import os,pathlib,sys\n" +
+                "p=int(sys.argv[1]); expected=sys.argv[2]; root=pathlib.Path('/proc')/str(p)\n" +
+                "try:\n" +
+                " s=(root/'stat').read_text(); fields=s.rsplit(')',1)[1].strip().split(); " +
+                "cmd=(root/'cmdline').read_bytes()\n" +
+                "except (OSError,IndexError): sys.exit(0)\n" +
+                "if len(fields)>19 and fields[19]==expected and b'echoforge_worker' in cmd: os.kill(p,9)\n";
+
+            ProcessStartInfo stop = new()
+            {
+                FileName = options.PythonExecutable,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            stop.ArgumentList.Add("--distribution");
+            stop.ArgumentList.Add(distribution);
+            stop.ArgumentList.Add("--exec");
+            stop.ArgumentList.Add(linuxPython);
+            stop.ArgumentList.Add("-I");
+            stop.ArgumentList.Add("-c");
+            stop.ArgumentList.Add(script);
+            stop.ArgumentList.Add(processId.ToString(CultureInfo.InvariantCulture));
+            stop.ArgumentList.Add(startToken);
+
+            try
+            {
+                using Process? terminator = Process.Start(stop);
+                if (terminator is not null && !terminator.WaitForExit(5000))
+                {
+                    terminator.Kill(entireProcessTree: true);
+                }
+            }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or NotSupportedException)
+            {
+                _violations.Add("the isolated Linux worker could not be explicitly terminated; the WSL host process was still terminated");
             }
         }
 

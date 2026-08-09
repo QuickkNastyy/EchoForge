@@ -78,6 +78,18 @@ public enum WorkerStage
     Validating,
     WritingOutput,
     Finished,
+
+    /// <summary>
+    /// Building the ordered plan and writing the brief. Summary jobs only.
+    ///
+    /// <para>
+    /// Appended rather than inserted next to <see cref="Merging"/>, where it belongs in reading
+    /// order. An enum whose values are persisted anywhere may only ever grow at the end: putting
+    /// it in the middle renumbers every stage after it, and a stored 7 that used to mean one thing
+    /// starts meaning another.
+    /// </para>
+    /// </summary>
+    Planning,
 }
 
 /// <summary>Wire names for <see cref="WorkerStage"/>, kept explicit rather than derived.</summary>
@@ -92,6 +104,7 @@ public static class WorkerStages
         WorkerStage.TranscribingMicrophone => "transcribing_microphone",
         WorkerStage.TranscribingSystem => "transcribing_system",
         WorkerStage.Merging => "merging",
+        WorkerStage.Planning => "planning",
         WorkerStage.Validating => "validating",
         WorkerStage.WritingOutput => "writing_output",
         WorkerStage.Finished => "finished",
@@ -109,6 +122,7 @@ public static class WorkerStages
             case "transcribing_microphone": stage = WorkerStage.TranscribingMicrophone; return true;
             case "transcribing_system": stage = WorkerStage.TranscribingSystem; return true;
             case "merging": stage = WorkerStage.Merging; return true;
+            case "planning": stage = WorkerStage.Planning; return true;
             case "validating": stage = WorkerStage.Validating; return true;
             case "writing_output": stage = WorkerStage.WritingOutput; return true;
             case "finished": stage = WorkerStage.Finished; return true;

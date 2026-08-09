@@ -421,7 +421,7 @@ public sealed class SummaryTests : IDisposable
 
         IReadOnlyList<SummaryChunk> first = TranscriptChunker.Plan(transcript, new SummaryOptions());
         IReadOnlyList<SummaryChunk> second = TranscriptChunker.Plan(
-            transcript, new SummaryOptions { PromptVersion = "meeting-summary-v2" });
+            transcript, new SummaryOptions { PromptVersion = "meeting-summary-v3-test" });
 
         Assert.Equal(first.Count, second.Count);
         for (int i = 0; i < first.Count; i++)

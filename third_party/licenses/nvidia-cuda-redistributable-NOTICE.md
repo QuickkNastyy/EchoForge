@@ -22,26 +22,23 @@ enumerates the runtime files that may be redistributed with an application. `cud
 <https://docs.nvidia.com/cuda/eula/index.html> and is not vendored here because NVIDIA versions it
 alongside the toolkit; the applicable version is the one for CUDA 13.3.
 
-## Why this is pinned when Phase 2 deliberately did not pin CUDA
+## Why this CUDA 13 runtime is separate
 
-`artifacts/manifest.json` records, for the speech stack, that "NVIDIA CUDA and cuDNN runtime
-libraries are deliberately absent: EchoForge uses a system-installed CUDA runtime when one is
-present and falls back to CPU INT8 when it is not, and redistributing NVIDIA binaries needs the
-release-time review scheduled for Phase 6."
+The speech stack now pins NVIDIA's CUDA 12 cuBLAS wheel (and its NVRTC dependency) independently.
+Its exact publisher wheel licences are retained beside this notice. That runtime cannot satisfy a
+CUDA 13 llama.cpp build, for two reasons:
 
-That reasoning does not carry over unchanged, for two reasons:
-
-1. **There is no system CUDA 13 to fall back to.** The Phase 2 stack is CTranslate2 4.8.1, a CUDA
-   12 build. A CUDA 13 llama.cpp binary needs CUDA 13 runtime libraries, and nothing already
-   installed on a machine for Phase 2 supplies them.
+1. **CUDA major versions are not interchangeable.** CTranslate2 4.8.1 is a CUDA 12 build. A CUDA
+   13 llama.cpp binary needs CUDA 13 runtime libraries, and the speech worker's private CUDA 12
+   directory intentionally is not put on the summary process PATH.
 2. **The alternative is worse than the concern.** Not pinning it means the CUDA summary path works
    or fails according to whatever happens to be on the machine — the exact failure mode the
    artifact manifest exists to prevent, and one the Phase 3B brief calls out by name.
 
-**Downloading these libraries at runtime for local use is not redistribution.** Shipping them
-inside an EchoForge installer is, and that decision still belongs to the Phase 6 release-time
-licence review, together with the same review for cuDNN. This notice exists so that review starts
-from a written record rather than a discovery.
+**Downloading these libraries during setup for local use is not inference-time downloading.**
+Shipping them inside an EchoForge installer is redistribution, and that decision still belongs to
+release-time licence review. This notice exists so that review starts from a written record rather
+than a discovery.
 
 ## The CPU path does not need this
 

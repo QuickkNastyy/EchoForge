@@ -76,6 +76,12 @@
           "minLength": 1,
           "not": { "pattern": "[*?]" }
         },
+        "stage_filename": {
+          "description": "Optional collision-free basename used when verified files from more than one repository are assembled into one runtime directory. Omission preserves the historical filename behavior.",
+          "type": "string",
+          "minLength": 1,
+          "not": { "pattern": "[*?]" }
+        },
         "size_bytes": {
           "description": "Expected byte length, checked before hashing.",
           "type": "integer",
@@ -118,6 +124,12 @@
               "summary-cuda-q4",
               "summary-cpu-q4",
               "summary-bakeoff",
+              "summary-gpt-oss-20b",
+              "asr-whisper-large-v3-turbo",
+              "asr-whisper-large-v3",
+              "asr-parakeet-unified-en-0.6b",
+              "asr-canary-qwen-2.5b",
+              "asr-nemo-runtime",
               "any"
             ]
           }

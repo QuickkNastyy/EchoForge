@@ -1,10 +1,14 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using EchoForge.Contracts.Inference;
 using EchoForge.Contracts.Processing;
 using EchoForge.Contracts.Sessions;
 using EchoForge.Contracts.Transcripts;
 using EchoForge.Contracts.Workers;
 using EchoForge.Core.Transcripts;
+using EchoForge.Core.Inference;
 using EchoForge.Infrastructure.Workers;
 
 namespace EchoForge.Infrastructure.Processing;
@@ -133,6 +137,8 @@ public sealed class TranscriptionCoordinator : IDisposable
 
     public ProcessingPreparation? Preparation => _preparation;
 
+    public bool SupportsBackend(string backend) => _supervisor.SupportsBackend(backend);
+
     public event EventHandler<PreparationProgressEventArgs>? PreparationProgress;
 
     /// <summary>
@@ -141,9 +147,9 @@ public sealed class TranscriptionCoordinator : IDisposable
     ///
     /// <para>
     /// Deliberately separate from <see cref="Request"/>. Nothing here loads a model or produces a
-    /// transcript; the deterministic placeholder remains the only thing that does. Recording still
-    /// wins: preparation is refused while capture is live, and cancelling it leaves sources and
-    /// every previous revision untouched.
+    /// transcript; the subsequent request launches exactly one short-lived backend worker.
+    /// Recording still wins: preparation is refused while capture is live, and cancelling it
+    /// leaves sources and every previous revision untouched.
     /// </para>
     /// </summary>
     public async Task<PreparationResult> PrepareAsync(
@@ -295,6 +301,10 @@ public sealed class TranscriptionCoordinator : IDisposable
         if (pending is null ||
             !string.Equals(pending.SessionId, sessionId, StringComparison.Ordinal) ||
             state.CurrentJob is not { } job ||
+            (job.State == ProcessingStageState.Succeeded
+                || job.State == ProcessingStageState.Cancelled
+                || (job.State == ProcessingStageState.Failed
+                    && !string.Equals(job.FailureCode, "interrupted", StringComparison.Ordinal))) ||
             !string.Equals(job.JobId, pending.Attempt.JobId, StringComparison.Ordinal))
         {
             return state;
@@ -355,6 +365,21 @@ public sealed class TranscriptionCoordinator : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         options ??= new TranscriptionOptions();
+
+        (TranscriptionOptions normalizedOptions, string? optionFailure) = NormalizeOptions(options);
+        options = normalizedOptions;
+        if (optionFailure is not null)
+        {
+            return Refused(TranscriptionAcceptance.Rejected, optionFailure, "unsupported_model_options");
+        }
+
+        if (!_supervisor.SupportsBackend(options.Backend))
+        {
+            return Refused(
+                TranscriptionAcceptance.Rejected,
+                "That model requires EchoForge's isolated Linux NeMo runtime, which is not configured on this machine.",
+                "backend_runtime_missing");
+        }
 
         lock (_sync)
         {
@@ -680,8 +705,28 @@ public sealed class TranscriptionCoordinator : IDisposable
             return (null, "preparation_unavailable", "This installation cannot run production transcription.");
         }
 
+        AsrModelDefinition model = InferenceModelRegistry.ResolveLegacyAsr(options.Backend, options.ModelId);
+        AsrWindowStrategy strategy = model.WindowStrategy;
+        string artifactProfile = _preparation.Registry.Profile(model.ArtifactProfileId) is not null
+            ? model.ArtifactProfileId
+            : options.ComputeProfile;
+        WindowPlanOptions windowOptions = new()
+        {
+            StrategyId = strategy.Id,
+            PlanningVersion = strategy.Id,
+            WindowSeconds = strategy.WindowSeconds,
+            OverlapSeconds = strategy.OverlapSeconds,
+        };
+
+        string planningIdentity = RunPlanningIdentity(options, model);
         PreparationResult prepared = await _preparation
-            .PrepareAsync(request, options.ComputeProfile, installMissing: false, cancellationToken: cancellationToken)
+            .PrepareAsync(
+                request,
+                artifactProfile,
+                installMissing: false,
+                windowOptions: windowOptions,
+                planningIdentity: planningIdentity,
+                cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
         if (!prepared.IsReady || prepared.Plan is null || prepared.Derivatives is null)
@@ -689,7 +734,7 @@ public sealed class TranscriptionCoordinator : IDisposable
             return (null, prepared.FailureCode ?? "preparation_failed", prepared.Message);
         }
 
-        string? modelDirectory = _preparation.Registry.TryStageModelDirectory(options.ComputeProfile);
+        string? modelDirectory = _preparation.Registry.TryStageModelDirectory(artifactProfile);
         if (modelDirectory is null)
         {
             return (null, "artifacts_missing",
@@ -729,7 +774,18 @@ public sealed class TranscriptionCoordinator : IDisposable
             {
                 ModelPath = modelDirectory,
                 ComputeProfile = options.ComputeProfile,
+                AllowCpuFallback = options.AllowCpuFallback,
                 Profile = prepared.Plan.PlanningVersion,
+                ModelId = model.Id,
+                ModelRevision = model.ModelRevision,
+                ModelArtifactSha256 = ModelArtifactIdentitySha256(artifactProfile),
+                VadMode = Wire(options.EffectiveVadMode),
+                VadFilter = options.EffectiveVadMode is not (VadMode.Accuracy or VadMode.Off),
+                WindowStrategy = strategy.Id,
+                WindowSeconds = strategy.WindowSeconds,
+                OverlapSeconds = strategy.OverlapSeconds,
+                TimestampCapability = Wire(model.TimestampCapability),
+                TimestampPrecision = Wire(model.TimestampPrecision),
             },
         }, null, null);
     }
@@ -827,7 +883,15 @@ public sealed class TranscriptionCoordinator : IDisposable
         }
 
         ActivationOutcome activation = _transcripts.Activate(
-            new ActivationRequest(attempt, output.Sha256, transcript, WorkerProtocol.Version, request.Options.Profile),
+            new ActivationRequest(
+                attempt,
+                output.Sha256,
+                transcript,
+                WorkerProtocol.Version,
+                request.Options.Profile,
+                [.. worker.Warnings.Select(warning => string.IsNullOrWhiteSpace(warning.Detail)
+                    ? warning.Code
+                    : $"{warning.Code}: {warning.Detail}")]),
             Now);
 
         if (!activation.Activated)
@@ -839,11 +903,16 @@ public sealed class TranscriptionCoordinator : IDisposable
         // retract it if it wanted to.
         RaiseStateChanged(attempt.SessionId);
 
+        string? fallback = worker.Warnings.FirstOrDefault(warning =>
+            string.Equals(warning.Code, "compute_fallback", StringComparison.Ordinal))?.Detail;
+
         return new TranscriptionRunResult(
             ProcessingStageState.Succeeded,
             activation.Revision!.Revision,
             null,
-            transcript.Model.RecognizesSpeech
+            fallback is not null
+                ? $"Transcription finished with a compute fallback. {fallback}"
+                : transcript.Model.RecognizesSpeech
                 ? "Transcription finished."
                 : "Transcription finished. This run used the deterministic placeholder backend, which does not recognise speech.",
             WorkerOutcome.Succeeded);
@@ -877,18 +946,114 @@ public sealed class TranscriptionCoordinator : IDisposable
             new RequestOptions
             {
                 Backend = options.Backend,
+                ModelId = options.ModelId,
                 Profile = options.Profile,
                 Language = options.Language,
                 SegmentSeconds = options.SegmentSeconds,
                 TestMode = options.TestMode,
                 TestDelaySeconds = options.TestDelaySeconds,
                 ComputeProfile = options.ComputeProfile,
+                AllowCpuFallback = options.AllowCpuFallback,
                 Glossary = options.Glossary,
                 InitialPrompt = options.InitialPrompt,
                 VadFilter = options.VadFilter,
+                VadMode = Wire(options.EffectiveVadMode),
                 WordTimestamps = options.WordTimestamps,
                 BeamSize = options.BeamSize,
             });
+
+    private static (TranscriptionOptions Options, string? Failure) NormalizeOptions(
+        TranscriptionOptions options)
+    {
+        bool namedModel = !string.IsNullOrWhiteSpace(options.ModelId);
+        AsrModelDefinition? model = namedModel
+            ? InferenceModelRegistry.TryGetAsr(options.ModelId)
+            : InferenceModelRegistry.ResolveLegacyAsr(options.Backend);
+
+        if (model is null)
+        {
+            return (options, "That transcription model is not available in this build.");
+        }
+
+        if (namedModel && !string.Equals(model.BackendId, options.Backend, StringComparison.Ordinal))
+        {
+            return (options, "That model cannot run with the selected transcription backend.");
+        }
+
+        if (!model.SupportedComputeProfiles.Contains(options.ComputeProfile, StringComparer.Ordinal))
+        {
+            return (options, "That compute profile is not supported by the selected transcription model.");
+        }
+
+        VadMode vad = model.Id == AsrModelIds.Mock ? VadMode.Off : options.EffectiveVadMode;
+        if (!model.SupportedVadModes.Contains(vad))
+        {
+            return (options, "That VAD mode is not supported by the selected transcription model.");
+        }
+
+        string? language = string.Equals(options.Language, "auto", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : options.Language;
+        if (model.Languages.Count == 1 && string.Equals(model.Languages[0], "en", StringComparison.Ordinal)
+            && language is not null && !string.Equals(language, "en", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(language, "english", StringComparison.OrdinalIgnoreCase))
+        {
+            return (options, "The selected transcription model supports English only.");
+        }
+
+        if (options.Glossary.Count > 0 && !model.SupportsGlossaryPrompt)
+        {
+            return (options, "The selected transcription model does not support glossary prompting.");
+        }
+
+        return (options with
+        {
+            Backend = model.BackendId,
+            ModelId = model.Id,
+            Language = language,
+            VadMode = vad,
+            VadFilter = vad is not (VadMode.Accuracy or VadMode.Off),
+        }, null);
+    }
+
+    private static string RunPlanningIdentity(TranscriptionOptions options, AsrModelDefinition model)
+    {
+        StringBuilder identity = new();
+        identity.Append(model.Id).Append('|').Append(model.ModelRevision).Append('|')
+            .Append(options.ComputeProfile).Append('|').Append(options.AllowCpuFallback).Append('|')
+            .Append(options.Language ?? "auto").Append('|').Append(Wire(options.EffectiveVadMode)).Append('|')
+            .Append(options.BeamSize?.ToString(CultureInfo.InvariantCulture) ?? "default").Append('|')
+            .Append(options.WordTimestamps).Append('|').Append(options.InitialPrompt ?? string.Empty).Append('|');
+        foreach (string term in options.Glossary)
+        {
+            identity.Append(term).Append('\u001f');
+        }
+
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(identity.ToString())));
+    }
+
+    private string? ModelArtifactIdentitySha256(string artifactProfile)
+    {
+        if (_preparation?.Registry.Profile(artifactProfile) is not { } profile)
+        {
+            return null;
+        }
+
+        StringBuilder identity = new();
+        foreach (EchoForge.Contracts.Artifacts.ArtifactEntry artifact in profile.Artifacts
+                     .Where(item => string.Equals(item.Kind, "speech-model", StringComparison.Ordinal))
+                     .OrderBy(item => item.ArtifactId, StringComparer.Ordinal))
+        {
+            identity.Append(artifact.ArtifactId).Append('|').Append(artifact.Sha256).Append('\n');
+        }
+
+        return identity.Length == 0
+            ? null
+            : Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(identity.ToString())));
+    }
+
+    private static string Wire<T>(T value) where T : struct, Enum =>
+        JsonNamingPolicy.SnakeCaseLower.ConvertName(value.ToString()).Replace('_', '-');
 
     private void Settle(PendingRequest pending, TranscriptionRunResult result)
     {

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using EchoForge.Contracts.Processing;
 using EchoForge.Contracts.Transcripts;
 using EchoForge.Contracts.Workers;
 using EchoForge.Core.Transcripts;
@@ -40,6 +41,33 @@ public sealed class WorkerSupervisorTests : IDisposable
     }
 
     // -- the round trip -----------------------------------------------------------------
+
+    [Fact]
+    public async Task NeMoRequestWithoutTheIsolatedRuntimeFailsBeforeAnyWorkerCanLaunch()
+    {
+        WorkerLaunchOptions impossible = new()
+        {
+            PythonExecutable = @"C:\this\worker\does-not-exist.exe",
+            WorkerRoot = _temp.Path,
+        };
+        TranscriptionRequest request = WorkerProtocolTests.SmallRequest() with
+        {
+            Options = new RequestOptions
+            {
+                Backend = "nemo",
+                ModelId = "parakeet-unified-en-0.6b",
+                ComputeProfile = "cuda-fp16",
+                VadMode = "accuracy",
+            },
+        };
+
+        WorkerRunResult result = await new WorkerSupervisor(impossible).TranscribeAsync("job-nemo", request);
+
+        Assert.Equal(WorkerOutcome.Failed, result.Outcome);
+        Assert.Equal(WorkerErrorCodes.BackendUnavailable, result.Error!.Code);
+        Assert.Null(result.ExitCode);
+        Assert.Contains("complete setup", result.UserMessage, StringComparison.OrdinalIgnoreCase);
+    }
 
     [WorkerFact]
     public async Task ASessionGoesToPythonAndComesBackAsAValidTranscript()

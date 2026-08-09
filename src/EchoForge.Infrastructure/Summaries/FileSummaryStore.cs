@@ -359,6 +359,7 @@ public sealed class FileSummaryStore(ISessionStore sessions)
                 PromptVersion = summary.PromptVersion,
                 Backend = summary.Model.Backend,
                 ModelId = summary.Model.ModelId,
+                ModelRevision = summary.Model.Revision,
                 WorkerVersion = summary.Model.WorkerVersion,
                 ProducesSummaries = summary.Model.ProducesSummaries,
                 DecisionCount = summary.Decisions.Count,
@@ -368,6 +369,15 @@ public sealed class FileSummaryStore(ISessionStore sessions)
                 SynthesisLevels = summary.Synthesis?.Levels ?? 0,
                 Runtime = summary.Model.Runtime,
                 ContextTokens = summary.Model.ContextTokens,
+                RequestedContextTokens = summary.Run?.RequestedContext ?? summary.Model.ContextTokens,
+                ProcessingSeconds = summary.Run?.TotalSeconds,
+                ModelLoadSeconds = summary.Run?.ModelLoadSeconds,
+                ExtractionSeconds = summary.Run?.ExtractionSeconds,
+                SynthesisSeconds = summary.Run?.SynthesisSeconds,
+                NarrativeSeconds = summary.Run?.NarrativeSeconds,
+                PeakVramBytes = summary.Run?.PeakVramBytes,
+                GenerationTokensPerSecond = summary.Run?.GenerationTokensPerSecond,
+                FellBack = summary.Run?.FellBack ?? false,
             };
 
             // Identities, digests and counts. No prose: the journal is a recovery ledger, and a
@@ -384,6 +394,7 @@ public sealed class FileSummaryStore(ISessionStore sessions)
                 ("prompt_version", record.PromptVersion),
                 ("backend", record.Backend),
                 ("model_id", record.ModelId),
+                ("model_revision", record.ModelRevision),
                 ("worker_version", record.WorkerVersion),
                 ("produces_summaries", record.ProducesSummaries ? "true" : "false"),
                 ("decisions", Invariant(record.DecisionCount)),
@@ -392,7 +403,16 @@ public sealed class FileSummaryStore(ISessionStore sessions)
                 ("repair_attempt", Invariant(record.RepairAttempt)),
                 ("synthesis_levels", Invariant(record.SynthesisLevels)),
                 ("runtime", record.Runtime),
-                ("context_tokens", Invariant(record.ContextTokens))));
+                ("context_tokens", Invariant(record.ContextTokens)),
+                ("requested_context_tokens", Invariant(record.RequestedContextTokens)),
+                ("processing_seconds", record.ProcessingSeconds?.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty),
+                ("model_load_seconds", record.ModelLoadSeconds?.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty),
+                ("extraction_seconds", record.ExtractionSeconds?.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty),
+                ("synthesis_seconds", record.SynthesisSeconds?.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty),
+                ("narrative_seconds", record.NarrativeSeconds?.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty),
+                ("peak_vram_bytes", record.PeakVramBytes?.ToString(CultureInfo.InvariantCulture) ?? string.Empty),
+                ("generation_tokens_per_second", record.GenerationTokensPerSecond?.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty),
+                ("fell_back", record.FellBack ? "true" : "false")));
 
             WriteProjection(paths, Read(attempt.SessionId));
             return new SummaryActivation(record, null);
@@ -617,6 +637,7 @@ public sealed class FileSummaryStore(ISessionStore sessions)
             PromptVersion = entry.Field("prompt_version") ?? string.Empty,
             Backend = entry.Field("backend") ?? string.Empty,
             ModelId = entry.Field("model_id") ?? string.Empty,
+            ModelRevision = entry.Field("model_revision") ?? string.Empty,
             WorkerVersion = entry.Field("worker_version") ?? string.Empty,
             ProducesSummaries = entry.Field("produces_summaries") == "true",
             DecisionCount = entry.IntField("decisions") ?? 0,
@@ -626,8 +647,22 @@ public sealed class FileSummaryStore(ISessionStore sessions)
             SynthesisLevels = entry.IntField("synthesis_levels") ?? 0,
             Runtime = entry.Field("runtime") ?? string.Empty,
             ContextTokens = entry.IntField("context_tokens") ?? 0,
+            RequestedContextTokens = entry.IntField("requested_context_tokens") ?? 0,
+            ProcessingSeconds = DoubleField(entry, "processing_seconds"),
+            ModelLoadSeconds = DoubleField(entry, "model_load_seconds"),
+            ExtractionSeconds = DoubleField(entry, "extraction_seconds"),
+            SynthesisSeconds = DoubleField(entry, "synthesis_seconds"),
+            NarrativeSeconds = DoubleField(entry, "narrative_seconds"),
+            PeakVramBytes = entry.LongField("peak_vram_bytes"),
+            GenerationTokensPerSecond = DoubleField(entry, "generation_tokens_per_second"),
+            FellBack = entry.Field("fell_back") == "true",
         };
     }
+
+    private static double? DoubleField(JournalEvent entry, string name) =>
+        double.TryParse(entry.Field(name), NumberStyles.Float, CultureInfo.InvariantCulture, out double value)
+            ? value
+            : null;
 
     private static SummaryState? ReadProjection(SessionPaths paths)
     {

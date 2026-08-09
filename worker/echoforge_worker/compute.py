@@ -13,15 +13,19 @@ to exist wastes minutes and produces a stack trace instead of an explanation.
 same device, because that is usually enough; only when the device itself will not work does it
 restart on the CPU.
 
-EchoForge redistributes no NVIDIA runtime libraries. It uses a CUDA runtime the machine already
-has, and says so plainly when there is not one.
+The Windows worker carries a pinned NVIDIA CUDA 12 cuBLAS runtime in its verified Python closure.
+It activates that private DLL directory only inside the short-lived worker process; it never
+depends on a mutable machine-wide CUDA toolkit or alters the user's PATH.
 """
 
 from __future__ import annotations
 
+import importlib.metadata
+import os
 import sys
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Final
 
 CPU_INT8: Final[str] = "cpu-int8"
@@ -94,8 +98,72 @@ def cuda_device_count(probe: Callable[[], int] | None = None) -> int:
     return devices if devices <= 0 or cuda_libraries_loadable() else 0
 
 
-#: The CUDA major version CTranslate2's Windows wheels are built against.
+#: The CUDA major version CTranslate2's Windows wheels are built against. cuDNN 9 is carried
+#: inside the pinned CTranslate2 wheel; cuBLAS is supplied by NVIDIA's separately pinned wheel.
 CUDA_RUNTIME_LIBRARIES: tuple[str, ...] = ("cublas64_12.dll", "cublasLt64_12.dll")
+
+# ``os.add_dll_directory`` removes a directory again when its handle is closed. Retaining these
+# handles for the lifetime of the worker is intentional: CTranslate2 loads cuBLAS lazily, often
+# several minutes after capability probing completed.
+_CUDA_DLL_DIRECTORY_HANDLES: list[Any] = []
+_CUDA_DLL_DIRECTORIES: list[str] = []
+_CUDA_DLL_SEARCH_CONFIGURED = False
+
+
+def _packaged_cuda_directories() -> tuple[Path, ...]:
+    """Exact private CUDA directories installed by EchoForge's verified wheel closure."""
+    candidates: list[Path] = []
+
+    # The app-local environment is a normal Windows venv. Looking relative to sys.prefix avoids
+    # importing NVIDIA helper code and works while setup is probing a freshly built environment.
+    candidates.append(Path(sys.prefix) / "Lib" / "site-packages" / "nvidia" / "cublas" / "bin")
+
+    # Developer/test interpreters can expose site-packages through sys.path without making it the
+    # active prefix. Keep this bounded to the exact publisher/package path; never scan the drive.
+    for entry in sys.path:
+        if entry:
+            candidates.append(Path(entry) / "nvidia" / "cublas" / "bin")
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        key = os.path.normcase(str(resolved))
+        if key not in seen and resolved.is_dir():
+            seen.add(key)
+            unique.append(resolved)
+
+    return tuple(unique)
+
+
+def configure_cuda_dll_search() -> tuple[str, ...]:
+    """Activate the pinned CUDA DLL directory for this process and keep it active.
+
+    This is deliberately process-local. The OS process boundary remains EchoForge's authoritative
+    GPU cleanup mechanism, and installing EchoForge must not modify a system or user PATH.
+    """
+    global _CUDA_DLL_SEARCH_CONFIGURED
+
+    if sys.platform != "win32" or _CUDA_DLL_SEARCH_CONFIGURED:
+        return tuple(_CUDA_DLL_DIRECTORIES)
+
+    _CUDA_DLL_SEARCH_CONFIGURED = True
+    add_directory = getattr(os, "add_dll_directory", None)
+    if add_directory is None:
+        return ()
+
+    for directory in _packaged_cuda_directories():
+        try:
+            handle = add_directory(str(directory))
+        except OSError:
+            continue
+        _CUDA_DLL_DIRECTORY_HANDLES.append(handle)
+        _CUDA_DLL_DIRECTORIES.append(str(directory))
+
+    return tuple(_CUDA_DLL_DIRECTORIES)
 
 
 def cuda_libraries_loadable() -> bool:
@@ -108,6 +176,8 @@ def cuda_libraries_loadable() -> bool:
         return True
 
     import ctypes
+
+    configure_cuda_dll_search()
 
     for name in CUDA_RUNTIME_LIBRARIES:
         try:
@@ -162,6 +232,11 @@ def runtime_versions() -> dict[str, str]:
         except Exception:  # noqa: BLE001
             versions[name] = "not installed"
 
+    try:
+        versions["nvidia_cublas_cu12"] = importlib.metadata.version("nvidia-cublas-cu12")
+    except importlib.metadata.PackageNotFoundError:
+        versions["nvidia_cublas_cu12"] = "not installed"
+
     return versions
 
 
@@ -170,6 +245,7 @@ def run_with_fallback(
     attempt: Callable[[ComputePlan], Any],
     cuda_devices: int | None = None,
     probe: Callable[[], int] | None = None,
+    allow_cpu_fallback: bool = True,
 ) -> tuple[Any, ComputeOutcome]:
     """Run ``attempt`` on the best plan that works, recording every step.
 
@@ -179,6 +255,10 @@ def run_with_fallback(
     """
     devices = cuda_devices if cuda_devices is not None else cuda_device_count(probe)
     plans = plans_for(requested_profile, devices)
+    if not allow_cpu_fallback and requested_profile != CPU_INT8:
+        plans = [plan for plan in plans if plan.device == "cuda"]
+        if not plans:
+            raise RuntimeError("CUDA was requested and CPU fallback is disabled")
 
     outcome = ComputeOutcome(
         requested_profile=requested_profile,
@@ -189,8 +269,8 @@ def run_with_fallback(
 
     if devices <= 0 and requested_profile != CPU_INT8:
         outcome.fallback_reason = (
-            "no CUDA device is available to CTranslate2, so this ran on the CPU. "
-            "EchoForge does not install NVIDIA runtime libraries; it uses one already on the machine."
+            "no CUDA device with a loadable verified CUDA 12 runtime is available to CTranslate2, "
+            "so this ran on the CPU"
         )
 
     last: BaseException | None = None
@@ -217,7 +297,9 @@ def run_with_fallback(
             outcome.fallback_reason = (
                 f"the GPU could not be used ({type(error).__name__}), so this ran on the CPU"
             )
-            cpu = next(p for p in plans if p.device == "cpu")
+            cpu = next((p for p in plans if p.device == "cpu"), None)
+            if cpu is None:
+                raise
             outcome.plan = cpu
             outcome.attempts.append(f"{cpu.describe()}: starting")
             return attempt(cpu), outcome

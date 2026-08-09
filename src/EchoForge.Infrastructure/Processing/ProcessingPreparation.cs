@@ -65,8 +65,8 @@ public sealed record PreparationResult(
 /// <para>
 /// It installs the pinned artifacts, converts the immutable source chunks into the 16 kHz mono
 /// audio a recogniser wants, and divides the result into overlapping windows. It stops there. No
-/// model is loaded, nothing is transcribed, and the deterministic placeholder backend is
-/// untouched and still the only thing that produces transcripts.
+/// model is loaded and nothing is transcribed during preparation; inference is a separate,
+/// short-lived worker job so its model cannot remain resident while EchoForge is idle.
 /// </para>
 ///
 /// <para>
@@ -102,6 +102,7 @@ public sealed class ProcessingPreparation(
         bool installMissing,
         DerivativeOptions? derivativeOptions = null,
         WindowPlanOptions? windowOptions = null,
+        string? planningIdentity = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -152,7 +153,7 @@ public sealed class ProcessingPreparation(
             string planPath = PlanPath(paths, windowOptions);
 
             WindowPlan plan = TranscriptionWindowPlanner.Plan(
-                request, built.Set!, profileId, windowOptions, LoadCheckpoints(planPath));
+                request, built.Set!, planningIdentity ?? profileId, windowOptions, LoadCheckpoints(planPath));
 
             Save(planPath, plan);
 
@@ -161,7 +162,7 @@ public sealed class ProcessingPreparation(
             return new PreparationResult(
                 PreparationStage.Ready,
                 $"Ready: {plan.Windows.Count} transcription windows prepared. " +
-                "Speech recognition itself is not implemented in this build.",
+                "Starting transcription will launch the selected short-lived ASR worker.",
                 null,
                 plan,
                 built.Set,

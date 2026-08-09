@@ -190,6 +190,15 @@ public sealed record RequestOptions
     [JsonPropertyName("backend")]
     public required string Backend { get; init; }
 
+    [JsonPropertyName("model_id")]
+    public string? ModelId { get; init; }
+
+    [JsonPropertyName("model_revision")]
+    public string? ModelRevision { get; init; }
+
+    [JsonPropertyName("model_artifact_sha256")]
+    public string? ModelArtifactSha256 { get; init; }
+
     [JsonPropertyName("profile")]
     public string? Profile { get; init; }
 
@@ -223,11 +232,17 @@ public sealed record RequestOptions
     [JsonPropertyName("compute_profile")]
     public string? ComputeProfile { get; init; }
 
+    [JsonPropertyName("allow_cpu_fallback")]
+    public bool AllowCpuFallback { get; init; } = true;
+
     [JsonPropertyName("beam_size")]
     public int? BeamSize { get; init; }
 
     [JsonPropertyName("vad_filter")]
     public bool VadFilter { get; init; } = true;
+
+    [JsonPropertyName("vad_mode")]
+    public string? VadMode { get; init; }
 
     [JsonPropertyName("word_timestamps")]
     public bool WordTimestamps { get; init; } = true;
@@ -238,6 +253,21 @@ public sealed record RequestOptions
 
     [JsonPropertyName("glossary")]
     public IReadOnlyList<string> Glossary { get; init; } = [];
+
+    [JsonPropertyName("window_strategy")]
+    public string? WindowStrategy { get; init; }
+
+    [JsonPropertyName("window_seconds")]
+    public double? WindowSeconds { get; init; }
+
+    [JsonPropertyName("overlap_seconds")]
+    public double? OverlapSeconds { get; init; }
+
+    [JsonPropertyName("timestamp_capability")]
+    public string? TimestampCapability { get; init; }
+
+    [JsonPropertyName("timestamp_precision")]
+    public string? TimestampPrecision { get; init; }
 }
 
 /// <summary>The fault-injection modes the worker understands, named once.</summary>

@@ -1,0 +1,507 @@
+<UserControl x:Class="EchoForge.App.Setup.SettingsPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:app="clr-namespace:EchoForge.App"
+             Foreground="{DynamicResource Ink}">
+
+  <!--
+    Settings owns every choice about models and runtimes.
+
+    The page is sectioned, not scrolled: the rail's expanded Settings entry chooses which section
+    shows, so there is exactly one navigation in the application and the content gets the full
+    width. Every control that existed on the old single-scroll page still exists here, bound to
+    the same commands — only where it stands changed.
+  -->
+  <Grid x:Name="Page" Margin="24,18,24,18">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
+
+    <!--
+      The health verdict, said first on every section.
+
+      Bound to the components rather than to the transcription view models, so it can speak on an
+      installation where processing never attached — which is exactly when it matters most.
+    -->
+    <Grid Grid.Row="0" DataContext="{Binding Setup}" Margin="0,0,0,14">
+      <Border Style="{StaticResource Card}" Padding="14,12"
+              BorderBrush="{DynamicResource Warn}"
+              Visibility="{Binding HasProcessingProblem, Converter={StaticResource BoolToVis},
+                           FallbackValue=Collapsed}">
+        <DockPanel>
+          <Border DockPanel.Dock="Left" Width="32" Height="32" CornerRadius="16" Margin="0,0,12,0"
+                  VerticalAlignment="Center" Background="{DynamicResource WarnWash}">
+            <TextBlock Text="!" HorizontalAlignment="Center" VerticalAlignment="Center"
+                       FontWeight="Bold" FontSize="15" Foreground="{DynamicResource Warn}" />
+          </Border>
+          <Button DockPanel.Dock="Right" Content="Repair it" Style="{StaticResource PrimaryButton}"
+                  VerticalAlignment="Center" Command="{Binding FixProcessingCommand}" />
+          <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+            <TextBlock Text="Transcription and meeting briefs are not available yet"
+                       FontWeight="SemiBold" FontSize="13.5" />
+            <TextBlock Margin="0,3,0,0" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource InkDim}"
+                       Text="{Binding ProcessingProblem}" />
+            <TextBlock Margin="0,3,0,0" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource InkFaint}"
+                       Text="Recording and playback are unaffected. Repairing re-checks what is on disk and downloads only what is genuinely missing; your recordings are never touched." />
+          </StackPanel>
+        </DockPanel>
+      </Border>
+
+      <Border Style="{StaticResource Card}" Padding="14,12"
+              BorderBrush="{DynamicResource Focus}"
+              Visibility="{Binding HasProcessingProblem, Converter={StaticResource InvBoolToVis},
+                           FallbackValue=Collapsed}">
+        <DockPanel>
+          <Border DockPanel.Dock="Left" Width="32" Height="32" CornerRadius="16" Margin="0,0,12,0"
+                  VerticalAlignment="Center" Background="{DynamicResource FocusWash}">
+            <Path Width="14" Height="11" Stretch="Uniform" StrokeThickness="2"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                  Data="M 0 5 L 4 9 L 11 0" Stroke="{DynamicResource Focus}" />
+          </Border>
+          <Button DockPanel.Dock="Right" Content="Re-check" VerticalAlignment="Center"
+                  Command="{Binding RefreshCommand}" />
+          <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+            <TextBlock Text="Everything is installed and working" FontWeight="SemiBold" FontSize="13.5" />
+            <TextBlock Margin="0,3,0,0" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource InkDim}"
+                       Text="Transcription and meeting briefs run locally on this PC. Nothing leaves it." />
+          </StackPanel>
+        </DockPanel>
+      </Border>
+    </Grid>
+
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <Grid>
+
+        <!-- ==================== Transcription ==================== -->
+        <!--
+          Visibility is bound by element name on purpose: setting DataContext on this same element
+          re-scopes every other binding on it, so a plain {Binding IsTranscriptionSection} would ask
+          the TranscriptionViewModel for a property only the window's view model has.
+        -->
+        <Grid Visibility="{Binding DataContext.IsTranscriptionSection, ElementName=Page,
+                           Converter={StaticResource BoolToVis}}"
+              DataContext="{Binding Transcription}">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="1.6*" />
+            <ColumnDefinition Width="14" />
+            <ColumnDefinition Width="*" />
+          </Grid.ColumnDefinitions>
+
+          <!-- Processing has not attached: the section says so instead of drawing empty cards. -->
+          <TextBlock Grid.ColumnSpan="3" TextWrapping="Wrap" Foreground="{DynamicResource InkDim}" MaxWidth="520"
+                     HorizontalAlignment="Left"
+                     Text="Transcription is not available on this installation yet. Repair it from the banner above; these choices appear once processing is ready."
+                     Visibility="{Binding ., Converter={StaticResource NullToVis}, ConverterParameter=invert}" />
+
+          <StackPanel Grid.Column="0"
+                      Visibility="{Binding ., Converter={StaticResource NullToVis}}">
+            <Border Style="{StaticResource Card}">
+              <StackPanel>
+                <TextBlock Text="TRANSCRIPTION" Style="{StaticResource Label}" FontWeight="Bold" Margin="0,0,0,12" />
+
+                <Grid Margin="0,0,0,12">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="118" />
+                    <ColumnDefinition Width="*" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Grid.Column="0" Text="Speech model" VerticalAlignment="Center" FontSize="13" />
+                  <ComboBox Grid.Column="1" HorizontalAlignment="Left" MinWidth="290"
+                            Style="{StaticResource OptionPicker}"
+                            ItemsSource="{Binding AsrModels}" SelectedItem="{Binding SelectedAsrModel}"
+                            DisplayMemberPath="Label" />
+                </Grid>
+
+                <Grid Margin="0,0,0,12">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="118" />
+                    <ColumnDefinition Width="*" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Grid.Column="0" Text="Accuracy" VerticalAlignment="Top" Margin="0,7,0,0" FontSize="13" />
+                  <StackPanel Grid.Column="1">
+                    <ListBox Style="{StaticResource SegmentedPicker}"
+                             ItemsSource="{Binding VadModes}" SelectedItem="{Binding SelectedVadMode}"
+                             ItemTemplate="{StaticResource OptionRow}" />
+                    <TextBlock Margin="1,7,0,0" TextWrapping="Wrap" FontSize="11.5"
+                               Foreground="{DynamicResource InkFaint}"
+                               Text="Balanced and Fast skip silence using pinned detector settings. Accuracy keeps every moment of audio and is the slowest." />
+                  </StackPanel>
+                </Grid>
+
+                <Grid Margin="0,0,0,12">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="118" />
+                    <ColumnDefinition Width="*" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Grid.Column="0" Text="Language" VerticalAlignment="Center" FontSize="13" />
+                  <ComboBox Grid.Column="1" HorizontalAlignment="Left" MinWidth="230"
+                            Style="{StaticResource OptionPicker}"
+                            ItemsSource="{Binding Languages}" SelectedItem="{Binding SelectedLanguage}"
+                            DisplayMemberPath="Label" IsEnabled="{Binding IsProductionSelected}" />
+                </Grid>
+
+<!--
+                  Compute is hardware, not a model: it decides whether the speech model above runs
+                  on the processor or the GPU, and at what precision. It sits in Transcription
+                  because it only ever applies to the speech model; the meeting-brief model has its
+                  own section and picks its own runtime.
+                -->
+                <Grid>
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="118" />
+                    <ColumnDefinition Width="*" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Grid.Column="0" Text="Runs on" VerticalAlignment="Top" Margin="0,7,0,0" FontSize="13" />
+                  <StackPanel Grid.Column="1">
+                    <ComboBox HorizontalAlignment="Left" MinWidth="260"
+                              Style="{StaticResource OptionPicker}"
+                              ItemsSource="{Binding ComputeProfiles}" SelectedItem="{Binding SelectedComputeProfile}"
+                              DisplayMemberPath="Label" IsEnabled="{Binding IsProductionSelected}" />
+                    <TextBlock Margin="1,7,0,0" TextWrapping="Wrap" FontSize="11.5"
+                               Foreground="{DynamicResource InkFaint}"
+                               Text="Which processor the speech model above runs on, and at what precision. This is hardware, not a model — the meeting brief model is chosen in Meeting briefs." />
+                  </StackPanel>
+                </Grid>
+              </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}" Margin="0,12,0,0">
+              <StackPanel>
+                <TextBlock Margin="0,0,0,8" TextWrapping="Wrap" Foreground="{DynamicResource InkDim}"
+                           Text="{Binding ProductionStatus}"
+                           Visibility="{Binding HasProductionStatus, Converter={StaticResource BoolToVis}}" />
+                <WrapPanel Margin="0,0,-8,-8">
+                  <Button Content="Check and prepare audio" Command="{Binding PrepareProductionCommand}"
+                          Margin="0,0,8,8" />
+                  <Button Content="Download the selected speech model" Command="{Binding InstallModelsCommand}"
+                          Margin="0,0,8,8" />
+                </WrapPanel>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+
+          <Border Grid.Column="2" Style="{StaticResource Card}" VerticalAlignment="Top"
+                  Visibility="{Binding ., Converter={StaticResource NullToVis}}">
+            <StackPanel>
+              <TextBlock Text="CUSTOM NAMES &amp; TERMS" Style="{StaticResource Label}" FontWeight="Bold"
+                         Margin="0,0,0,8" />
+              <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource InkDim}"
+                         Text="Optional names, acronyms, products, or technical terms to help recognition." />
+              <TextBox Margin="0,10,0,0" MinHeight="64" TextWrapping="Wrap" AcceptsReturn="False"
+                       VerticalContentAlignment="Top"
+                       Text="{Binding Glossary, UpdateSourceTrigger=PropertyChanged}"
+                       IsEnabled="{Binding SupportsGlossary}"
+                       ToolTip="Comma separated. Nudges the recogniser towards these words; it does not guarantee them." />
+              <TextBlock Margin="0,7,0,0" FontSize="11.5" Foreground="{DynamicResource InkFaint}" TextWrapping="Wrap"
+                         Text="For example: Acme Robotics, Northstar, API Gateway, PostgreSQL, Q3 launch" />
+              <TextBlock Margin="0,7,0,0" FontSize="11.5" Foreground="{DynamicResource InkFaint}" TextWrapping="Wrap"
+                         Text="Unavailable for the selected model, which takes no initial prompt."
+                         Visibility="{Binding SupportsGlossary, Converter={StaticResource InvBoolToVis}}" />
+            </StackPanel>
+          </Border>
+        </Grid>
+
+        <!-- ==================== Meeting briefs ==================== -->
+        <StackPanel Visibility="{Binding DataContext.IsBriefsSection, ElementName=Page,
+                                 Converter={StaticResource BoolToVis}}"
+                    DataContext="{Binding Summary}" MaxWidth="640" HorizontalAlignment="Left">
+          <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource InkDim}"
+                     Text="Meeting briefs are not available on this installation yet. Repair processing from the banner above."
+                     Visibility="{Binding ., Converter={StaticResource NullToVis}, ConverterParameter=invert}" />
+          <Border Style="{StaticResource Card}"
+                  Visibility="{Binding ., Converter={StaticResource NullToVis}}">
+            <StackPanel>
+              <TextBlock Text="MEETING BRIEFS" Style="{StaticResource Label}" FontWeight="Bold" Margin="0,0,0,12" />
+
+              <Grid Margin="0,0,0,10">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="118" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Summary model" VerticalAlignment="Center" FontSize="13" />
+                <ComboBox Grid.Column="1" HorizontalAlignment="Left" MinWidth="290"
+                          Style="{StaticResource OptionPicker}"
+                          ItemsSource="{Binding SummaryModels}" SelectedItem="{Binding SelectedSummaryModel}"
+                          DisplayMemberPath="Label" />
+              </Grid>
+
+              <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="{DynamicResource InkDim}"
+                         Text="{Binding ModelStatusText}" />
+
+              <ProgressBar Height="4" Margin="0,10,0,0" Minimum="0" Maximum="100"
+                           Background="{DynamicResource Sunken}" BorderThickness="0"
+                           Foreground="{DynamicResource Focus}" Value="{Binding InstallPercent, Mode=OneWay}"
+                           Visibility="{Binding IsInstallingModel, Converter={StaticResource BoolToVis}}" />
+
+              <Button Content="Install the selected summary model" Margin="0,12,0,0" HorizontalAlignment="Left"
+                      Style="{StaticResource PrimaryButton}"
+                      Command="{Binding InstallModelCommand}"
+                      Visibility="{Binding CanInstallModel, Converter={StaticResource BoolToVis}}" />
+
+              <TextBlock Margin="0,12,0,0" TextWrapping="Wrap" FontSize="11.5" Foreground="{DynamicResource InkFaint}"
+                         Text="Writes the summary, your plan, and the decisions after each meeting. Chosen once here; used everywhere; asked for again never." />
+            </StackPanel>
+          </Border>
+        </StackPanel>
+
+        <!-- ==================== Models ==================== -->
+        <StackPanel Visibility="{Binding DataContext.IsModelsSection, ElementName=Page,
+                                 Converter={StaticResource BoolToVis}}"
+                    DataContext="{Binding Setup}">
+          <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource InkDim}"
+                     Text="Model management is not available: setup services did not attach on this installation."
+                     Visibility="{Binding ., Converter={StaticResource NullToVis}, ConverterParameter=invert}" />
+          <Border Style="{StaticResource Card}"
+                  Visibility="{Binding ., Converter={StaticResource NullToVis}}">
+            <StackPanel>
+              <DockPanel Margin="0,0,0,10">
+                <Button DockPanel.Dock="Right" Content="Install selected model" Style="{StaticResource PrimaryButton}"
+                        Command="{Binding InstallSelectedModelCommand}" Margin="8,0,0,0" />
+                <StackPanel VerticalAlignment="Center">
+                  <TextBlock Text="MODELS" Style="{StaticResource Label}" FontWeight="Bold" />
+                  <TextBlock Margin="0,3,0,0" FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource InkDim}"
+                             Text="Select a model to install, repair, or change what EchoForge uses." />
+                </StackPanel>
+              </DockPanel>
+
+<!-- The list grows to its content and the page scrolls, so the wheel has to reach the
+                   page rather than dying in the list's own disabled viewer. -->
+              <ListBox ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModel, Mode=TwoWay}"
+                       app:WheelRelay.Enabled="True"
+                       ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                       ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                <ListBox.ItemContainerStyle>
+                  <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                    <Setter Property="Padding" Value="10,8" />
+                    <Setter Property="Margin" Value="0,2" />
+                  </Style>
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" MinWidth="70" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="70" />
+                        <ColumnDefinition Width="Auto" />
+                      </Grid.ColumnDefinitions>
+                      <Border Grid.Column="0" Style="{StaticResource Chip}" HorizontalAlignment="Left"
+                              VerticalAlignment="Center">
+                        <TextBlock Text="{Binding Category}" Style="{StaticResource ChipText}" />
+                      </Border>
+                      <StackPanel Grid.Column="1" Margin="10,0,12,0" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding Detail}" FontSize="11.5" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource InkDim}" Margin="0,2,0,0" />
+                      </StackPanel>
+                      <TextBlock Grid.Column="2" Text="{Binding Size}" Style="{StaticResource Data}"
+                                 FontSize="11.5" Foreground="{DynamicResource InkDim}"
+                                 VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,14,0" />
+<!-- Border, dot and text all take the readiness colour, so the pill has one
+                           crisp edge instead of a coloured word floating on a grey outline. -->
+                      <Border Grid.Column="3" Style="{StaticResource Pill}" HorizontalAlignment="Right"
+                              BorderBrush="{Binding IsReady, Converter={StaticResource ReadyBrushConverter}}">
+                        <StackPanel Orientation="Horizontal">
+                          <Ellipse Style="{StaticResource PillDot}"
+                                   Fill="{Binding IsReady, Converter={StaticResource ReadyBrushConverter}}" />
+                          <TextBlock Text="{Binding Status}" Style="{StaticResource PillText}"
+                                     Foreground="{Binding IsReady, Converter={StaticResource ReadyBrushConverter}}" />
+                        </StackPanel>
+                      </Border>
+                    </Grid>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+
+              <WrapPanel Margin="0,10,-8,0">
+                <Button Content="Repair selected model" Command="{Binding RepairSelectedModelCommand}" Margin="0,0,8,8"
+                        ToolTip="Re-checks what is on disk and re-qualifies the runtime before downloading anything." />
+                <Button Content="Stop" Command="{Binding CancelCommand}" Margin="0,0,8,8" />
+              </WrapPanel>
+
+              <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource InkDim}"
+                         Text="{Binding ModelProgressText}"
+                         Visibility="{Binding HasModelProgress, Converter={StaticResource BoolToVis}}" />
+
+              <ProgressBar Style="{StaticResource Meter}" Height="5" Minimum="0" Maximum="1" Margin="0,8,0,0"
+                           BorderThickness="0" Foreground="{DynamicResource Focus}" Value="{Binding Progress, Mode=OneWay}"
+                           Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
+
+              <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,8,0,0" FontSize="12"
+                         Foreground="{DynamicResource InkDim}"
+                         Visibility="{Binding HasStatus, Converter={StaticResource BoolToVis}}" />
+            </StackPanel>
+          </Border>
+        </StackPanel>
+
+        <!-- ==================== This machine ==================== -->
+        <StackPanel Visibility="{Binding DataContext.IsMachineSection, ElementName=Page,
+                                 Converter={StaticResource BoolToVis}}"
+                    DataContext="{Binding Setup}">
+          <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource InkDim}"
+                     Text="Machine diagnostics are not available: setup services did not attach on this installation."
+                     Visibility="{Binding ., Converter={StaticResource NullToVis}, ConverterParameter=invert}" />
+          <StackPanel Visibility="{Binding ., Converter={StaticResource NullToVis}}">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="14" />
+                <ColumnDefinition Width="*" />
+              </Grid.ColumnDefinitions>
+
+              <Border Grid.Column="0" Style="{StaticResource Card}" VerticalAlignment="Stretch">
+                <StackPanel>
+                  <TextBlock Text="THIS MACHINE" Style="{StaticResource Label}" FontWeight="Bold" Margin="0,0,0,8" />
+                  <ItemsControl ItemsSource="{Binding HardwareFacts}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,2" FontSize="12.5"
+                                   Foreground="{DynamicResource InkDim}" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+
+              <Border Grid.Column="2" Style="{StaticResource Card}" VerticalAlignment="Stretch">
+                <StackPanel>
+                  <TextBlock Text="RECOMMENDED" Style="{StaticResource Label}" FontWeight="Bold" Margin="0,0,0,8" />
+                  <TextBlock Text="{Binding RecommendationSummary}" TextWrapping="Wrap" FontWeight="SemiBold"
+                             FontSize="13" Margin="0,0,0,6" />
+                  <ItemsControl ItemsSource="{Binding RecommendationReasons}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,2" FontSize="12.5"
+                                   Foreground="{DynamicResource InkDim}" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+            </Grid>
+
+            <ItemsControl ItemsSource="{Binding Warnings}" Margin="0,12,0,0">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border CornerRadius="8" Padding="11,8" Margin="0,3"
+                          Background="{DynamicResource WarnWash}" BorderBrush="{DynamicResource Warn}"
+                          BorderThickness="1">
+                    <TextBlock Text="{Binding}" TextWrapping="Wrap" FontSize="12.5" Foreground="{DynamicResource Ink}" />
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <Border Style="{StaticResource Card}" Margin="0,12,0,0">
+              <StackPanel>
+                <TextBlock Text="COMPONENTS" Style="{StaticResource Label}" FontWeight="Bold" Margin="0,0,0,8" />
+                <ListBox ItemsSource="{Binding Components}" SelectedItem="{Binding SelectedComponent, Mode=TwoWay}"
+                         app:WheelRelay.Enabled="True"
+                         ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                  <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                      <Setter Property="Padding" Value="10,7" />
+                      <Setter Property="Margin" Value="0,2" />
+                    </Style>
+                  </ListBox.ItemContainerStyle>
+                  <ListBox.ItemTemplate>
+                    <DataTemplate>
+                      <Grid>
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="210" />
+                          <ColumnDefinition Width="110" />
+                          <ColumnDefinition Width="66" />
+                          <ColumnDefinition Width="*" MinWidth="140" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"
+                                   TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,12,0" />
+                        <Border Grid.Column="1" Style="{StaticResource Pill}" HorizontalAlignment="Left"
+                                BorderBrush="{Binding IsReady, Converter={StaticResource ReadyBrushConverter}}">
+                          <StackPanel Orientation="Horizontal">
+                            <Ellipse Style="{StaticResource PillDot}"
+                                     Fill="{Binding IsReady, Converter={StaticResource ReadyBrushConverter}}" />
+                            <TextBlock Text="{Binding Status}" Style="{StaticResource PillText}"
+                                       Foreground="{Binding IsReady, Converter={StaticResource ReadyBrushConverter}}" />
+                          </StackPanel>
+                        </Border>
+                        <TextBlock Grid.Column="2" Text="{Binding Size}" Style="{StaticResource Data}"
+                                   FontSize="11.5" Foreground="{DynamicResource InkDim}" VerticalAlignment="Center"
+                                   HorizontalAlignment="Right" Margin="0,0,14,0" />
+                        <TextBlock Grid.Column="3" Text="{Binding Detail}" TextWrapping="Wrap" FontSize="11.5"
+                                   Foreground="{DynamicResource InkDim}" VerticalAlignment="Center" />
+                      </Grid>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+
+                <WrapPanel Margin="0,12,-8,0">
+                  <Button Content="Install what is recommended" Style="{StaticResource PrimaryButton}"
+                          Command="{Binding InstallRecommendedCommand}" Margin="0,0,8,8" />
+                  <Button Content="Install selected component" Command="{Binding InstallSelectedCommand}" Margin="0,0,8,8" />
+                  <Button Content="Repair selected component" Command="{Binding RepairSelectedCommand}" Margin="0,0,8,8" />
+                  <Button Content="Re-check" Command="{Binding RefreshCommand}" Margin="0,0,8,8" />
+                  <Button Content="Save diagnostics…" Click="OnSaveDiagnostics" Margin="0,0,8,8"
+                          ToolTip="Writes a support file with no transcript, summary or meeting content in it." />
+                </WrapPanel>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+        </StackPanel>
+
+        <!-- ==================== Compare models ==================== -->
+        <StackPanel Visibility="{Binding IsCompareSection, Converter={StaticResource BoolToVis}}"
+                    MaxWidth="720" HorizontalAlignment="Left">
+          <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="{DynamicResource InkDim}" Margin="0,0,0,12"
+                     Text="Runs the same recording, or the same transcript, through several models one at a time and keeps every result as its own immutable version. Useful for deciding what to make the default; not something the normal workflow needs." />
+
+          <Border Style="{StaticResource Card}" Margin="0,0,0,12"
+                  DataContext="{Binding Transcription}"
+                  Visibility="{Binding ., Converter={StaticResource NullToVis}}">
+            <StackPanel>
+              <TextBlock Text="SPEECH MODELS" Style="{StaticResource Label}" FontWeight="Bold" Margin="0,0,0,10" />
+              <ItemsControl ItemsSource="{Binding ComparisonModels}">
+                <ItemsControl.ItemsPanel>
+                  <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <CheckBox Margin="0,0,16,8" Content="{Binding Label}"
+                              IsChecked="{Binding IsSelected}" IsEnabled="{Binding IsEnabled}" />
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <Button HorizontalAlignment="Left" Margin="0,4,0,0"
+                      Content="Transcribe the open recording with each"
+                      Command="{Binding RunModelComparisonCommand}" />
+            </StackPanel>
+          </Border>
+
+          <Border Style="{StaticResource Card}"
+                  DataContext="{Binding Summary}"
+                  Visibility="{Binding ., Converter={StaticResource NullToVis}}">
+            <StackPanel>
+              <TextBlock Text="SUMMARY MODELS" Style="{StaticResource Label}" FontWeight="Bold" Margin="0,0,0,10" />
+              <ItemsControl ItemsSource="{Binding ComparisonModels}">
+                <ItemsControl.ItemsPanel>
+                  <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <CheckBox Margin="0,0,16,8" Content="{Binding Label}"
+                              IsChecked="{Binding IsSelected}" IsEnabled="{Binding IsEnabled}" />
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <Button HorizontalAlignment="Left" Margin="0,4,0,0"
+                      Content="Write a brief with each"
+                      Command="{Binding RunModelComparisonCommand}" />
+            </StackPanel>
+          </Border>
+        </StackPanel>
+
+      </Grid>
+    </ScrollViewer>
+  </Grid>
+</UserControl>

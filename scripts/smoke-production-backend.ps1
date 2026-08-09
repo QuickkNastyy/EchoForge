@@ -21,7 +21,9 @@
 [CmdletBinding()]
 param(
     [string] $ModelRoot,
-    [string] $RuntimeRoot
+    [string] $RuntimeRoot,
+    [ValidateSet('whisper-large-v3-turbo', 'whisper-large-v3')]
+    [string] $ModelId = 'whisper-large-v3-turbo'
 )
 
 Set-StrictMode -Version Latest
@@ -31,7 +33,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $ModelRoot) { $ModelRoot = Join-Path $env:LOCALAPPDATA 'EchoForge\models' }
 if (-not $RuntimeRoot) { $RuntimeRoot = Join-Path $env:LOCALAPPDATA 'EchoForge\runtime' }
 
-$python = Join-Path $RuntimeRoot 'python-production\Scripts\python.exe'
+$python = Join-Path $RuntimeRoot 'worker-env\Scripts\python.exe'
 if (-not (Test-Path $python)) {
     Write-Host "The production environment is not installed at $python." -ForegroundColor Red
     Write-Host 'Run scripts\install-worker-runtime.ps1 first.' -ForegroundColor Red
@@ -40,9 +42,22 @@ if (-not (Test-Path $python)) {
 
 # Assemble the model directory from verified artifacts, exactly as the app does.
 $manifest = Get-Content (Join-Path $repoRoot 'artifacts\manifest.json') -Raw | ConvertFrom-Json
-$modelFiles = @($manifest.artifacts | Where-Object { $_.kind -eq 'speech-model' })
+$artifactProfile = "asr-$ModelId"
+$modelFiles = @($manifest.artifacts | Where-Object {
+    $_.kind -eq 'speech-model' -and $_.profiles -contains $artifactProfile
+})
+
+if ($modelFiles.Count -eq 0) {
+    Write-Host "The manifest has no speech artifacts for $ModelId." -ForegroundColor Red
+    exit 2
+}
 
 $revision = $modelFiles[0].revision
+if (@($modelFiles | Where-Object { $_.revision -ne $revision }).Count -ne 0) {
+    Write-Host "The $ModelId profile unexpectedly spans more than one model revision." -ForegroundColor Red
+    exit 2
+}
+
 $staged = Join-Path $ModelRoot "staged\$revision"
 New-Item -ItemType Directory -Force -Path $staged | Out-Null
 
@@ -79,6 +94,8 @@ Write-Host ''
 
 $env:PYTHONPATH = Join-Path $repoRoot 'worker'
 $env:ECHOFORGE_SMOKE_MODEL = $staged
+$env:ECHOFORGE_SMOKE_MODEL_ID = $ModelId
+$env:ECHOFORGE_SMOKE_MODEL_REVISION = $revision
 
 & $python (Join-Path $PSScriptRoot 'smoke_production_backend.py')
 exit $LASTEXITCODE

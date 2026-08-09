@@ -313,6 +313,19 @@ def test_the_placeholder_backend_says_it_does_not_recognise_speech(tmp_path) -> 
     assert all(s["text"].startswith("[mock]") for s in document["segments"])
 
 
+def test_run_telemetry_is_bounded_content_free_and_distinguishes_source_from_asr_audio(tmp_path) -> None:
+    _, document = transcribe(tmp_path)
+    run = document["run"]
+
+    assert run["source_duration_seconds"] == document["duration_seconds"]
+    assert run["total_processing_seconds"] >= 0
+    assert run["real_time_factor"] is None  # the placeholder presents no audio to an ASR model
+    assert run["warning_count"] >= len(run["warnings"])
+    assert run["fallback_count"] <= run["warning_count"]
+    assert len(run["warnings"]) <= 50
+    assert all(len(warning) <= 512 for warning in run["warnings"])
+
+
 def test_confidence_is_null_because_no_calibrated_score_exists(tmp_path) -> None:
     _, document = transcribe(tmp_path)
 

@@ -2,11 +2,16 @@ using System.IO;
 using System.Windows;
 using EchoForge.Audio.Windows;
 using EchoForge.Audio.Windows.Playback;
+using EchoForge.Contracts.Artifacts;
 using EchoForge.Contracts.Recording;
 using EchoForge.Infrastructure.Playback;
 using EchoForge.Infrastructure.Artifacts;
 using EchoForge.Contracts.Settings;
+using EchoForge.Contracts.Setup;
 using EchoForge.Core.Exports;
+using EchoForge.Core.Setup;
+using EchoForge.Contracts.Inference;
+using EchoForge.Contracts.Processing;
 using EchoForge.Core.Recording;
 using EchoForge.Core.Transcripts;
 using EchoForge.Infrastructure.Processing;
@@ -51,8 +56,11 @@ public partial class App : System.Windows.Application, IDisposable
     private FileSessionLeaseProvider? _leases;
     private AppLayout? _layout;
     private SetupServices? _setup;
+    private SetupViewModel? _setupViewModel;
     private FileSessionStore? _store;
     private CoordinatorReprocessor? _reprocessor;
+    private ISettingsStore? _settings;
+    private SetupRecommendation? _recommendation;
     private bool _attachingProcessing;
 
     protected override void OnStartup(StartupEventArgs e)
@@ -82,6 +90,7 @@ public partial class App : System.Windows.Application, IDisposable
         FileSessionLeaseProvider leases = new(store);
         _leases = leases;
         JsonSettingsStore settings = new();
+        _settings = settings;
 
         // Paint in the remembered palette before the first window exists, so nothing is ever seen
         // in the wrong one, and remember any later change. A settings file written before this
@@ -210,22 +219,35 @@ public partial class App : System.Windows.Application, IDisposable
         _setup = await Task.Run(() => SetupServices.TryOpen(out IReadOnlyList<string> problems, _layout))
             .ConfigureAwait(true);
 
-        _viewModel.OpenSetupWindow = () =>
+        _viewModel.AttachSetup(_setup, _catalog);
+
+        if (_setup is { } services)
         {
-            SetupServices services = _setup!;
-            SetupViewModel setupViewModel = new(services, _catalog);
+            // Settings is a page in the main window now, so its view model is built once and
+            // lives for the life of the application rather than for the life of a window.
+            _setupViewModel = new SetupViewModel(services, _catalog);
 
             // Installing or repairing a runtime here can make transcription and summarisation
             // possible on a machine that had neither when it started. Re-evaluate and attach them
-            // in place; nobody should have to close and reopen EchoForge for a download to count.
-            setupViewModel.ComponentsChanged += OnSetupComponentsChanged;
+            // in place; nobody should have to restart EchoForge for a download to count.
+            _setupViewModel.ComponentsChanged += OnSetupComponentsChanged;
 
-            SetupWindow setupWindow = new(setupViewModel, services, _catalog) { Owner = window };
-            setupWindow.Closed += (_, _) => setupViewModel.ComponentsChanged -= OnSetupComponentsChanged;
-            return setupWindow;
-        };
+            _viewModel.AttachSetupPage(_setupViewModel);
+            _ = _setupViewModel.RefreshAsync();
+        }
 
-        _viewModel.AttachSetup(_setup, _catalog);
+        try
+        {
+            if (_setup is { } setup)
+            {
+                HardwareSnapshot hardware = await setup.HardwareProbe(_catalog).ProbeAsync().ConfigureAwait(true);
+                _recommendation = ProfileRecommender.Recommend(hardware);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            _recommendation = null;
+        }
 
         // The library, unconditionally. It reprocesses through a live seam that is empty until a
         // worker attaches, so a recording is reachable now and "Transcribe again" lights up later.
@@ -253,8 +275,9 @@ public partial class App : System.Windows.Application, IDisposable
         _transcripts = new FileTranscriptionStore(store);
         _summaries = new FileSummaryStore(store);
         _aliases = new FileSpeakerAliasStore(store);
+        FileMeetingTitleStore titles = new(store);
 
-        LibraryProjection projection = new(store, _transcripts, _summaries, _aliases);
+        LibraryProjection projection = new(store, _transcripts, _summaries, _aliases, titles);
         _libraryIndex = new SqliteLibraryIndex(_layout.IndexPath, projection);
 
         // Keeps the index in step with the folders. Deliberately fire-and-forget: an index update
@@ -289,9 +312,10 @@ public partial class App : System.Windows.Application, IDisposable
                     sessionId => _indexMaintenance?.UpdateNowAsync(sessionId) ?? Task.CompletedTask),
                 Confirmation = new DialogDeleteConfirmation(window),
                 Index = _indexMaintenance,
+                Titles = titles,
             });
 
-        _viewModel.AttachLibrary(_library, () => new LibraryWindow(_library) { Owner = window });
+        _viewModel.AttachLibrary(_library);
     }
 
     /// <summary>
@@ -345,10 +369,11 @@ public partial class App : System.Windows.Application, IDisposable
 
             ProcessingPreparation preparation = new(store, _registry, new DerivativeBuilder(store));
 
+            WorkerLaunchOptions? nemoOptions = _setup.TryResolveNemoWorkerLaunch();
             _coordinator = new TranscriptionCoordinator(
                 store,
                 _transcripts!,
-                new WorkerSupervisor(options, new RecordingCaptureGate(_controller)),
+                new WorkerSupervisor(options, new RecordingCaptureGate(_controller), nemoOptions),
                 new RecordingCaptureGate(_controller),
                 preparation: preparation);
 
@@ -356,7 +381,19 @@ public partial class App : System.Windows.Application, IDisposable
             // recorder does rather than discovering it on a poll.
             _controller.StateChanged += OnRecordingStateChangedForProcessing;
 
-            _viewModel.AttachTranscription(new TranscriptionViewModel(_coordinator, new SaveFileExportPrompt(window)));
+            string recommendedCompute = _recommendation?.Transcription.ProfileId ?? ProcessingProfile.CpuInt8;
+            string recommendedModel = _recommendation?.Asr.ModelId ?? AsrModelIds.WhisperLargeV3Turbo;
+
+            TranscriptionViewModel transcriptionViewModel = new(
+                _coordinator,
+                new SaveFileExportPrompt(window),
+                _settings,
+                recommendedModel,
+                recommendedCompute);
+            transcriptionViewModel.ShowComparison = comparison =>
+                new TranscriptComparisonWindow(comparison) { Owner = window }.Show();
+
+            _viewModel.AttachTranscription(transcriptionViewModel);
 
             // Summarisation shares the transcription coordinator's gate rather than keeping its own:
             // two coordinators each politely checking their own state would still start two jobs.
@@ -369,7 +406,10 @@ public partial class App : System.Windows.Application, IDisposable
                 otherJobRunning: () => _coordinator?.IsRunning ?? false,
                 runtime: _setup.Llama);
 
-            _viewModel.AttachSummary(new SummaryViewModel(_summaryCoordinator));
+            SummaryViewModel summaryViewModel = new(_summaryCoordinator, _settings);
+            summaryViewModel.ShowComparison = comparison =>
+                new SummaryComparisonWindow(comparison) { Owner = window }.Show();
+            _viewModel.AttachSummary(summaryViewModel);
 
             // Keep the index in step as processing changes a session's canonical state.
             _coordinator.SessionChanged += OnSessionChangedForIndex;
@@ -418,16 +458,90 @@ public partial class App : System.Windows.Application, IDisposable
     /// </summary>
     private void OnRecordingStateChangedForIndex(object? sender, RecordingStateChangedEventArgs e)
     {
-        if (_controller?.SessionId is not { } sessionId)
+        if (e.State is not (Contracts.Sessions.SessionState.Recorded
+            or Contracts.Sessions.SessionState.NeedsAttention
+            or Contracts.Sessions.SessionState.Failed))
         {
             return;
         }
 
-        if (e.State is Contracts.Sessions.SessionState.Recorded
-            or Contracts.Sessions.SessionState.NeedsAttention
-            or Contracts.Sessions.SessionState.Failed)
+        // The controller may already have advanced by the time this listener runs. The event owns
+        // the identity of the transition; asking the controller afterwards creates a race where a
+        // perfectly durable recording is invisible until the next full library refresh.
+        if (e.SessionId is not { Length: > 0 } sessionId)
         {
-            _indexMaintenance?.Invalidate(sessionId);
+            return;
+        }
+
+        _indexMaintenance?.Invalidate(sessionId);
+
+        // Stop runs on a worker thread. The library owns an ObservableCollection bound to WPF, so
+        // the incremental row refresh must begin on the application dispatcher. Starting the async
+        // method there also makes its ConfigureAwait(true) continuations return to the UI thread.
+        if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
+        if (Dispatcher.CheckAccess())
+        {
+            _ = ShowNewRecordingAsync(sessionId);
+        }
+        else
+        {
+            Dispatcher.BeginInvoke(new Action(() => _ = ShowNewRecordingAsync(sessionId)));
+        }
+    }
+
+    /// <summary>
+    /// Brings a recording that has just finished into the meeting list.
+    ///
+    /// <para>
+    /// Deliberately does not navigate. Somebody who stopped a recording to start another one
+    /// should not be thrown onto a different page; the recording is simply there, at the top,
+    /// when they go looking for it.
+    /// </para>
+    /// </summary>
+    private async Task ShowNewRecordingAsync(string sessionId)
+    {
+        if (_indexMaintenance is { } maintenance)
+        {
+            try
+            {
+                await maintenance.UpdateNowAsync(sessionId).ConfigureAwait(true);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException)
+            {
+                // An index that could not be updated is a stale list, not a lost recording. The
+                // refresh below still reads the folders.
+            }
+        }
+
+        if (_library is not { } library)
+        {
+            return;
+        }
+
+        // The terminal state is raised only after the snapshot write, but filesystem/index
+        // projection work can still be a beat behind on a busy machine. Refresh the one meeting
+        // until the canonical projection is readable rather than turning that transient null into
+        // a recording that only appears after restart. Bounded so a genuinely unreadable folder
+        // does not leave a permanent background loop.
+        for (int attempt = 0; attempt < 50; attempt++)
+        {
+            try
+            {
+                if (await library.RefreshMeetingAsync(sessionId).ConfigureAwait(true))
+                {
+                    return;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+            {
+                // Same settling case: the next pass re-reads the canonical files.
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100)).ConfigureAwait(true);
         }
     }
 
@@ -520,6 +634,13 @@ public partial class App : System.Windows.Application, IDisposable
         _tray?.Dispose();
         _tray = null;
 
+        if (_setupViewModel is not null)
+        {
+            _setupViewModel.ComponentsChanged -= OnSetupComponentsChanged;
+            _setupViewModel.Dispose();
+            _setupViewModel = null;
+        }
+
         // Before the index: the library owns the open meeting, and the open meeting owns an audio
         // device and a handle on its prepared audio.
         _library?.Dispose();
@@ -608,7 +729,7 @@ public sealed class DialogDeleteConfirmation(Window owner) : IDeleteConfirmation
         ArgumentNullException.ThrowIfNull(eligibility);
 
         string when = eligibility.RecordedUtc is { } recorded
-            ? recorded.ToLocalTime().ToString("ddd d MMM yyyy, HH:mm", System.Globalization.CultureInfo.CurrentCulture)
+            ? recorded.ToLocalTime().ToString("ddd, MMM d, yyyy · h:mm tt", System.Globalization.CultureInfo.CurrentCulture)
             : "date unknown";
 
         string size = eligibility.ApproximateBytes > 0

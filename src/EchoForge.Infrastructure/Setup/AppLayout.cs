@@ -72,6 +72,17 @@ public sealed class AppLayout
     /// </summary>
     public string ManifestPath => Path.Combine(ApplicationRoot, "artifacts", "manifest.json");
 
+    /// <summary>
+    /// The provisioning and qualification scripts, shipped with the application.
+    ///
+    /// <para>
+    /// They travel with the binaries for the same reason the manifest does: building an isolated
+    /// Linux runtime and proving a model can run are things the installed application has to be
+    /// able to do, not things a developer does from a source tree beforehand.
+    /// </para>
+    /// </summary>
+    public string ScriptsRoot => Path.Combine(ApplicationRoot, "scripts");
+
     /// <summary>Licence texts for everything distributed, staged beside the application.</summary>
     public string LicensesRoot => Path.Combine(ApplicationRoot, "third_party", "licenses");
 
@@ -103,6 +114,24 @@ public sealed class AppLayout
 
     /// <summary>The worker's installed package environment.</summary>
     public string WorkerEnvironmentRoot => Path.Combine(RuntimeRoot, "worker-env");
+
+    /// <summary>
+    /// EchoForge's own interpreter inside that environment, or null when it is not installed.
+    ///
+    /// <para>
+    /// There is deliberately no fall back to a Python on PATH. The pinned wheel closure is built
+    /// for one CPython ABI, and borrowing whatever happens to be installed is how a machine that
+    /// quietly moved to a newer Python starts failing at the first native import.
+    /// </para>
+    /// </summary>
+    public string? WorkerPythonPath
+    {
+        get
+        {
+            string path = Path.Combine(WorkerEnvironmentRoot, "Scripts", "python.exe");
+            return File.Exists(path) ? path : null;
+        }
+    }
 
     /// <summary>A flat directory of verified wheels, because an offline install wants one place to look.</summary>
     public string WheelhouseRoot => Path.Combine(RuntimeRoot, "wheelhouse");

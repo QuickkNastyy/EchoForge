@@ -115,7 +115,7 @@ public sealed class LibraryIndexTests : IDisposable
         {
             connection.Open();
             using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "UPDATE index_meta SET version = 0 WHERE id = 1;";
+            command.CommandText = $"UPDATE index_meta SET version = {SqliteLibraryIndex.SchemaVersion - 1} WHERE id = 1;";
             command.ExecuteNonQuery();
         }
 

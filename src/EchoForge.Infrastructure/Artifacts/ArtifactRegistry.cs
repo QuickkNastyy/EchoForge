@@ -123,9 +123,15 @@ public sealed class ArtifactRegistry : IDisposable
             ProcessingProfile.CpuInt8,
             ProcessingProfile.CudaFp16,
             ProcessingProfile.CudaInt8Float16,
+            ProcessingProfile.AsrWhisperLargeV3Turbo,
+            ProcessingProfile.AsrWhisperLargeV3,
+            ProcessingProfile.AsrParakeetUnifiedEn06B,
+            ProcessingProfile.AsrCanaryQwen25B,
+            ProcessingProfile.AsrNemoRuntime,
             ProcessingProfile.SummaryCudaQ4,
             ProcessingProfile.SummaryCpuQ4,
             ProcessingProfile.SummaryBakeoff,
+            ProcessingProfile.SummaryGptOss20B,
         ])
         {
             List<ArtifactEntry> required = [.. _manifest.Artifacts.Where(a => a.BelongsTo(id))];
@@ -146,9 +152,15 @@ public sealed class ArtifactRegistry : IDisposable
         ProcessingProfile.CpuInt8 => "Whisper on the CPU, INT8. Slow but needs no GPU.",
         ProcessingProfile.CudaFp16 => "Whisper on an NVIDIA GPU, FP16.",
         ProcessingProfile.CudaInt8Float16 => "Whisper on an NVIDIA GPU, INT8/FP16. Lower memory.",
+        ProcessingProfile.AsrWhisperLargeV3Turbo => "Pinned Whisper Large V3 Turbo CTranslate2 model files.",
+        ProcessingProfile.AsrWhisperLargeV3 => "Pinned Whisper Large V3 CTranslate2 model files.",
+        ProcessingProfile.AsrParakeetUnifiedEn06B => "Pinned NVIDIA Parakeet Unified EN 0.6B model files.",
+        ProcessingProfile.AsrCanaryQwen25B => "Pinned NVIDIA Canary-Qwen 2.5B model files.",
+        ProcessingProfile.AsrNemoRuntime => "Pinned Linux provisioning tool for the isolated NVIDIA NeMo runtime.",
         ProcessingProfile.SummaryCudaQ4 => "Gemma 4 12B Q4_0 on an NVIDIA GPU, through llama.cpp.",
         ProcessingProfile.SummaryCpuQ4 => "Gemma 4 12B Q4_0 on the CPU. Works everywhere, and is slow enough to say so.",
         ProcessingProfile.SummaryBakeoff => "Ministral 3 14B Q4_K_M, for measuring against the default. Never the default itself.",
+        ProcessingProfile.SummaryGptOss20B => "gpt-oss-20b MXFP4 through the pinned llama.cpp runtime.",
         _ => id,
     };
 
@@ -308,7 +320,7 @@ public sealed class ArtifactRegistry : IDisposable
 
             foreach (ArtifactEntry entry in model)
             {
-                string destination = Path.Combine(staged, entry.FileName);
+                string destination = Path.Combine(staged, entry.EffectiveStageFileName);
                 string source = InstallPath(entry);
 
                 // Re-copy only when the staged copy is not already the right length. The model

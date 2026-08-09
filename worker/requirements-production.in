@@ -2,3 +2,7 @@
 # scripts/lock-worker-runtime.ps1. This file names what EchoForge asks for; the resolver
 # decides the closure and the script pins every wheel by digest.
 faster-whisper==1.2.1
+# CTranslate2's Windows wheel intentionally leaves the CUDA 12 BLAS runtime external. Keep the
+# exact NVIDIA wheel in EchoForge's verified, offline environment so a CUDA recommendation means
+# the worker can actually load cublas64_12.dll rather than merely enumerate an adapter.
+nvidia-cublas-cu12==12.9.2.10

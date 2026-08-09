@@ -3,6 +3,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Automation;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -126,6 +127,24 @@ public sealed class RenderedScreenTests
         screen.NoTextOverlaps();
     });
 
+    [Fact]
+    public void TheMainWindowStartsAtItsMinimumSupportedSize() => UiThread.Run(() =>
+    {
+        using RecorderHarness harness = new();
+        MainWindow window = new() { DataContext = harness.Ready() };
+        try
+        {
+            Assert.Equal(window.MinWidth, window.Width);
+            Assert.Equal(window.MinHeight, window.Height);
+            Assert.Equal(980, window.Width);
+            Assert.Equal(640, window.Height);
+        }
+        finally
+        {
+            window.Close();
+        }
+    });
+
     // ---------------------------------------------------------------- the library window
 
     [Fact]
@@ -137,12 +156,13 @@ public sealed class RenderedScreenTests
 
         screen.NoRecordToStringAnywhere();
         screen.EveryVisibleButtonShowsItsLabel();
-        screen.TextIsPainted("Deployment planning");
+        screen.TextIsPainted("Library");
         screen.NoTextOverlaps();
 
-        // The list is the only thing on screen: the detail workspace must be collapsed, not
-        // merely behind it. This is the defect that put the back button over the list heading.
-        screen.DetailWorkspaceIsCollapsed();
+        // The list and the meeting sit side by side now, so nothing is "behind" anything. With
+        // nothing open the right-hand side says what the page is for rather than drawing an
+        // empty frame over the list.
+        screen.TextIsPainted("Choose a recording");
     });
 
     [Fact]
@@ -159,6 +179,7 @@ public sealed class RenderedScreenTests
         screen.NoTextOverlaps();
         screen.PlaybackPositionIsNeverABareSeparator();
         screen.TextIsPainted("Deployment planning");
+        screen.TextIsNotVisible("Versions");
     });
 
     /// <summary>
@@ -180,12 +201,12 @@ public sealed class RenderedScreenTests
         screen.EveryVisibleButtonShowsItsLabel();
         screen.NoTextOverlaps();
 
-        // The transcript says where it went, and the cited moment is marked on the timeline.
-        screen.TextIsPainted("jumped to");
+        // Following a claim opens the transcript on the moment it cites, and the timeline says
+        // which moment that was. The brief and the transcript are tabs rather than columns now,
+        // so this photographs the destination rather than both at once.
         screen.TextIsPainted("Evidence for the selected claim");
 
         // A slot the meeting never filled is drawn as an absence, not as the word "unknown".
-        screen.TextIsPainted("no date stated");
         screen.NoTextMatches("Due: unknown");
         screen.NoTextMatches("Owner: unknown");
     });
@@ -199,6 +220,121 @@ public sealed class RenderedScreenTests
         using Screen screen = UiThread.Render("07-one-recording-1366", harness.Window, 1366, 768);
 
         screen.NoRecordToStringAnywhere();
+        screen.EveryVisibleButtonShowsItsLabel();
+        screen.NoTextOverlaps();
+    });
+
+    // ---------------------------------------------------------------- the shell
+
+    /// <summary>
+    /// The recordings page, reached the way a person reaches it: through the window, after the
+    /// library has attached.
+    ///
+    /// <para>
+    /// Every assertion here is one the screenshot of the broken build would have failed.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheRecordingsPageWorksWhenTheLibraryArrivesAfterTheWindow() => UiThread.Run(() =>
+    {
+        using ShellHarness harness = new();
+
+        using Screen screen = UiThread.Render(
+            "10-shell-recordings", harness.Window, 1440, 900, harness.AttachLibraryAndOpenRecordings);
+
+        // The list is populated. A page bound to a null library shows an empty one.
+        screen.TextIsPainted("Deployment planning");
+
+        // No button is a blank block. This is what the white rectangles were.
+        screen.EveryVisibleButtonShowsItsLabel();
+
+        // Nothing is open, so the empty state is showing and the workspace is not drawn over it.
+        screen.TextIsPainted("Choose a recording");
+        screen.TextIsNotVisible("Meeting brief");
+
+        screen.NoRecordToStringAnywhere();
+        screen.NoTextOverlaps();
+    });
+
+    [Fact]
+    public void AnOpenedRecordingFitsAtTheMainWindowsMinimumSize() => UiThread.Run(() =>
+    {
+        using ShellHarness harness = new();
+
+        using Screen screen = UiThread.Render(
+            "10b-shell-meeting-minimum", harness.Window, 900, 640, harness.OpenAMeeting);
+
+        screen.TextIsPainted("Deployment planning");
+        screen.ButtonIsReadable("⋯");
+        screen.EveryVisibleButtonShowsItsLabel();
+        screen.NoRecordToStringAnywhere();
+        screen.NoTextOverlaps();
+    });
+
+    [Fact]
+    public void OpeningAMeetingThroughTheShellShowsItsBriefAndItsActions() => UiThread.Run(() =>
+    {
+        using ShellHarness harness = new();
+
+        using Screen screen = UiThread.Render(
+            "11-shell-meeting", harness.Window, 1440, 900, harness.OpenAMeeting);
+
+        // The one action that processes a meeting is present and readable, which it was not when
+        // its label was a binding against a null data context.
+        // A meeting that already has a brief offers to do it again, and says so.
+        screen.ButtonIsReadable("Reprocess meeting");
+        screen.ButtonIsReadable("⋯");
+
+        screen.TextIsPainted("Deployment planning");
+        screen.TextIsPainted("Meeting brief");
+
+        // And the empty state is gone, rather than being painted underneath.
+        screen.TextIsNotVisible("Choose a recording");
+
+        screen.EveryVisibleButtonShowsItsLabel();
+        screen.NoRecordToStringAnywhere();
+        screen.NoTextOverlaps();
+    });
+
+    /// <summary>
+    /// A recording that has just been made and not processed. The screen a person sees most often,
+    /// and the one that was reported broken: a blank title, white buttons with nothing written on
+    /// them, and no way to start processing.
+    /// </summary>
+    [Fact]
+    public void AnUnprocessedMeetingOffersTheOneActionThatProcessesIt() => UiThread.Run(() =>
+    {
+        using ShellHarness harness = new();
+
+        using Screen screen = UiThread.Render(
+            "12-shell-unprocessed", harness.Window, 1440, 900, harness.OpenAnUnprocessedMeeting);
+
+        screen.TextIsPainted("Vendor call");
+        screen.TextIsPainted("Not processed yet");
+        screen.ButtonIsReadable("Process meeting");
+        screen.ButtonIsReadable("⋯");
+
+        // Nothing that belongs to a processed meeting is drawn over it.
+        screen.TextIsNotVisible("What you need to do");
+        screen.TextIsNotVisible("Choose a recording");
+
+        screen.EveryVisibleButtonShowsItsLabel();
+        screen.NoRecordToStringAnywhere();
+        screen.NoTextOverlaps();
+    });
+
+    [Fact]
+    public void AVisitToSettingsDoesNotCloseTheMeetingYouWereReading() => UiThread.Run(() =>
+    {
+        using ShellHarness harness = new();
+
+        using Screen screen = UiThread.Render(
+            "13-shell-round-trip", harness.Window, 1440, 900, harness.OpenAMeetingThenVisitSettings);
+
+        screen.TextIsPainted("Deployment planning");
+        screen.TextIsPainted("Meeting brief");
+        screen.TextIsNotVisible("Choose a recording");
+
         screen.EveryVisibleButtonShowsItsLabel();
         screen.NoTextOverlaps();
     });
@@ -226,10 +362,21 @@ public sealed class RenderedScreenTests
 
         screen.NoRecordToStringAnywhere();
         screen.EveryVisibleButtonShowsItsLabel();
-        screen.ButtonIsReadable("Install what is recommended");
-        screen.TextIsPainted("WHAT ECHOFORGE CAN DO ON THIS MACHINE");
-        screen.TextIsPainted("COMPONENTS");
+        // Settings is sectioned now, and it opens on Transcription: the choices that used to sit
+        // on the recording screen, plus the health verdict up top.
+        screen.TextIsPainted("Speech model");
+        screen.TextIsPainted("Accuracy");
         screen.NoTextOverlaps();
+
+        // The Models section, as the rail's expanded Settings entry opens it.
+        using Screen models = UiThread.Render(
+            "09-setup-models",
+            harness.WindowAt(host => host.ShowModelsSettingsCommand.Execute(null)),
+            1180, 900, harness.WaitForScan);
+
+        models.NoRecordToStringAnywhere();
+        models.TextIsPainted("Select a model to install");
+        models.NoTextOverlaps();
     });
 
     [Fact]
@@ -268,6 +415,43 @@ public sealed class RenderedScreenTests
         // The point of a second palette is that it is genuinely a light one, not the dark screen
         // with different accents: the page has to be light and its writing dark.
         screen.PageIsLight();
+    });
+
+    [Fact]
+    public void ALoadedWindowCanSwitchThemeWithoutMutatingRenderedBrushes() => UiThread.Run(() =>
+    {
+        AppTheme restore = Theme.Current;
+        try
+        {
+            Theme.Apply(AppTheme.Dark);
+            using RecorderHarness harness = new();
+
+            using Screen screen = UiThread.Render(
+                "01b-live-theme-switch",
+                () => new MainWindow { DataContext = harness.Ready() },
+                1180,
+                900,
+                _ =>
+                {
+                    // This is the path that used to kill the process in wpfgfx_cor3.dll: the
+                    // window is already loaded and has already rendered the dark brushes when the
+                    // palette changes underneath it. The replacement resources must be immutable.
+                    Theme.Apply(AppTheme.Light);
+
+                    foreach (var entry in Theme.Colors(AppTheme.Light))
+                    {
+                        SolidColorBrush brush = Assert.IsType<SolidColorBrush>(
+                            System.Windows.Application.Current.TryFindResource(entry.Key));
+                        Assert.True(brush.IsFrozen, $"{entry.Key} was handed to WPF as a mutable brush");
+                    }
+                });
+
+            screen.PageIsLight();
+        }
+        finally
+        {
+            Theme.Apply(restore);
+        }
     });
 
     [Fact]
@@ -470,12 +654,102 @@ internal sealed class RecorderHarness : IDisposable
 }
 
 /// <summary>A real library over real session folders, with one processed and one bare recording.</summary>
+/// <summary>
+/// The whole application window, with the library attached after it was built.
+///
+/// <para>
+/// This exists because of a defect the page-level harnesses could not see. They hand the
+/// recordings page its view model directly, which is not how the application works: the shell
+/// binds the page's data context to a property that is null at startup and filled in once the
+/// index has been read. A property that never announced it changed leaves the page bound to that
+/// null forever — an empty meeting list, a blank title, buttons whose labels are bindings and are
+/// therefore white rectangles, and a menu that opens onto nothing.
+/// </para>
+///
+/// <para>
+/// Everything here goes through the real shell, in the real order, so that class of defect fails a
+/// test instead of reaching a screenshot.
+/// </para>
+/// </summary>
+internal sealed class ShellHarness : IDisposable
+{
+    private readonly RecorderHarness _recorder = new();
+    private readonly LibraryHarness _library = new();
+    private MainViewModel? _model;
+
+    /// <summary>The shell, with nothing attached yet. Exactly what startup builds.</summary>
+    public Func<Window> Window => () =>
+    {
+        _model = _recorder.Ready();
+        return new MainWindow { DataContext = _model };
+    };
+
+    /// <summary>
+    /// Attaches the library and navigates, after the window exists.
+    ///
+    /// <para>
+    /// The order is the point. Attaching before the window is built would bind to a library that
+    /// was already there and prove nothing.
+    /// </para>
+    /// </summary>
+    public void AttachLibraryAndOpenRecordings(Window window)
+    {
+        _model!.AttachLibrary(_library.ViewModel);
+        _model.ShowRecordingsCommand.Execute(null);
+
+        UiThread.Wait(Task.Delay(50));
+        window.UpdateLayout();
+    }
+
+    public void OpenAMeeting(Window window) => Open(window, "processed");
+
+    /// <summary>
+    /// Opens a meeting, visits Settings, and comes back.
+    ///
+    /// <para>
+    /// The round trip is the test. Re-reading the meeting list on every visit cleared it, which
+    /// dropped the list's selection, which closed the meeting - so glancing at Settings lost your
+    /// place and the workspace was replaced by the empty state.
+    /// </para>
+    /// </summary>
+    public void OpenAMeetingThenVisitSettings(Window window)
+    {
+        Open(window, "processed");
+
+        _model!.ShowSettingsCommand.Execute(null);
+        UiThread.Wait(Task.Delay(50));
+        window.UpdateLayout();
+
+        _model.ShowRecordingsCommand.Execute(null);
+        UiThread.Wait(Task.Delay(50));
+        window.UpdateLayout();
+    }
+
+    public void OpenAnUnprocessedMeeting(Window window) => Open(window, "bare");
+
+    private void Open(Window window, string which)
+    {
+        AttachLibraryAndOpenRecordings(window);
+        _library.Open(which);
+
+        UiThread.Wait(Task.Delay(50));
+        window.UpdateLayout();
+    }
+
+    public void Dispose()
+    {
+        _library.Dispose();
+        _recorder.Dispose();
+    }
+}
+
 internal sealed class LibraryHarness : IDisposable
 {
     private readonly LibraryFixture _fixture = new();
     private readonly SqliteLibraryIndex _index;
     private readonly LibraryViewModel _library;
-    private LibraryWindow? _window;
+    private Window? _window;
+    private EchoForge.App.Library.RecordingsPage? _page;
 
     public LibraryHarness()
     {
@@ -508,13 +782,30 @@ internal sealed class LibraryHarness : IDisposable
         UiThread.Wait(_index.RebuildAsync());
 
         _library = new LibraryViewModel(
-            _index, _fixture.Projection, _fixture.Transcripts, _fixture.Summaries, _fixture.Aliases);
+            _index, _fixture.Projection, _fixture.Transcripts, _fixture.Summaries, _fixture.Aliases,
+            new LibraryServices { Titles = _fixture.Titles });
 
         UiThread.Wait(_library.InitializeAsync());
     }
 
-    /// <summary>Built on the UI thread, because a Window may only be created there.</summary>
-    public Func<Window> Window => () => _window ??= new LibraryWindow(_library);
+    /// <summary>
+    /// The recordings page, hosted in a bare window so it can be photographed.
+    ///
+    /// <para>
+    /// It is a page inside the main window in the application; the window here exists only because
+    /// rendering needs a top-level visual. Built on the UI thread, because a Window may only be
+    /// created there.
+    /// </para>
+    /// </summary>
+    public Func<Window> Window => () => _window ??= new Window
+    {
+        Content = _page = new EchoForge.App.Library.RecordingsPage { DataContext = _library },
+        Width = 1320,
+        Height = 860,
+    };
+
+    /// <summary>The view model itself, for a harness that attaches it the way the shell does.</summary>
+    public LibraryViewModel ViewModel => _library;
 
     /// <summary>Opens a recording into the detail workspace, exactly as selecting a row does.</summary>
     public void Open(string which)
@@ -530,12 +821,26 @@ internal sealed class LibraryHarness : IDisposable
         MeetingViewModel meeting = _library.OpenMeeting
             ?? throw new InvalidOperationException("open a recording first");
 
-        if (window.FindName("SummaryList") is not System.Windows.Controls.ListBox claims)
+        // The supporting-details tab, because that is where a claim is clicked. Following it is
+        // what moves the page to the transcript, which is the behaviour being photographed.
+        if (_page?.FindName("MeetingTabs") is System.Windows.Controls.TabControl tabs)
+        {
+            tabs.SelectedIndex = 2;
+            UiThread.Wait(Task.Delay(50));
+        }
+
+        if (_page?.FindName("SummaryList") is not System.Windows.Controls.ListBox claims)
         {
             throw new InvalidOperationException("the workspace has no claim list");
         }
 
         claims.SelectedItem = meeting.SummaryLines.First(line => line.HasEvidence);
+
+        // Pumped rather than laid out. Following a claim changes bound state, and a binding
+        // queued at DataBind priority has not been applied by the time UpdateLayout returns -
+        // so the photograph would catch the transcript a frame before it said where it went.
+        UiThread.Wait(Task.Delay(50));
+        window.UpdateLayout();
     }
 
     public void Dispose()
@@ -549,6 +854,7 @@ internal sealed class LibraryHarness : IDisposable
 /// <summary>Setup over the real manifest that ships beside the build.</summary>
 internal sealed class SetupHarness : IDisposable
 {
+    private readonly RecorderHarness _recorder = new();
     private readonly EchoForge.Infrastructure.Setup.SetupServices? _services;
     private readonly EchoForge.App.Setup.SetupViewModel? _model;
 
@@ -577,8 +883,32 @@ internal sealed class SetupHarness : IDisposable
 
     public bool Available => _model is not null && _services is not null;
 
-    public Func<Window> Window => () =>
-        new EchoForge.App.Setup.SetupWindow(_model!, _services!) { DataContext = _model };
+    /// <summary>
+    /// The settings page, over a real main view model with the setup surface attached.
+    ///
+    /// <para>
+    /// The page reads Transcription, Summarisation and Models &amp; runtime from the one view model
+    /// the application composes, because that is the point of them living on one page. Handing it a
+    /// bare setup view model would photograph a page with two thirds of itself missing and call
+    /// that a pass.
+    /// </para>
+    /// </summary>
+    public Func<Window> Window => WindowAt(null);
+
+    /// <summary>The settings page opened at a specific section, as the rail would open it.</summary>
+    public Func<Window> WindowAt(Action<MainViewModel>? navigate) => () =>
+    {
+        MainViewModel host = _recorder.Ready();
+        host.AttachSetupPage(_model!);
+        navigate?.Invoke(host);
+
+        return new Window
+        {
+            Content = new EchoForge.App.Setup.SettingsPage { DataContext = host },
+            Width = 1180,
+            Height = 900,
+        };
+    };
 
     /// <summary>
     /// Waits for the scan the window kicks off when it loads.
@@ -606,6 +936,7 @@ internal sealed class SetupHarness : IDisposable
     {
         _model?.Dispose();
         _services?.Dispose();
+        _recorder.Dispose();
     }
 }
 
@@ -835,11 +1166,30 @@ internal sealed class Screen : IDisposable
 
         foreach (ButtonBase button in Visible<ButtonBase>())
         {
-            // A picker's chevron toggle and other purely decorative parts carry no label; what
-            // they draw is checked where the control itself is checked.
             string label = Label(button);
-            if (label.Length == 0 || !MostlyOnScreen(button))
+            if (!MostlyOnScreen(button))
             {
+                continue;
+            }
+
+            // A button with no content at all used to be skipped here, on the grounds that a
+            // picker's chevron toggle carries no label. That let a real defect through: a button
+            // whose Content is a binding that does not resolve is also empty, and the primary
+            // style paints it as a solid white block with nothing written on it.
+            //
+            // An icon-only button is a legitimate thing - the navigation rail and the window bar
+            // are made of them - and this application already requires every one of them to carry
+            // an accessibility name. So that is the test: unlabelled is fine when something can
+            // still say what the button is. Unlabelled, unnamed, and not a part of somebody else's
+            // template is a button nobody can read or reach.
+            if (label.Length == 0)
+            {
+                bool named = AutomationProperties.GetName(button).Length > 0;
+                if (!named && !IsPartOfATemplatedControl(button))
+                {
+                    blank.Add($"an unlabelled, unnamed {button.GetType().Name} at {BoundsOf(button)}");
+                }
+
                 continue;
             }
 
@@ -851,6 +1201,26 @@ internal sealed class Screen : IDisposable
         }
 
         Assert.True(blank.Count == 0, $"{_name}: buttons rendered blank: {string.Join(", ", blank)}");
+    }
+
+    /// <summary>
+    /// Whether this button is a part somebody else's template drew, rather than one the page put
+    /// there. A ComboBox chevron and a scrollbar arrow are legitimately unlabelled; a button the
+    /// page authored is not.
+    /// </summary>
+    private static bool IsPartOfATemplatedControl(DependencyObject element)
+    {
+        for (DependencyObject? at = element; at is not null; at = VisualTreeHelper.GetParent(at))
+        {
+            if (at is System.Windows.Controls.ComboBox or System.Windows.Controls.DatePicker
+                or System.Windows.Controls.Primitives.ScrollBar or System.Windows.Controls.Expander
+                or System.Windows.Controls.TabItem or System.Windows.Controls.Primitives.Popup)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public void ButtonIsReadable(string label)
@@ -918,6 +1288,28 @@ internal sealed class Screen : IDisposable
     }
 
     /// <summary>A phrase that must not appear anywhere on the screen.</summary>
+    /// <summary>
+    /// That this text is not <em>showing</em>, as opposed to not existing anywhere.
+    ///
+    /// <para>
+    /// Separate from <see cref="NoTextMatches"/> on purpose. Two panels that occupy the same cell
+    /// and take turns being visible both exist in the tree at all times; the question worth asking
+    /// about them is which one the user can see, and asking the other question gets a "yes" that
+    /// means nothing.
+    /// </para>
+    /// </summary>
+    public void TextIsNotVisible(string text)
+    {
+        List<string> found =
+        [
+            .. Visible<TextBlock>()
+                .Select(t => t.Text ?? string.Empty)
+                .Where(t => t.Contains(text, StringComparison.Ordinal))
+        ];
+
+        Assert.True(found.Count == 0, $"{_name}: \"{text}\" is visible: {string.Join(" | ", found)}");
+    }
+
     public void NoTextMatches(string text)
     {
         List<string> found =
@@ -1370,10 +1762,35 @@ internal sealed class Screen : IDisposable
                 yield return element;
             }
 
-            int count = VisualTreeHelper.GetChildrenCount(node);
+            // Guarded, because a visual can report a child count and hand back null for one of
+            // them while it is still being realised - a virtualised row, a popup that has not
+            // finished opening. Letting that throw takes the whole render assembly down with it
+            // and turns one flaky frame into a page of unrelated failures.
+            int count;
+            try
+            {
+                count = VisualTreeHelper.GetChildrenCount(node);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                continue;
+            }
+
             for (int i = 0; i < count; i++)
             {
-                queue.Enqueue(VisualTreeHelper.GetChild(node, i));
+                DependencyObject? child = null;
+                try
+                {
+                    child = VisualTreeHelper.GetChild(node, i);
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                }
+
+                if (child is not null)
+                {
+                    queue.Enqueue(child);
+                }
             }
         }
     }

@@ -9,22 +9,22 @@
   <DockPanel Margin="16">
 
     <!-- Privacy boundary, stated before anything is copied. -->
-    <Border DockPanel.Dock="Top" Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}"
+    <Border DockPanel.Dock="Top" Background="{DynamicResource Sunken}" BorderBrush="{DynamicResource Line}"
             BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
-      <TextBlock Text="{Binding PrivacyNotice}" TextWrapping="Wrap" Foreground="{StaticResource InkDim}" />
+      <TextBlock Text="{Binding PrivacyNotice}" TextWrapping="Wrap" Foreground="{DynamicResource InkDim}" />
     </Border>
 
     <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
       <TextBlock Text="{Binding ScopeText}" Style="{StaticResource Label}" />
       <TextBlock Text="{Binding CountsText}" Style="{StaticResource Label}" Margin="0,4,0,0" />
       <CheckBox Content="Include EchoForge's own local summary as reference (off by default)"
-                Foreground="{StaticResource Ink}" Margin="0,8,0,0"
+                Foreground="{DynamicResource Ink}" Margin="0,8,0,0"
                 IsChecked="{Binding IncludeSummaryReference, Mode=TwoWay}" />
     </StackPanel>
 
     <!-- Actions -->
     <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-      <TextBlock Text="{Binding StatusMessage}" Foreground="{StaticResource InkDim}"
+      <TextBlock Text="{Binding StatusMessage}" Foreground="{DynamicResource InkDim}"
                  VerticalAlignment="Center" Margin="0,0,16,0"
                  Visibility="{Binding HasStatus, Converter={StaticResource BoolToVis}}" />
       <Button Content="Close" Margin="0,0,8,0" Click="OnClose" IsCancel="True" />
@@ -40,12 +40,12 @@
       The editable preview is the redaction aid: everything that will be copied is here, and nothing
       is hidden. Editing changes only the clipboard/file payload.
     -->
-    <Border Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="6">
+    <Border Background="{DynamicResource Sunken}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="6">
       <TextBox Text="{Binding PreviewText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                AcceptsReturn="True" AcceptsTab="False" TextWrapping="NoWrap"
                VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                FontFamily="{StaticResource DataFont}" FontSize="12"
-               Background="Transparent" Foreground="{StaticResource Ink}"
+               Background="Transparent" Foreground="{DynamicResource Ink}"
                BorderThickness="0" Padding="10" SpellCheck.IsEnabled="False" />
     </Border>
   </DockPanel>

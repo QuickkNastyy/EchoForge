@@ -1,12 +1,22 @@
 # EchoForge architecture and implementation plan
 
-**Research date:** 2026-08-04  
-**Target:** Windows 11 desktop, one developer, private/local-first use  
+**Research date:** 2026-08-04
+**Implementation update:** 2026-08-08
+**Target:** Windows 11 desktop, one developer, private/local-first use
 **Product boundary:** Record → Transcribe → Summarize → Extract Actions
 
 This plan makes implementation decisions rather than cataloguing every possible tool. A statement marked **Verified** is supported by a linked primary source. A statement marked **Estimate** is an engineering projection that must be measured on the actual computer. A statement marked **Decision** is the recommended EchoForge design.
 
-The exact GPU, CPU, and system RAM are not known. That does not block the architecture. GPU vendor and generation will change CUDA availability and speed; CPU and RAM will change fallback speed and how much of the summarizer can be offloaded. The default configuration is deliberately sized for a CUDA-capable 16 GB GPU, with CPU fallbacks and a hardware benchmark as a release gate.
+The primary target is now known: Windows 11 with an NVIDIA GeForce RTX 5070 Ti reporting about
+16 GB VRAM and usable CUDA. Hardware capability—not the adapter's marketing name—still drives the
+recommendation.
+
+> **Current processing authority.** The research comparisons and phase roadmap below explain how
+> the architecture was chosen. Where an earlier candidate/default statement differs from the
+> implemented model registry, [`MODEL_PROCESSING_AND_COMPARISON.md`](MODEL_PROCESSING_AND_COMPARISON.md)
+> is authoritative. The implemented system has independent model/backend/compute/VAD/language
+> identities, immutable multi-model revisions, sequential comparison, non-destructive Accuracy
+> VAD, isolated NeMo workers, and an evidence-grounded final narrative pass.
 
 ## A. Executive recommendation
 
@@ -18,14 +28,14 @@ The exact GPU, CPU, and system RAM are not known. That does not block the archit
 | Windows audio | **Windows Core Audio/WASAPI shared mode through NAudio 2.3.x**: one loopback client for the selected render endpoint and one capture client for the selected microphone. Pin the exact NuGet patch version. NAudio is MIT-licensed and exposes WASAPI on Windows ([NAudio repository](https://github.com/naudio/NAudio), [NuGet package](https://www.nuget.org/packages/NAudio)). **EchoForge owns its own capture loop over `AudioClient`/`AudioCaptureClient` and does not use the high-level `WasapiCapture.DataAvailable` event as a timestamp source** — see “Packet timestamping” below. |
 | Recording | Immutable **RIFF/WAVE PCM16**, 60-second chunks, separate `system` and `microphone` tracks. Aim for 48 kHz, system stereo and microphone mono; if an endpoint will not provide that shared-mode format, record its native sample rate/channel layout and record that fact in metadata. Normalize only processing derivatives to 16 kHz mono. |
 | Timeline and drift | One monotonic session timeline anchored on the **per-packet `qpcPosition`** reported by `AudioCaptureClient.GetBuffer`. Delivered mix-format frame counts describe the audio written; `devicePosition` is a diagnostic only (measured: it can advance in the endpoint's own clock domain). Missing time during silence or a stall is advanced from the shared QPC session clock. Packet arrival time is never a clock. Preserve source chunks; insert silence and correct drift only in derivatives. |
-| Transcription runtime | A short-lived **Python 3.12 worker** using **faster-whisper/CTranslate2**, CUDA 12 + cuDNN 9 when supported, otherwise CPU INT8. Pin Python wheels, model revisions, and SHA-256 hashes ([faster-whisper](https://github.com/SYSTRAN/faster-whisper)). |
-| Default STT | **Whisper large-v3-turbo**, FP16 on CUDA; retry with `int8_float16` after an out-of-memory error. It is multilingual, has timestamps, and has materially lower compute than full large-v3 ([OpenAI model card](https://huggingface.co/openai/whisper-large-v3-turbo)). |
-| Maximum-accuracy STT | **Whisper large-v3**, FP16 or `int8_float16`, selectable per re-run. It must beat turbo on EchoForge's meeting benchmark before being presented as “more accurate” for this hardware. |
-| Low-resource / CPU STT | **Whisper small.en INT8** for English or **small INT8** for multilingual CPU fallback. **Distil-Whisper distil-large-v3.5** is an optional English GPU profile, not the universal fallback. |
+| Transcription runtime | Short-lived backend-selected workers: Windows Python 3.12 with **faster-whisper 1.2.1/CTranslate2 4.8.1**, or a separately configured WSL2/Linux **NeMo 2.7.3/PyTorch** environment. No inference-time download. |
+| Accuracy-oriented STT default for the 16 GB target | Pinned **Whisper Large V3**, CUDA FP16, Accuracy VAD. A remembered user selection is never overwritten; migrated installs without full V3 retain Turbo as the compatibility choice. |
+| Fast/legacy STT | Pinned **Whisper Large V3 Turbo**, CUDA FP16 or INT8/FP16, and explicit CPU INT8 fallback where allowed. |
+| English alternative STT | Pinned **Parakeet Unified EN 0.6B** and **Canary-Qwen 2.5B** through the isolated NeMo backend. Both remain experimental until local qualification; Canary uses 35-second overlapping windows and no fabricated word times. |
 | Speaker strategy | Transcribe tracks independently. Every microphone segment is **You**. System-track speech is **Remote** in the MVP. Do not attempt remote identity or biometric matching. Add anonymous remote diarization only in Phase 5. |
 | Summarization runtime | A pinned **llama.cpp `llama-server.exe` child process**, bound only to `127.0.0.1` on a random port, one slot, started for a job and stopped afterward. Use schema-constrained output and a 32K operational context. No permanent Ollama service ([llama.cpp server](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)). |
 | Default summary model | **`google/gemma-4-12B-it-qat-q4_0-gguf`**, file `gemma-4-12b-it-qat-q4_0.gguf`, text-only, thinking disabled. The official QAT Q4 model is 6.98 GB, Apache-2.0, 11.95B dense parameters, and supports up to 256K context; EchoForge deliberately uses 32K to preserve memory and quality headroom ([official model card and GGUF](https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf)). |
-| Long-transcript method | Segment-boundary chunking → per-chunk factual extraction → evidence validation → deterministic deduplication → hierarchical final synthesis. Feed the model 8K–12K transcript-token chunks and a final 32K context of validated digests, not an entire long transcript merely because the model advertises 256K. |
+| Long-transcript method | Segment-boundary chunking → factual extraction → evidence validation → hierarchical deduplication/synthesis → **final evidence-grounded narrative JSON pass**. Unsupported narrative blocks are repaired, omitted, or safely rendered from validated fact text. |
 | Process communication | Parent-owned child processes with **newline-delimited JSON (NDJSON) over stdin/stdout**. Large inputs and outputs are immutable/revisioned files referenced by path. Technical diagnostics go to stderr. |
 | Canonical data | Versioned JSON for session metadata, transcript, and summary; append-only JSONL event journal for recovery. A local SQLite database, including FTS where available, is a **rebuildable index**, never the source of truth. |
 | Runtime data | `%LOCALAPPDATA%\EchoForge`. Source stays under `C:\EchoForge`; recordings and models never do. |
@@ -48,7 +58,8 @@ No public benchmark establishes “best meeting-summary model on EchoForge audio
 
 - **Audio:** direct C++/COM gives maximum control but more lifetime and marshaling risk. Use it only for a narrow feature NAudio cannot expose. FFmpeg is appropriate for offline diagnostics/conversion, not as the ownership layer for two synchronized WASAPI clients.
 
-- **STT:** whisper.cpp is the CPU/Vulkan escape hatch if CUDA deployment becomes the dominant problem. NVIDIA Parakeet/Canary are future benchmark candidates, not the Windows MVP default.
+- **STT:** whisper.cpp remains a possible CPU/Vulkan contingency. Parakeet Unified EN and
+  Canary-Qwen are implemented optional NeMo models, isolated from the Windows Whisper environment.
 
 - **Summarization:** Ministral 3 14B is the first challenger; Qwen3 8B is the lower-memory option. Ollama is acceptable for development but not the packaged default because EchoForge should own process lifetime, model path, context, and logs.
 
@@ -60,7 +71,8 @@ No public benchmark establishes “best meeting-summary model on EchoForge audio
 
 - **Older NVIDIA GPU or driver:** CUDA 12/cuDNN 9 may fail despite 16 GB capacity. Keep the same models but use STT CPU fallback and, if supported by the pinned llama.cpp build, Vulkan or partial CPU offload for summary.
 
-- **System RAM:** 32 GB is the practical recommendation for app, model mapping, CPU fallback, and operating-system headroom. With only 16 GB RAM, avoid large-model CPU fallback and minimize GPU spill; choose Qwen3 8B for summary if Gemma cannot remain fully on GPU. More RAM does not compensate for an unsupported GPU, but it makes partial offload tolerable.
+- **System RAM:** 32 GB remains practical headroom. EchoForge does not disguise Windows shared-GPU
+  spill as a valid “fit”; gpt-oss uses only bounded full-GPU context tiers and reports any fallback.
 
 - **CPU:** core count, AVX2/AVX-512 support, memory bandwidth, and thermals determine fallback time. A weak CPU changes the fallback experience, not the canonical formats or process architecture.
 
@@ -80,9 +92,9 @@ The primary path uses permissive components: NAudio, faster-whisper/Whisper, and
 | Will it work across arbitrary Windows meeting applications? | **Yes, when their audio is rendered to the selected endpoint.** Endpoint loopback is application-agnostic, so Zoom, browsers, Teams, Discord, Slack, and others require no integration. Protected content, exclusive-mode drivers, endpoint changes, and unusual vendor drivers remain edge cases. Microsoft documents loopback as capturing the audio engine's system mix ([WASAPI loopback](https://learn.microsoft.com/en-us/windows/win32/coreaudio/loopback-recording)). |
 | Capture all playback audio or individual applications? | **All audio on the selected playback endpoint for the MVP.** It is the most reliable zero-setup behavior. Per-process loopback exists on Windows 10 build 20348 and later but adds native activation and process-tree/routing edge cases ([Microsoft application-loopback sample](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/)). Revisit only after endpoint capture proves inadequate. |
 | Keep sources separate? | **Yes. Always.** Separate tracks provide a deterministic You/Remote distinction, better STT, independent gain/VAD, and recoverability. A synchronized mix is a disposable playback/export derivative. |
-| Is 16 GB VRAM enough? | **Yes for the recommended stages run sequentially**, assuming a supported GPU. Whisper large-v3-turbo and Gemma 4 12B Q4 each fit separately. Do not keep both loaded. A 16 GB capacity figure alone does not guarantee CUDA support or speed. |
+| Is 16 GB VRAM enough? | **Yes for the supported stages run sequentially**, subject to physical smoke tests. Full Whisper Large V3 and Gemma 4 12B Q4 are never resident together. Optional gpt-oss uses 16K/8K full-GPU tiers and must not spill into shared memory unnoticed. |
 | Can STT and summary models remain loaded together? | They might technically fit under a smaller-context/quantized configuration, but **EchoForge must unload one before loading the other**. The workflow is sequential, and reclaimed VRAM is more valuable as context/cache headroom and protection against fragmentation/OOM. |
-| Best defaults? | **STT:** faster-whisper + large-v3-turbo. **Summary:** llama.cpp + official Gemma 4 12B Instruct QAT Q4, thinking off, 32K operational context, hierarchical evidence-backed pipeline. |
+| Defaults on the target? | **STT:** full Whisper Large V3, CUDA FP16, Accuracy VAD when installed; Turbo remains the migrated-install fallback. **Summary:** expose Gemma and gpt-oss when installed and do not declare a winner without an EchoForge corpus. |
 | Are local summaries good enough? | **Yes as reviewable meeting drafts, not as an unquestionable record.** A capable 12B instruct model can produce useful summaries and structured extraction when inputs are chunked, output is schema-constrained, and every important item must cite transcript evidence. Users must be able to open that evidence. |
 | Is a reasoning model needed? | **No.** Meeting processing is mostly retrieval, compression, classification, light coreference, and synthesis. Long hidden reasoning increases latency/context use and can encourage unsupported reconciliation. Use a standard instruct model with thinking disabled. |
 | When use ChatGPT or Claude? | For unusually noisy or multilingual meetings, ambiguous ownership, cross-cutting synthesis across very long material, polished external prose, or high-stakes review where a stronger hosted model is worth the privacy/cost trade. The MVP provides manual copy only. |
@@ -106,16 +118,21 @@ The primary path uses permissive components: NAudio, faster-whisper/Whisper, and
 
 | Candidate | Meeting-relevant characteristics | Hardware / Windows | License | Status |
 |---|---|---|---|---|
-| [faster-whisper](https://github.com/SYSTRAN/faster-whisper) + [Whisper large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo) | Strong multilingual general speech, segment/word timestamps, batching, quantization, integrated Silero VAD. Turbo is 809M parameters versus 1.55B for large-v3. Names/acronyms still need glossary and correction UX; hallucinations around silence require VAD and validation. | Mature Windows Python path; NVIDIA CUDA 12/cuDNN 9 or CPU INT8. Official faster-whisper benchmarks show large-family operation within 8 GB GPUs, though EchoForge must benchmark its exact build. | MIT code/models; transitive binary notices still required. | **Default** |
+| [faster-whisper](https://github.com/SYSTRAN/faster-whisper) + [Whisper large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo) | Strong multilingual general speech, segment/word timestamps, quantization, integrated Silero VAD. Names/acronyms still need glossary and correction UX. | Mature Windows Python path; NVIDIA CUDA or CPU INT8. | MIT code/models; transitive binary notices still required. | **Production fast/legacy option** |
 | faster-whisper + Whisper large-v3 | Usually the best Whisper accuracy profile; multilingual and timestamped, but slower. “Maximum accuracy” must be demonstrated on real meetings rather than assumed. | Fits 16 GB in FP16; `int8_float16` lowers memory. CPU is possible but slow. | MIT | **Selectable accuracy option** |
 | [Distil-Whisper distil-large-v3.5](https://huggingface.co/distil-whisper/distil-large-v3.5) | Current English-only 0.8B distilled model; its owner reports stronger AMI/GigaSpeech results than turbo on its published evaluation, while retaining long-form sequential decoding. It is not suitable as the universal multilingual default. | Good 16 GB GPU fit; current faster-whisper maps the `distil-large-v3.5` alias to the owner-published CT2 conversion. | MIT | **English low-resource option** |
 | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) | Mature quantized Whisper implementation, VAD support, timestamping, broad backends. More native packaging work and a second STT integration if used beside faster-whisper. | Excellent Windows CPU; CUDA/Vulkan options. | MIT | **CPU/Vulkan contingency** |
-| [NVIDIA Parakeet-TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) / [Canary 1B v2](https://huggingface.co/nvidia/canary-1b-v2) | Fast, timestamp-capable, 25 European languages; Canary adds translation. Less language breadth and Windows packaging maturity for this app than Whisper. | NeMo's primary path is Linux/CUDA; Windows deployment is the risk. | CC-BY-4.0 model; attribution required. | **Benchmark later** |
+| NVIDIA Parakeet Unified EN 0.6B / Canary-Qwen 2.5B | Implemented English alternatives. Parakeet preserves native timing when returned; Canary uses approximate short-window ranges. | Isolated WSL2/Linux NeMo 2.7.3 worker; sequential GPU lifecycle. | NVIDIA Open Model License / CC-BY-4.0, respectively | **Experimental, selectable** |
 | [Qwen3-ASR 1.7B](https://github.com/QwenLM/Qwen3-ASR) | New 2026 ASR/aligner stack, 30 languages plus Chinese dialects; could materially improve future accuracy. Timestamp aligner language support and production maturity are still narrower than Whisper. | CUDA-focused Python stack; Windows packaging must be proven. | Apache-2.0 | **One future alternative** |
 
-**Estimate for a one-hour meeting:** on an unidentified modern NVIDIA 16 GB GPU, large-v3-turbo should take roughly **3–15 minutes**, and large-v3 roughly **6–30 minutes**, when conservative VAD skips silence and the two tracks are processed sequentially. CPU `small.en`/`small` INT8 may take roughly **20–90 minutes**. Older GPU architectures, slow CPUs, long overlap, batching, and thermals can move results outside these ranges. Publish only measured numbers from the actual machine.
+**Historical estimate for a one-hour meeting:** large-v3-turbo may take roughly **3–15 minutes** and
+large-v3 roughly **6–30 minutes** on a modern 16 GB NVIDIA GPU, with two tracks processed
+sequentially. Accuracy mode deliberately does not skip silence, so measured EchoForge telemetry—not
+this estimate—is authoritative for the target machine.
 
-When CUDA is absent or fails, the worker restarts the affected job using CTranslate2 CPU INT8 and the small profile after an explicit UI notice. Users may elect to continue a large model on CPU, but EchoForge must warn that it can take hours.
+When a supported Whisper request allows CPU fallback, CTranslate2 retries the **same selected model**
+with CPU INT8 and records requested/actual compute plus a prominent warning. NeMo has no CPU
+fallback. No backend silently substitutes another model.
 
 At the research date, faster-whisper's convenience alias for `large-v3-turbo` resolves to `mobiuslabsgmbh/faster-whisper-large-v3-turbo`, while `distil-large-v3.5` resolves to the Distil-Whisper owner's CT2 repository ([current model map](https://github.com/SYSTRAN/faster-whisper/blob/master/faster_whisper/utils.py)). Production setup must use explicit repository IDs, commits, file hashes, license provenance, and a transcription smoke test rather than trusting a mutable alias.
 
@@ -138,7 +155,7 @@ Track separation is sufficient for the MVP. It solves the highest-value attribut
 | [Ministral 3 14B Instruct Q4_K_M](https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512-GGUF) | 8.24 GB weights; 256K advertised. 32K is likely tight but feasible with cache tuning. | Strong system-prompt/JSON claims and two billion more parameters; may give better prose or extraction, but less memory margin. | Apache-2.0; official GGUF; llama.cpp support must be pinned/tested. | **Required quality challenger** |
 | [Qwen3 8B Q4_K_M](https://huggingface.co/Qwen/Qwen3-8B-GGUF) | About 5 GB weights; 32K native, longer via YaRN. Comfortable 16 GB fit. | Good multilingual structured extraction, but less capacity than the 12B default. Disable thinking. | Apache-2.0; Windows llama.cpp. | **Low-resource summary option** |
 | [Qwen3.5 9B](https://huggingface.co/Qwen/Qwen3.5-9B) | 262K advertised; a suitable 4-bit build should fit comfortably. | Promising current instruct family. At the research date, the owner card's primary serving paths were Transformers/vLLM/SGLang; promote only after an owner-traceable GGUF and pinned llama.cpp compatibility are validated. | Apache-2.0; Windows path needs qualification. | **Watch list** |
-| [gpt-oss-20b](https://openai.com/index/introducing-gpt-oss/) | OpenAI states it can run within 16 GB memory, but a useful context/cache and runtime buffers leave little margin on this exact constraint. | Strong structured/reasoning behavior, but reasoning/Harmony complexity is unnecessary for factual meeting extraction. | Apache-2.0 plus model usage policy; Windows runtime qualification required. | **Not default** |
+| [gpt-oss-20b](https://openai.com/index/introducing-gpt-oss/) | Pinned MXFP4 GGUF with bounded 16K then 8K full-GPU tiers. | Implemented as an optional Harmony/Jinja summary comparison model; private reasoning text is not rendered. Physical target-hardware qualification remains required. | Apache-2.0 | **Experimental, not default** |
 | [Phi-4-reasoning-plus](https://huggingface.co/microsoft/Phi-4-reasoning-plus) / Mistral Small 24B | 14B reasoning at 32K or about 14–15 GB Q4 weights for 24B. | Reasoning model is misaligned; 24B consumes nearly all VRAM before useful context. | MIT / Apache-2.0 depending model. | **Reject for MVP** |
 
 The 256K numbers are model limits, not a promise that a quantized runtime can hold a 256K cache in 16 GB or that summary quality remains strong at that length. EchoForge's 32K operational context plus hierarchy is the dependable design.
@@ -329,12 +346,16 @@ The active `.part.wav` data stream and sidecar frame count are flushed to durabl
 1. Reconcile and validate completed source chunks; never “repair” a completed immutable file in place.
 2. Create a job record with input revision, model revision/hash, options, and output staging path.
 3. Build 16 kHz mono aligned derivatives per track, streaming chunk by chunk. Source-chunk boundaries are not speech boundaries.
-4. Form contiguous **ten-minute transcription windows** within each timeline epoch with a five-second audio overlap, then transcribe microphone and system windows independently with VAD and word timestamps. Rebase timestamps to the session and deduplicate only the known overlap before checkpointing.
+4. Ask the selected model capability for its planner: Whisper 600/5, Parakeet 300/5, or Canary
+   35/5 (maximum 40 seconds). Cover every epoch tail, transcribe tracks independently, and preserve
+   only timestamps the backend actually returned. Accuracy/Off modes never remove audio.
 5. Assign microphone segments to `You` and system segments to `Remote`; merge on the session timeline and compute overlaps.
 6. Validate the canonical transcript, fsync a revisioned temporary output, and atomically activate it.
 7. Unload and terminate the STT worker/model before summary inference.
-8. Start the pinned llama.cpp child with one slot and a 32K context; run per-chunk extraction, validation, deduplication, and final synthesis.
-9. Validate all JSON, IDs, timestamps, null/status invariants, and evidence links. Atomically activate the new summary revision.
+8. Start the selected pinned llama.cpp profile with one slot; run extraction, validation,
+   hierarchical synthesis, then a final evidence-grounded narrative pass.
+9. Validate all JSON, IDs, timestamps, null/status invariants, structured evidence, and narrative
+   support. Atomically activate a new summary tied to the exact transcript revision and digest.
 10. Rebuild/update the SQLite search index. A failed index update does not invalidate canonical JSON.
 
 Only one GPU-heavy job runs at a time. Recording always has priority; MVP processing is queued or suspended while a new recording is active.
@@ -571,20 +592,42 @@ The top level contains:
 
 ~~~json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "session_id": "01J...",
+  "summary_revision": 4,
   "transcript_revision": 2,
+  "transcript_sha256": "<sha256>",
   "model": {
     "runtime": "llama.cpp",
-    "model_id": "google/gemma-4-12B-it-qat-q4_0-gguf",
+    "backend": "gemma-4-12b",
+    "model_id": "gemma-4-12b-it-qat-q4_0",
     "revision": "<pinned-commit>",
-    "file_sha256": "<sha256>",
     "context_tokens": 32768,
-    "thinking": false
+    "thinking": false,
+    "produces_summaries": true,
+    "worker_version": "<version>"
   },
-  "prompt_version": "meeting-summary-v1",
+  "prompt_version": "meeting-summary-v2",
   "title": "Deployment planning",
-  "overview": "...",
+  "overview": "The team agreed to stage the deployment after the checklist is reviewed...",
+  "narrative": {
+    "summary": [{
+      "id": "narrative-summary-001",
+      "text": "The deployment will proceed after checklist review.",
+      "supporting_item_ids": ["decision-001"],
+      "evidence": [{
+        "transcript_revision": 2,
+        "segment_id": "segment-000431",
+        "source_track": "system",
+        "start_seconds": 2538.12,
+        "end_seconds": 2544.9,
+        "display_timestamp": "00:42:18"
+      }]
+    }],
+    "main_topics": [],
+    "important_details": [],
+    "follow_ups": []
+  },
   "key_points": [],
   "decisions": [],
   "action_items": [],
@@ -656,8 +699,14 @@ The practical consequence for Phase 5: optional diarization produces a **new tra
 2. Ask for a concise chunk digest and typed factual candidates. Require evidence IDs from the supplied allow-list and prohibit filling missing owners/dates.
 3. Reject or downgrade candidates whose cited segment does not lexically/semantically support the claim. This validator is conservative; it never invents replacement facts.
 4. Deduplicate candidates only when normalized content and evidence overlap/adjacency support a merge. Keep ambiguous similar commitments separate.
-5. Feed validated digests/candidates—not full raw chunks—to final synthesis within a 32K context. If they still exceed it, recursively summarize groups, preserving evidence sets.
-6. Revalidate the final result against the transcript and status invariants. A final item cannot acquire new evidence or become more certain than its inputs.
+5. Feed validated digests/candidates—not full raw chunks—to hierarchical structured synthesis within
+   the selected context tier. If they still exceed it, recursively combine groups while preserving
+   evidence sets.
+6. Generate the user-facing narrative from the transcript context and validated facts as JSON blocks
+   that cite fact IDs and evidence. Reject unknown IDs and evidence outside each fact's validated set.
+7. Revalidate the final result against the exact transcript revision and status invariants. A final
+   item cannot acquire new evidence or become more certain than its inputs; unsupported prose is
+   omitted rather than invented.
 
 This design avoids silent truncation and keeps a click path from every extracted commitment to the original transcript/audio.
 
@@ -725,7 +774,7 @@ Each phase is a gate. Claude Code should finish its tests and completion criteri
 |---|---|
 | Goal | Produce a revisioned, timestamped canonical transcript locally from preserved chunks, with progress, cancellation, reprocessing, and CPU fallback. |
 | User-visible result | “Transcribe” and “Transcribe again” actions, model/profile selector, progress by track/chunk, cancel, actionable errors, hardware summary, and basic JSON/TXT/SRT/VTT outputs. Microphone text is labeled You and system text Remote. |
-| Technical tasks | Define NDJSON worker protocol and supervisor/Job Object; create app-local Python worker and locked environment; stream-decode/normalize chunks to aligned 16 kHz mono derivatives; form ten-minute per-epoch STT windows with five-second overlap so 60-second source chunks never cut recognition context; implement conservative Silero VAD, faster-whisper word timestamps, language selection/detection, optional glossary/initial prompt, per-window/track checkpoints and overlap dedupe, timeline merge, cross-track overlap IDs, transcript schema validation, atomic revision activation, SRT/VTT cue construction, model registry/download/hash verification, CUDA preflight, adaptive batch sizing, `int8_float16` retry, CPU INT8 fallback, progress and cancellation. Unload/exit at job end. |
+| Technical tasks | Define NDJSON worker protocol and supervisor/Job Object; create isolated backend workers; normalize immutable chunks to aligned 16 kHz mono derivatives; select model-owned windows (Whisper 600/5, Parakeet 300/5, Canary 35/5); implement explicit Accuracy/Balanced/Fast/Off VAD, native timestamps only, glossary capability checks, checkpoints/dedupe, transcript validation, immutable activation, model verification, requested/actual compute, telemetry, cancellation, and process-boundary unload. |
 | Main files/modules | `schemas/{transcript,worker-protocol}.schema.json`; `EchoForge.Contracts/Workers/*` and `Transcripts/*`; `EchoForge.Infrastructure/Workers/{WorkerSupervisor,WindowsJobObject}.cs`; `worker/echoforge_worker/{main,protocol,audio,transcribe,models}.py`; `tests/worker_tests`. |
 | Dependencies | Phases 0–1; **`artifacts/manifest.json` populated and passing `verify-models.ps1` before any production download**; Python 3.12 app-local distribution; uv for development lock; faster-whisper, CTranslate2, PyAV and Silero VAD dependencies; pinned model snapshots referenced by full commit SHA. NVIDIA runtime components only for the CUDA profile. NVIDIA documents Windows pip installation for CUDA 12 cuDNN packages ([cuDNN Windows guide](https://docs.nvidia.com/deeplearning/cudnn/installation/latest/windows.html)); exact redistribution/download terms must be reviewed in Phase 6. |
 | Tests | Protocol framing/unknown version; child crash/cancel/timeout; path with spaces/non-ASCII; golden transcript schema; segment ordering/overlap; You attribution; SRT/VTT validity; silent chunks; invalid WAV; language and technical-acronym samples; CUDA absent; injected CUDA error/OOM; model hash/download interruption; repeated transcription creates a new revision and leaves old/audio data intact. Benchmark turbo, large-v3, and CPU fallback on the same held-out meeting clips. |
@@ -739,8 +788,8 @@ Each phase is a gate. Claude Code should finish its tests and completion criteri
 |---|---|
 | Goal | Generate the best practical local meeting summary on 16 GB VRAM while making unsupported facts difficult to emit and easy to audit. |
 | User-visible result | Local overview, key points, decisions, action items, owners/dates when supported, open questions, risks, blockers, and clickable evidence timestamps. Re-run supports model/prompt revisions and shows explicit/inferred/unknown statuses. |
-| Technical tasks | Pin a compatible llama.cpp Windows release and the official Gemma 4 12B QAT Q4 GGUF/revision/hash; launch ephemeral text-only server with one slot, 32K context, Q8 KV cache initially, thinking off, fixed seed, offline mode; implement transcript tokenization/chunking, per-chunk extraction prompt, simple generation schema, full JSON Schema validation, evidence allow-list/resolution, owner/date invariants, conservative dedupe, recursive synthesis, prompt versioning, checkpointing, one malformed-JSON repair, cancellation, OOM re-chunk/context fallback, and atomic summary revisions. Render inferences separately and default owner/date inference to off. |
-| Main files/modules | `schemas/summary.schema.json`; `EchoForge.Core/Summaries/*`; `worker/echoforge_worker/{summarize,chunking,evidence,models}.py`; `worker/prompts/{extract-v1,synthesize-v1,repair-v1}.txt`; `tests/fixtures/summary-benchmark/*`. |
+| Technical tasks | Pin compatible llama.cpp and exact GGUF revisions; launch an ephemeral text-only server with one slot and bounded full-GPU contexts; implement transcript chunking, fact extraction, JSON Schema validation, evidence allow-list/resolution, owner/date invariants, conservative hierarchical synthesis, an evidence-grounded narrative JSON pass, prompt versioning, checkpoints, one bounded repair, cancellation/OOM fallback, telemetry, and immutable summary revisions tied to exact transcript digests. |
+| Main files/modules | `schemas/summary.schema.json`; `EchoForge.Core/Summaries/*`; `worker/echoforge_worker/{summarize,local_summary,models}.py`; `worker/prompts/{extract-v1,synthesize-v1,narrative-v1,repair-v1}.txt`; summary evaluation contracts/tests. |
 | Dependencies | Phase 2 canonical transcript; pinned llama.cpp binary; Gemma model. Keep tokenizer/template coupled to the model revision. No Ollama service. |
 | Tests | Schema fuzz/property tests; nonexistent evidence IDs; null/status conditionals; relative-date resolution from known meeting date; ambiguous Friday/no known date; model JSON truncation; duplicate actions at chunk overlap; contradictory chunks; very long synthetic transcript; cancelled/failed synthesis; GPU OOM and reduced-context retry; network blocked. Iterate the pipeline and prompts against the **3–5 meeting development corpus**; run the **10–20 meeting release corpus** only as the acceptance gate. Compare Gemma 4 12B Q4 with Ministral 3 14B Instruct Q4_K_M using identical transcript, schema, evidence rules, and token budget. |
 | Completion criteria | Every activated decision/action has at least one resolvable segment ID and generated timestamp; unknown owners/dates remain null/unknown; explicit facts have direct evidence; malformed output never activates; a three-hour transcript completes without silent truncation; the default model fits the actual GPU at 32K or falls back through a documented, non-silent path. The model bake-off is recorded with quality, latency, peak VRAM, and failure rates. |
@@ -865,14 +914,14 @@ Approved stack
   record native rate/layout and normalize derivatives.
 - Canonical versioned JSON + append-only JSONL journal. SQLite is a rebuildable index.
 - Short-lived Python 3.12 worker; NDJSON on stdin/stdout, artifact paths in messages.
-- faster-whisper/CTranslate2: large-v3-turbo CUDA FP16 default, large-v3 accuracy
-  option, small.en/small CPU INT8 fallback.
+- Model registry: full Whisper Large V3 is the accuracy-oriented CUDA FP16 recommendation on the
+  target; Turbo is the fast/legacy option; optional Parakeet and Canary use an isolated NeMo worker.
 - Microphone speaker is always You; system track is Remote in the MVP.
 - Short-lived pinned llama.cpp llama-server, localhost only, one slot, no permanent
   service. Official google/gemma-4-12B-it-qat-q4_0-gguf, 32K operational context,
   Q8 KV initially, text only, thinking disabled. Unload STT before loading the LLM.
-- Hierarchical 8K-12K transcript chunk extraction, evidence validation, conservative
-  deduplication, final synthesis. All decisions/actions cite transcript segment IDs.
+- Hierarchical transcript extraction, evidence validation, conservative structured synthesis, and
+  a final evidence-grounded narrative pass. All factual prose remains traceable.
 - Self-contained win-x64 publish and signed Inno Setup per-user installer.
 - Runtime data belongs under %LOCALAPPDATA%\EchoForge, never in the repository.
 
@@ -1092,7 +1141,7 @@ The consent entry is not legal advice. EchoForge cannot infer which jurisdiction
 
 ### Exact MVP stack
 
-Use **C# 14/.NET 10 WPF**, **NAudio 2.3.x with two shared-mode WASAPI clients**, immutable separate **60-second PCM16 WAV chunks**, QPC/audio-clock timeline metadata, JSON/JSONL canonical storage under `%LOCALAPPDATA%\EchoForge`, and a rebuildable SQLite search index. Run a short-lived **Python 3.12 faster-whisper worker** with **Whisper large-v3-turbo FP16** by default and CPU INT8 fallback. Label microphone segments **You** and system segments **Remote**.
+Use **C# 14/.NET 10 WPF**, **NAudio 2.3.x with two shared-mode WASAPI clients**, immutable separate **60-second PCM16 WAV chunks**, QPC/audio-clock timeline metadata, JSON/JSONL canonical storage under `%LOCALAPPDATA%\EchoForge`, and a rebuildable SQLite search index. Run one short-lived backend-selected ASR worker at a time. On the 16 GB CUDA target recommend full **Whisper Large V3 FP16 + Accuracy VAD** when installed; retain Turbo for migrated/fast use and expose isolated NeMo alternatives. Label microphone segments **You** and system segments **Remote**.
 
 For the best practical local summaries on a 16 GB GPU, use a pinned **llama.cpp** child with the owner-published **`google/gemma-4-12B-it-qat-q4_0-gguf`** (6.98 GB), **32K operational context, one slot, text only, thinking off**, after fully unloading STT. Use evidence-preserving hierarchical extraction/synthesis, not a giant single prompt. Ship a self-contained x64 build with a signed **Inno Setup 7.0.2** per-user installer and a resumable, hash-verified first-run model setup.
 
@@ -1102,7 +1151,7 @@ Build a console program, not a GUI. Select a real headphone render endpoint and 
 
 The **100 ms post-correction alignment gate at ten minutes**, the **50 ms/hour residual drift gate over a continuous 60-minute run**, and the physical durability tests are the production-qualification bar. By explicit product decision these runs are **deferred to a hardening stage** and tracked in `docs/HARDENING_BACKLOG.md` with their thresholds intact. Phase 1 proceeds on the implemented, automated-test-green capture system; it does not proceed on a claim that these gates passed.
 
-### First five implementation tasks
+### Original first five implementation tasks (historical)
 
 1. Scaffold the solution, pinned build settings, minimal contracts, JSON session schema, and unit-test projects.
 2. Implement stable WASAPI render/capture device enumeration and a console selector/format report.
@@ -1130,6 +1179,9 @@ Remote-speaker diarization. It invites extra GPU stacks, alignment logic, identi
 
 Video/OBS, virtual audio cables, live transcription, automatic or hidden recording, per-application capture, biometric voice identification, calendar/meeting bots, task-system writebacks, user/team accounts, cloud storage/sync, mobile apps, plugins, microservices, Docker, permanent local services, advanced visual design, and direct cloud APIs. Manual copy is the only cloud-adjacent MVP function.
 
-### Ready point
+### Current readiness
 
-This plan is ready for Claude Code **now, beginning with Phase 0 only**. It becomes ready for production-GUI implementation when the target playback device/headset passes Phase 0's ten-minute alignment and crash-recovery report. The local-summary model is architecturally selected now; its release status becomes final after Phase 3's real-meeting Gemma-versus-Ministral quality/VRAM gate.
+The application and local processing architecture are implemented and automated-testable. The
+physical capture qualifications in `HARDENING_BACKLOG.md`, optional-model smoke tests, and a held-out
+real-meeting bake-off remain evidence that must be collected; none is treated as passed merely
+because the corresponding code exists.

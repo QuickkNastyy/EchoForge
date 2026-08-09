@@ -116,6 +116,7 @@ public sealed class CapabilityTests : IDisposable
         // eight-gigabyte bake-off candidate is an invitation to download it for no reason.
         Assert.Equal(RuntimeComponentStatus.NotNeeded, benchmark.Status);
         Assert.False(benchmark.NeedsAction);
+        Assert.False(snapshot.Capability(CapabilityLevel.Benchmarking).Available);
 
         // And it never counts towards what the recommended setup still has to fetch.
         Assert.DoesNotContain(
@@ -188,6 +189,40 @@ public sealed class CapabilityTests : IDisposable
         // of comparison model, on the way.
         Assert.NotEqual(ArtifactStatus.Installed, artifacts.Status(artifacts.Find("summary.test.model")!).Status);
         Assert.NotEqual(ArtifactStatus.Installed, artifacts.Status(artifacts.Find("summary.test.bakeoff")!).Status);
+    }
+
+    [Fact]
+    public async Task SpeechArtifactSelectionIsIndependentOfComputeProfile()
+    {
+        GivenAFullManifest();
+        _fixture.Add(
+            "stt.accuracy.model",
+            "accuracy.bin",
+            [10, 11, 12, 13],
+            "speech-model",
+            ProcessingProfile.AsrWhisperLargeV3);
+        RuntimeRegistry runtimes = Build(out ArtifactRegistry artifacts, out _);
+
+        SetupSnapshot before = runtimes.Snapshot(
+            ProcessingProfile.CudaFp16,
+            ProcessingProfile.SummaryCpuQ4,
+            ProcessingProfile.AsrWhisperLargeV3);
+
+        Assert.Equal(ProcessingProfile.CudaFp16, before.TranscriptionProfileId);
+        Assert.Equal(ProcessingProfile.AsrWhisperLargeV3, before.AsrModelProfileId);
+
+        await runtimes.InstallAsync(
+            RuntimeComponentId.SpeechModel,
+            ProcessingProfile.CudaFp16,
+            ProcessingProfile.SummaryCpuQ4,
+            asrModelProfileId: ProcessingProfile.AsrWhisperLargeV3);
+
+        Assert.Equal(
+            ArtifactStatus.Installed,
+            artifacts.Status(artifacts.Find("stt.accuracy.model")!).Status);
+        Assert.NotEqual(
+            ArtifactStatus.Installed,
+            artifacts.Status(artifacts.Find("stt.test.model")!).Status);
     }
 
     [Fact]

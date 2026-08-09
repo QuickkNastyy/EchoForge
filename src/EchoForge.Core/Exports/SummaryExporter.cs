@@ -115,20 +115,159 @@ public static class SummaryExporter
 
         if (!string.IsNullOrWhiteSpace(summary.Overview))
         {
-            Line(markdown, "## Overview");
+            Line(markdown, summary.Narrative is null && summary.Brief is null ? "## Overview" : "## Summary");
             Line(markdown, string.Empty);
             Line(markdown, Escape(summary.Overview));
             Line(markdown, string.Empty);
         }
 
+        // A v3 document exports as the brief a person read: the plan, then the sections the meeting
+        // earned. The structured facts underneath it are the audit view and stay below.
+        if (summary.Brief is { } brief)
+        {
+            Plan(markdown, brief, aliases);
+
+            NarrativeSection(markdown, "Decisions", brief.Decisions, aliases);
+            NarrativeSection(markdown, "Blockers and dependencies", brief.Blockers, aliases);
+            NarrativeSection(markdown, "Important context", brief.ImportantContext, aliases);
+            NarrativeSection(markdown, "Follow-ups", brief.FollowUps, aliases);
+            NarrativeSection(markdown, "Open questions", brief.OpenQuestions, aliases);
+            NarrativeSection(markdown, "Discussed, not now", brief.Backlog, aliases);
+            NarrativeSection(markdown, "Risks", brief.Risks, aliases);
+
+            Line(markdown, "## Supporting details");
+            Line(markdown, string.Empty);
+        }
+        else if (summary.Narrative is { } narrative)
+        {
+            NarrativeSection(markdown, "Main topics", narrative.MainTopics, aliases);
+            NarrativeSection(markdown, "Important details", narrative.ImportantDetails, aliases);
+        }
+
         Section(markdown, "Key points", summary.KeyPoints, aliases);
         Section(markdown, "Decisions", summary.Decisions, aliases);
         Actions(markdown, summary.ActionItems, aliases);
+        if (summary.Brief is null && summary.Narrative is { } grounded)
+        {
+            NarrativeSection(markdown, "Follow-ups", grounded.FollowUps, aliases);
+        }
         Section(markdown, "Open questions", summary.OpenQuestions, aliases);
         Section(markdown, "Risks", summary.Risks, aliases);
         Section(markdown, "Blockers", summary.Blockers, aliases);
+        Section(markdown, "Discussed, not now", summary.FutureIdeas, aliases);
+        Section(markdown, "Important context", summary.ImportantContext, aliases);
+        Section(markdown, "Dependencies", summary.Dependencies, aliases);
 
         return markdown.ToString();
+    }
+
+    /// <summary>
+    /// The action plan, numbered, split by whose work it is.
+    ///
+    /// <para>
+    /// An empty plan is written out as a sentence rather than omitted. "No post-meeting work was
+    /// assigned" is a finding about the meeting; a missing heading is indistinguishable from an
+    /// export that went wrong.
+    /// </para>
+    /// </summary>
+    private static void Plan(StringBuilder markdown, MeetingBrief brief, SpeakerAliases? aliases)
+    {
+        Line(markdown, "## What you need to do");
+        Line(markdown, string.Empty);
+
+        MeetingPlanStep[] yours = [.. brief.YourSteps];
+        MeetingPlanStep[] others = [.. brief.OtherPeoplesSteps];
+
+        if (yours.Length == 0 && others.Length == 0)
+        {
+            Line(markdown, "No post-meeting work was assigned in this meeting.");
+            Line(markdown, string.Empty);
+            return;
+        }
+
+        int number = 0;
+        foreach (MeetingPlanStep step in yours)
+        {
+            Step(markdown, ++number, step, aliases);
+        }
+
+        Line(markdown, string.Empty);
+
+        if (others.Length > 0)
+        {
+            Line(markdown, "## Other people's action items");
+            Line(markdown, string.Empty);
+
+            foreach (MeetingPlanStep step in others)
+            {
+                Step(markdown, ++number, step, aliases);
+            }
+
+            Line(markdown, string.Empty);
+        }
+    }
+
+    private static void Step(StringBuilder markdown, int number, MeetingPlanStep step, SpeakerAliases? aliases)
+    {
+        Line(markdown, number.ToString(CultureInfo.InvariantCulture) + ". **" + Escape(step.Title) + "**"
+            + Citations(step.Evidence, aliases));
+
+        if (!string.IsNullOrWhiteSpace(step.Detail))
+        {
+            Line(markdown, "   " + Escape(step.Detail));
+        }
+
+        List<string> notes = [];
+        if (!string.IsNullOrWhiteSpace(step.Owner))
+        {
+            notes.Add("owner " + Escape(step.Owner));
+        }
+        if (step.DueDate is { } date)
+        {
+            notes.Add("due " + date);
+        }
+        else if (!string.IsNullOrWhiteSpace(step.DueDateText))
+        {
+            notes.Add("due " + Escape(step.DueDateText));
+        }
+        if (!string.IsNullOrWhiteSpace(step.DependsOn))
+        {
+            notes.Add("waits on " + Escape(step.DependsOn));
+        }
+
+        // Said only when the ordering is EchoForge's reasoning rather than the meeting's words.
+        if (step.Support != PlanBasis.Explicit)
+        {
+            notes.Add(step.Support == PlanBasis.GroundedInference
+                ? "follows from what was said"
+                : "suggested order");
+        }
+
+        if (notes.Count > 0)
+        {
+            Line(markdown, "   _" + string.Join(" · ", notes) + "_");
+        }
+    }
+
+    private static void NarrativeSection(
+        StringBuilder markdown,
+        string heading,
+        IReadOnlyList<SummaryNarrativeBlock> blocks,
+        SpeakerAliases? aliases)
+    {
+        if (blocks.Count == 0)
+        {
+            return;
+        }
+
+        Line(markdown, "## " + heading);
+        Line(markdown, string.Empty);
+        foreach (SummaryNarrativeBlock block in blocks)
+        {
+            Line(markdown, "- " + Escape(block.Text) + Citations(block.Evidence, aliases));
+        }
+
+        Line(markdown, string.Empty);
     }
 
     private static void Section(StringBuilder markdown, string heading, IReadOnlyList<SummaryItem> items, SpeakerAliases? aliases)
@@ -275,9 +414,15 @@ public static class SummaryExporter
 
         if (!string.IsNullOrWhiteSpace(summary.Overview))
         {
-            Line(text, "OVERVIEW");
+            Line(text, summary.Narrative is null ? "OVERVIEW" : "SUMMARY");
             Line(text, summary.Overview);
             Line(text, string.Empty);
+        }
+
+        if (summary.Narrative is { } narrative)
+        {
+            TextNarrativeSection(text, "MAIN TOPICS", narrative.MainTopics);
+            TextNarrativeSection(text, "IMPORTANT DETAILS", narrative.ImportantDetails);
         }
 
         TextSection(text, "KEY POINTS", summary.KeyPoints);
@@ -296,12 +441,36 @@ public static class SummaryExporter
             Line(text, string.Empty);
         }
 
+        if (summary.Narrative is { } grounded)
+        {
+            TextNarrativeSection(text, "FOLLOW-UPS", grounded.FollowUps);
+        }
+
         TextSection(text, "OPEN QUESTIONS", summary.OpenQuestions);
         TextSection(text, "RISKS", summary.Risks);
         TextSection(text, "BLOCKERS", summary.Blockers);
 
         _ = aliases;
         return text.ToString();
+    }
+
+    private static void TextNarrativeSection(
+        StringBuilder text,
+        string heading,
+        IReadOnlyList<SummaryNarrativeBlock> blocks)
+    {
+        if (blocks.Count == 0)
+        {
+            return;
+        }
+
+        Line(text, heading);
+        foreach (SummaryNarrativeBlock block in blocks)
+        {
+            Line(text, "  - " + block.Text + PlainCitations(block.Evidence));
+        }
+
+        Line(text, string.Empty);
     }
 
     private static void TextSection(StringBuilder text, string heading, IReadOnlyList<SummaryItem> items)

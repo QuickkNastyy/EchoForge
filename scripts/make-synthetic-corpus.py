@@ -40,6 +40,58 @@ LINES: list[tuple[str, str]] = [
 ]
 
 
+
+# A short recorder test. It exists because of a real failure: EchoForge summarised a call very like
+# this one and produced "Stop the recording" as an action item, plus an observation about the
+# interface getting smaller dressed up as work. Neither is post-meeting work, and a brief that says
+# so is the correct answer. The gold expectation here is an **empty** action plan.
+#
+# Written, not transcribed. No real conversation is committed to this repository.
+SHORT_TEST_LINES: list[tuple[str, str]] = [
+    ("You", "Okay, I've started recording, can you hear me on your side?"),
+    ("Remote", "Yeah, you're coming through clearly."),
+    ("You", "Good. I mainly want to check that both tracks are being captured separately."),
+    ("Remote", "It looks like it. One thing though, the window seems to be getting smaller as it goes."),
+    ("You", "Yeah I noticed that too, the panel compacts itself while the recording runs."),
+    ("Remote", "Not a problem, just something I noticed."),
+    ("You", "Right, I think we've got what we need. Stop the recording."),
+    ("Remote", "Stopping it now."),
+]
+
+# A long work meeting, written to contain every relationship the action plan has to get right: an
+# immediate customer deadline, a missing access blocker, work that depends on that access, a second
+# customer task behind it, speculative future ideas, an explicitly deferred task, an assignment for
+# somebody else, a reversed decision, in-meeting instructions, and money talk that is important
+# context rather than a task.
+WORK_MEETING_LINES: list[tuple[str, str]] = [
+    ("You", "Before anything else - I still don't have access to the Rebuild admin console."),
+    ("Remote", "That's on me. I'll get you added to Rebuild today."),
+    ("You", "I can't check which lead fields the live site is writing until I'm in there, and the JR integration is waiting on exactly that."),
+    ("Remote", "Understood. Nothing downstream moves until you have it."),
+    ("You", "The other thing is the demo. We're showing signup and onboarding to the customer tomorrow morning."),
+    ("Remote", "Then QA signup, login and onboarding before that, please. That's the priority once you're unblocked."),
+    ("You", "Will do. I'll write down anything I find in billing and the workspace switcher rather than fixing it on the spot."),
+    ("Remote", "Good - document it, don't chase it. We can't have the demo slip because of a billing bug nobody asked about."),
+    ("You", "Once the demo is done I'll finish JR's website integration and get them live."),
+    ("Remote", "Yes. And once JR is working, write it up as a pattern so the next site is not a bespoke job."),
+    ("You", "After that I can take over the ICH website lead pipeline."),
+    ("Remote", "Let's share the screen for a second so you can see what I mean."),
+    ("You", "Scroll down a bit - there, that's the field mapping."),
+    ("Remote", "One warning: do not touch the existing Google Ads campaigns. They're producing leads and I don't want them disturbed."),
+    ("You", "Understood, I'll leave the ads alone entirely."),
+    ("You", "What about error monitoring? We still have nothing catching production exceptions."),
+    ("Remote", "Worth doing, but not this week. Put it on the backlog."),
+    ("You", "I was also thinking we could eventually build a proper customer portal, and maybe automate the whole onboarding sequence."),
+    ("Remote", "Interesting, but that's a long way out. Park it."),
+    ("You", "One more - should we move the shared inbox into a real helpdesk?"),
+    ("Remote", "Let's keep Gmail for now and revisit it. I don't want it eating this week."),
+    ("You", "On money - the JR contract is eleven thousand, and ICH is roughly double that if the pipeline works."),
+    ("Remote", "Right, which is why JR going live matters more than any of the other ideas we just talked about."),
+    ("Remote", "Actually, one correction - I said earlier we'd do the ICH pipeline after JR. Let's do the reusable pattern first, then ICH."),
+    ("You", "Fine, pattern first, then ICH."),
+]
+
+
 def segment(index: int, speaker: str, text: str) -> dict:
     microphone = speaker == "You"
     return {
@@ -58,11 +110,12 @@ def segment(index: int, speaker: str, text: str) -> dict:
     }
 
 
-def build_transcript() -> dict:
-    segments = [segment(i, speaker, text) for i, (speaker, text) in enumerate(LINES, start=1)]
+def build_transcript(lines: list[tuple[str, str]] = None, session_id: str = "01JSYNTHETIC001") -> dict:
+    lines = LINES if lines is None else lines
+    segments = [segment(i, speaker, text) for i, (speaker, text) in enumerate(lines, start=1)]
     return {
         "schema_version": 1,
-        "session_id": "01JSYNTHETIC001",
+        "session_id": session_id,
         "transcript_revision": 1,
         "created_at_utc": "2026-08-07T12:00:00+00:00",
         "source_manifest_sha256": "a" * 64,
@@ -82,7 +135,7 @@ def build_transcript() -> dict:
     }
 
 
-def build_corpus(transcript_digest: str) -> dict:
+def build_corpus(transcript_digest: str, short_digest: str, work_digest: str) -> dict:
     return {
         "schema_version": 1,
         "corpus_id": "synthetic-v1",
@@ -213,7 +266,162 @@ def build_corpus(transcript_digest: str) -> dict:
                         }
                     ],
                 },
-            }
+            },
+            {
+                "meeting_id": "synthetic-002-short-test",
+                "meeting_date": "2026-08-07",
+                "transcript_path": "transcripts/synthetic-002-short-test.json",
+                "transcript_sha256": short_digest,
+                "transcript_fidelity": "human_corrected",
+                "synthetic": True,
+                "annotator": "generated by scripts/make-synthetic-corpus.py",
+                "notes": (
+                    "A short recorder test that assigns nothing. The correct brief has an empty "
+                    "action plan and says so; 'stop the recording' is an instruction about the "
+                    "meeting, not work that outlives it."
+                ),
+                "gold": {
+                    "decisions": [],
+                    "action_items": [],
+                    "open_questions": [],
+                    "risks": [],
+                    "blockers": [],
+                    "brief": {
+                        "action_plan": [],
+                        "must_not_appear_in_plan": [
+                            "stop the recording",
+                            "stopping it now",
+                            "can you hear me",
+                            "the window seems to be getting smaller",
+                            "the panel compacts itself",
+                        ],
+                        "expected_context": [
+                            "the interface becoming more compact while recording",
+                        ],
+                        "must_not_invent": ["owner", "due_date"],
+                    },
+                },
+            },
+            {
+                "meeting_id": "synthetic-003-work-meeting",
+                "meeting_date": "2026-08-07",
+                "transcript_path": "transcripts/synthetic-003-work-meeting.json",
+                "transcript_sha256": work_digest,
+                "transcript_fidelity": "human_corrected",
+                "synthetic": True,
+                "annotator": "generated by scripts/make-synthetic-corpus.py",
+                "notes": (
+                    "The shape a real work meeting has: a blocker that gates everything, an "
+                    "immediate customer deadline, dependent work behind it, speculative ideas that "
+                    "belong in the backlog, an explicit deferral, a reversal, in-meeting "
+                    "instructions, and money talk that is context rather than a task."
+                ),
+                "gold": {
+                    "decisions": [
+                        {
+                            "id": "d1",
+                            "text": "Do the ICH lead pipeline after JR goes live",
+                            "evidence": ["segment-000011"],
+                            "aliases": ["ICH pipeline follows JR"],
+                        },
+                        {
+                            "id": "d2",
+                            "text": "Build the reusable integration pattern before taking on ICH",
+                            "evidence": ["segment-000024"],
+                            "aliases": ["Pattern first, then ICH"],
+                            "notes": "Reverses d1. Both must survive.",
+                        },
+                    ],
+                    "action_items": [
+                        {
+                            "id": "a1",
+                            "task": "Get access to the Rebuild admin console",
+                            "evidence": ["segment-000001", "segment-000002"],
+                            "aliases": ["Add Storm to Rebuild", "Grant Rebuild access"],
+                            "owner": "Remote",
+                            "owner_status": "explicit",
+                            "due_date": None,
+                            "due_date_status": "unknown",
+                        },
+                        {
+                            "id": "a2",
+                            "task": "QA signup, login and onboarding before the customer demo",
+                            "evidence": ["segment-000005", "segment-000006"],
+                            "aliases": ["QA the signup flow before tomorrow's demo"],
+                            "owner": None,
+                            "owner_status": "unknown",
+                            "due_date": None,
+                            "due_date_status": "unknown",
+                        },
+                        {
+                            "id": "a3",
+                            "task": "Document the billing and workspace problems found during QA",
+                            "evidence": ["segment-000007", "segment-000008"],
+                            "aliases": ["Write down the billing issues rather than fixing them"],
+                        },
+                        {
+                            "id": "a4",
+                            "task": "Finish JR's website integration and get them live",
+                            "evidence": ["segment-000009"],
+                            "aliases": ["Complete the JR integration"],
+                        },
+                        {
+                            "id": "a5",
+                            "task": "Turn the JR integration into a reusable pattern",
+                            "evidence": ["segment-000010", "segment-000024"],
+                            "aliases": ["Write the integration up as a pattern"],
+                        },
+                        {
+                            "id": "a6",
+                            "task": "Take over the ICH website lead pipeline",
+                            "evidence": ["segment-000011"],
+                            "aliases": ["Take on the ICH lead pipeline"],
+                        },
+                    ],
+                    "blockers": [
+                        {
+                            "id": "b1",
+                            "text": "No access to the Rebuild admin console, which blocks the JR integration",
+                            "evidence": ["segment-000001", "segment-000003"],
+                        }
+                    ],
+                    "open_questions": [],
+                    "risks": [],
+                    "contradictions": [
+                        {
+                            "id": "c1",
+                            "item_ids": ["d1", "d2"],
+                            "notes": "The ICH ordering was stated and then corrected.",
+                        }
+                    ],
+                    "brief": {
+                        "action_plan": ["a1", "a2", "a3", "a4", "a5", "a6"],
+                        "must_be_first": "a1",
+                        "notes_on_order": (
+                            "Access first because the meeting says the lead fields cannot be "
+                            "inspected and the integration cannot be finished without it; QA next "
+                            "because the demo is tomorrow."
+                        ),
+                        "must_not_appear_in_plan": [
+                            "share the screen",
+                            "scroll down",
+                            "change the google ads",
+                            "touch the existing google ads",
+                        ],
+                        "expected_backlog": [
+                            "error monitoring",
+                            "customer portal",
+                            "automate the onboarding sequence",
+                            "move the shared inbox into a helpdesk",
+                        ],
+                        "expected_context": [
+                            "the JR contract is eleven thousand",
+                            "do not disturb the Google Ads campaigns that are producing leads",
+                        ],
+                        "expected_other_people": ["a1"],
+                    },
+                },
+            },
         ],
     }
 
@@ -222,12 +430,25 @@ def main() -> int:
     transcripts = ROOT / "transcripts"
     transcripts.mkdir(parents=True, exist_ok=True)
 
-    payload = json.dumps(build_transcript(), indent=2) + "\n"
-    (transcripts / "synthetic-001.json").write_text(payload, encoding="utf-8")
+    written: dict[str, str] = {}
+    for name, lines, session in (
+        ("synthetic-001", LINES, "01JSYNTHETIC001"),
+        ("synthetic-002-short-test", SHORT_TEST_LINES, "01JSYNTHETIC002"),
+        ("synthetic-003-work-meeting", WORK_MEETING_LINES, "01JSYNTHETIC003"),
+    ):
+        payload = json.dumps(build_transcript(lines, session), indent=2) + "\n"
+        # newline="" so the bytes on disk are the bytes that were hashed. Letting Python
+        # translate the line endings writes a file whose digest is not the one recorded beside
+        # it, and a corpus that cannot verify its own transcript is worth nothing.
+        (transcripts / f"{name}.json").write_text(payload, encoding="utf-8", newline="")
+        written[name] = hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    corpus = json.dumps(build_corpus(digest), indent=2) + "\n"
-    (ROOT / "corpus.json").write_text(corpus, encoding="utf-8")
+    digest = written["synthetic-001"]
+    corpus = json.dumps(
+        build_corpus(digest, written["synthetic-002-short-test"], written["synthetic-003-work-meeting"]),
+        indent=2,
+    ) + "\n"
+    (ROOT / "corpus.json").write_text(corpus, encoding="utf-8", newline="")
 
     print(f"transcript sha256: {digest}")
     print(f"written: {ROOT}")

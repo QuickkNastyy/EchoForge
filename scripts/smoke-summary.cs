@@ -207,6 +207,21 @@ SummaryRevisionRecord record = summaries.Read(SessionId).Selected!;
 Console.WriteLine($"\n  backend: {summary.Model.Backend}  model: {summary.Model.ModelId}");
 Console.WriteLine($"  runtime: {summary.Model.Runtime}  context: {summary.Model.ContextTokens}");
 Console.WriteLine($"  thinking: {summary.Model.Thinking}   produces_summaries: {summary.Model.ProducesSummaries}");
+if (summary.Run is { } run)
+{
+    string peak = run.PeakVramBytes > 0
+        ? $"{run.PeakVramBytes / (1024d * 1024d):F0} MiB ({run.RuntimeTier})"
+        : "unavailable";
+    Console.WriteLine($"  peak VRAM: {peak}   generation: {run.GenerationTokensPerSecond:F1} tokens/s");
+}
+if (summary.Run?.FellBack == true)
+{
+    Console.WriteLine("  fallbacks:");
+    foreach (string step in summary.Run.FallbackSteps)
+    {
+        Console.WriteLine("    - " + step);
+    }
+}
 
 Console.WriteLine($"\n  overview: {Trim(summary.Overview)}");
 foreach (SummaryItem decision in summary.Decisions)
@@ -233,6 +248,16 @@ Check(summary.Model.ProducesSummaries, "the revision is not labelled a placehold
 Check(!summary.Model.Thinking, "reasoning mode is off");
 Check(summary.Model.ContextTokens > 0, $"the context it actually ran at is recorded ({summary.Model.ContextTokens})");
 Check(!string.IsNullOrWhiteSpace(record.Runtime), $"the runtime profile is recorded ({record.Runtime})");
+HashSet<string> internalFactIds =
+[
+    .. summary.AllItems.Select(item => item.Id),
+    .. summary.ActionItems.Select(action => action.Id),
+];
+Check(
+    summary.Narrative is not null &&
+    summary.Narrative.AllBlocks.All(block =>
+        internalFactIds.All(id => !block.Text.Contains(id, StringComparison.OrdinalIgnoreCase))),
+    "internal fact IDs stay behind the evidence UI instead of leaking into prose");
 
 Check(
     SummaryValidator.Validate(summary, transcript).IsValid,

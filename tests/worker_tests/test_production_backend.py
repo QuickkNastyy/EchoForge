@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 import math
 import struct
+import sys
 import wave
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import hello_line, run_worker, start_job_line
@@ -657,6 +659,48 @@ def test_a_backend_without_a_verified_model_directory_refuses(tmp_path) -> None:
 # --------------------------------------------------------------------------------------
 # compute profiles and fallback
 # --------------------------------------------------------------------------------------
+
+
+def test_adapter_enumeration_without_loadable_cuda_libraries_is_not_usable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "ctranslate2",
+        SimpleNamespace(get_cuda_device_count=lambda: 1),
+    )
+    monkeypatch.setattr(compute, "cuda_libraries_loadable", lambda: False)
+
+    assert compute.cuda_device_count() == 0
+
+
+def test_the_private_cuda_directory_stays_active_for_the_worker_lifetime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    private = tmp_path / "nvidia" / "cublas" / "bin"
+    private.mkdir(parents=True)
+    handles: list[object] = []
+
+    class Handle:
+        pass
+
+    def add_dll_directory(path: str) -> Handle:
+        assert Path(path) == private
+        handle = Handle()
+        handles.append(handle)
+        return handle
+
+    monkeypatch.setattr(compute.sys, "platform", "win32")
+    monkeypatch.setattr(compute, "_packaged_cuda_directories", lambda: (private,))
+    monkeypatch.setattr(compute.os, "add_dll_directory", add_dll_directory, raising=False)
+    monkeypatch.setattr(compute, "_CUDA_DLL_DIRECTORY_HANDLES", [])
+    monkeypatch.setattr(compute, "_CUDA_DLL_DIRECTORIES", [])
+    monkeypatch.setattr(compute, "_CUDA_DLL_SEARCH_CONFIGURED", False)
+
+    assert compute.configure_cuda_dll_search() == (str(private),)
+    assert compute.configure_cuda_dll_search() == (str(private),)
+    assert compute._CUDA_DLL_DIRECTORY_HANDLES == handles
+    assert len(handles) == 1
 
 
 def test_a_gpu_profile_falls_back_to_the_cpu_when_no_device_is_visible() -> None:

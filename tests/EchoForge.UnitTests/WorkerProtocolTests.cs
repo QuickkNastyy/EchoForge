@@ -110,6 +110,26 @@ public sealed class WorkerProtocolTests
     }
 
     [Fact]
+    public void AWslReadyProcessIdentityMustBeCompleteAndPidReuseSafe()
+    {
+        WorkerMessageParse complete = WorkerMessageCodec.Parse(Line(
+            "{\"protocol_version\":1,\"type\":\"ready\",\"worker_version\":\"x\"," +
+            "\"supported_protocol_versions\":[1],\"backends\":[\"nemo\"]," +
+            "\"process_id\":321,\"process_start_token\":\"987654\"}"));
+        ReadyMessage ready = Assert.IsType<ReadyMessage>(complete.Message);
+        Assert.Equal(321, ready.ProcessId);
+        Assert.Equal("987654", ready.ProcessStartToken);
+
+        Assert.Equal(WorkerParseFailure.InvalidShape, WorkerMessageCodec.Parse(Line(
+            "{\"protocol_version\":1,\"type\":\"ready\",\"worker_version\":\"x\"," +
+            "\"supported_protocol_versions\":[1],\"backends\":[\"nemo\"],\"process_id\":321}")).Failure);
+        Assert.Equal(WorkerParseFailure.InvalidShape, WorkerMessageCodec.Parse(Line(
+            "{\"protocol_version\":1,\"type\":\"ready\",\"worker_version\":\"x\"," +
+            "\"supported_protocol_versions\":[1],\"backends\":[\"nemo\"]," +
+            "\"process_id\":321,\"process_start_token\":\"not-a-tick\"}")).Failure);
+    }
+
+    [Fact]
     public void ProgressThatClaimsMoreWorkThanExistsIsMalformed()
     {
         WorkerMessageParse parse = WorkerMessageCodec.Parse(Line(

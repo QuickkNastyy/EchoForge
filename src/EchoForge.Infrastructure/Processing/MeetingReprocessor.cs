@@ -28,6 +28,35 @@ public interface IMeetingReprocessor
     Task<ReprocessOutcome> TranscribeAgainAsync(string sessionId, CancellationToken cancellationToken = default);
 
     Task<ReprocessOutcome> SummarizeAgainAsync(string sessionId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The whole of processing, as one action.
+    ///
+    /// <para>
+    /// Recording to brief is one thing a person wants, and it used to be two buttons they had to
+    /// press in the right order, with a model picker beside each. Both halves still run exactly as
+    /// they did — same coordinators, same revisions, same refusals — but the sequence is here
+    /// rather than in the user's head, and the settings it uses were chosen once in Settings
+    /// instead of again for every meeting.
+    /// </para>
+    /// </summary>
+    /// <param name="stage">
+    /// Told what is happening in words a person recognises, so an hour-long meeting does not look
+    /// like a stalled progress bar.
+    /// </param>
+    Task<ReprocessOutcome> ProcessMeetingAsync(
+        string sessionId,
+        IProgress<string>? stage = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Requests cancellation of the currently running heavy work, if any.
+    ///
+    /// The caller token remains the normal ownership boundary. This explicit hook exists because
+    /// worker/coordinator cancellation also needs to wake processes that may be blocked outside a
+    /// managed await; implementations without such a worker can safely do nothing.
+    /// </summary>
+    void Cancel() { }
 }
 
 /// <summary>
@@ -62,6 +91,18 @@ public sealed class LiveReprocessor(Func<IMeetingReprocessor?> current) : IMeeti
             ? reprocessor.SummarizeAgainAsync(sessionId, cancellationToken)
             : Task.FromResult(ReprocessOutcome.Refused(
                 "unavailable", "Summarisation is not set up on this machine yet. Open Setup to install it."));
+
+    public Task<ReprocessOutcome> ProcessMeetingAsync(
+        string sessionId,
+        IProgress<string>? stage = null,
+        CancellationToken cancellationToken = default) =>
+        _current() is { } reprocessor
+            ? reprocessor.ProcessMeetingAsync(sessionId, stage, cancellationToken)
+            : Task.FromResult(ReprocessOutcome.Refused(
+                "unavailable",
+                "Processing is not set up on this machine yet. Settings → Models & runtime can install what it needs."));
+
+    public void Cancel() => _current()?.Cancel();
 }
 
 /// <summary>
@@ -91,6 +132,12 @@ public sealed class CoordinatorReprocessor(
     public bool CanTranscribe => transcription is not null;
 
     public bool CanSummarize => summaries is not null;
+
+    public void Cancel()
+    {
+        transcription?.Cancel();
+        summaries?.Cancel();
+    }
 
     public async Task<ReprocessOutcome> TranscribeAgainAsync(
         string sessionId, CancellationToken cancellationToken = default)
@@ -155,5 +202,54 @@ public sealed class CoordinatorReprocessor(
         summaries.SelectRevision(sessionId, revision);
 
         return new ReprocessOutcome(true, "summarized", result.Message, revision);
+    }
+
+    /// <summary>
+    /// Transcribe, then summarise, and stop at the first thing that refuses.
+    ///
+    /// <para>
+    /// Stopping matters. A summary written from a transcript that failed halfway would be a
+    /// confident document about a fraction of a meeting, and nothing on it would say so. If the
+    /// transcript does not activate, there is nothing to summarise and the run says why.
+    /// </para>
+    /// </summary>
+    public async Task<ReprocessOutcome> ProcessMeetingAsync(
+        string sessionId,
+        IProgress<string>? stage = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+
+        stage?.Report("Preparing audio");
+        ReprocessOutcome transcribed = await TranscribeAgainAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        if (!transcribed.Succeeded)
+        {
+            return transcribed;
+        }
+
+        if (summaries is null)
+        {
+            // A machine that can transcribe but not summarise has still done half the work, and
+            // saying so is better than reporting a failure over a transcript that exists.
+            return new ReprocessOutcome(
+                true,
+                "transcribed",
+                transcribed.Message + " No summary model is installed, so no brief was written.",
+                transcribed.Revision);
+        }
+
+        stage?.Report("Reading the meeting");
+        ReprocessOutcome summarized = await SummarizeAgainAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        if (!summarized.Succeeded)
+        {
+            return new ReprocessOutcome(
+                false,
+                summarized.Code,
+                $"The transcript is ready, but the brief was not written: {summarized.Message}",
+                transcribed.Revision);
+        }
+
+        stage?.Report("Done");
+        return new ReprocessOutcome(true, "processed", summarized.Message, summarized.Revision);
     }
 }

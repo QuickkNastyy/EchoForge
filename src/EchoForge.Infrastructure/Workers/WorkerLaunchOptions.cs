@@ -6,8 +6,20 @@ namespace EchoForge.Infrastructure.Workers;
 /// <summary>How to start a worker and how long to put up with it.</summary>
 public sealed record WorkerLaunchOptions
 {
-    /// <summary>Absolute path to the interpreter. Resolved, never a launcher shim.</summary>
+    /// <summary>Absolute path to the interpreter, or to wsl.exe for an explicitly configured isolated runtime.</summary>
     public required string PythonExecutable { get; init; }
+
+    /// <summary>Arguments placed before Python's fixed <c>-X utf8 -m</c> invocation.</summary>
+    public IReadOnlyList<string> InterpreterArguments { get; init; } = [];
+
+    /// <summary>True only for the configured Linux NeMo worker launched through WSL2.</summary>
+    public bool IsWsl { get; init; }
+
+    /// <summary>Exact WSL distribution used for NeMo; never inferred after launch.</summary>
+    public string? WslDistribution { get; init; }
+
+    /// <summary>Exact Linux interpreter inside that distribution.</summary>
+    public string? WslPythonExecutable { get; init; }
 
     /// <summary>
     /// The directory containing the <c>echoforge_worker</c> package. It becomes both the
@@ -102,6 +114,54 @@ public sealed record WorkerLaunchOptions
         };
     }
 
+    /// <summary>
+    /// Resolve an explicitly configured WSL2 NeMo environment. No distro search and no PATH
+    /// fallback: setup/documentation records the exact Linux interpreter that owns the pinned
+    /// NeMo closure.
+    /// </summary>
+    public static WorkerLaunchOptions? TryForWslNemo(string workerRoot)
+    {
+        const string PythonVariable = "ECHOFORGE_NEMO_WSL_PYTHON";
+        const string DistroVariable = "ECHOFORGE_NEMO_WSL_DISTRIBUTION";
+
+        string? linuxPython = Environment.GetEnvironmentVariable(PythonVariable);
+        if (string.IsNullOrWhiteSpace(linuxPython) || !linuxPython.StartsWith('/'))
+        {
+            return null;
+        }
+
+        string distribution = Environment.GetEnvironmentVariable(DistroVariable) ?? "Ubuntu";
+        if (string.IsNullOrWhiteSpace(distribution) || distribution.Any(char.IsControl))
+        {
+            return null;
+        }
+
+        string wsl = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "wsl.exe");
+        if (!File.Exists(wsl))
+        {
+            return null;
+        }
+
+        List<string> prefix = ["--distribution", distribution, "--exec", "/usr/bin/env"];
+        foreach (string removed in OfflineEnvironment.Removed)
+        {
+            prefix.Add("-u");
+            prefix.Add(removed);
+        }
+        prefix.Add(linuxPython);
+
+        return new WorkerLaunchOptions
+        {
+            PythonExecutable = wsl,
+            WorkerRoot = Path.GetFullPath(workerRoot),
+            InterpreterArguments = prefix,
+            IsWsl = true,
+            WslDistribution = distribution,
+            WslPythonExecutable = linuxPython,
+            Timeout = TimeSpan.FromHours(3),
+        };
+    }
+
     /// <summary>The environment the child runs with, built rather than inherited wholesale.</summary>
     internal void ApplyEnvironment(IDictionary<string, string?> environment)
     {
@@ -114,6 +174,14 @@ public sealed record WorkerLaunchOptions
         // The only place the worker package may be imported from, so it cannot pick up a
         // differently-versioned copy from somewhere else on the machine.
         environment["PYTHONPATH"] = WorkerRoot;
+
+        if (IsWsl)
+        {
+            environment["ECHOFORGE_WSL"] = "1";
+            List<string> forwarded = ["PYTHONPATH/p", "ECHOFORGE_WSL"];
+            forwarded.AddRange(OfflineEnvironment.Variables.Keys);
+            environment["WSLENV"] = string.Join(':', forwarded.Distinct(StringComparer.Ordinal));
+        }
 
         if (AllowTestModes)
         {

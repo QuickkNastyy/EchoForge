@@ -274,6 +274,7 @@ public sealed class FileTranscriptionStore(ISessionStore sessions) : ITranscript
                 ("revision", Invariant(revision)),
                 ("source_sha256", sourceManifestSha256),
                 ("backend", options.Backend),
+                ("model_id", options.ModelId),
                 ("profile", options.Profile ?? string.Empty)));
 
             WriteProjection(paths, Read(sessionId) with
@@ -286,6 +287,7 @@ public sealed class FileTranscriptionStore(ISessionStore sessions) : ITranscript
                     QueuedUtc = now,
                     SourceManifestSha256 = sourceManifestSha256,
                     Backend = options.Backend,
+                    ModelId = options.ModelId,
                     Profile = options.Profile,
                 },
                 Stage = ProcessingStageState.Queued,
@@ -410,7 +412,24 @@ public sealed class FileTranscriptionStore(ISessionStore sessions) : ITranscript
                 DurationSeconds = transcript.DurationSeconds,
                 Backend = transcript.Model.Backend,
                 ModelId = transcript.Model.ModelId,
+                ModelRevision = transcript.Model.Revision,
+                BackendRuntime = transcript.Model.BackendRuntimeVersion ?? transcript.Model.Runtime,
                 Profile = request.Profile,
+                RequestedComputeProfile = transcript.Run?.RequestedComputeProfile
+                    ?? transcript.Model.RequestedComputeType ?? string.Empty,
+                ActualComputeProfile = transcript.Run?.ActualComputeProfile
+                    ?? transcript.Model.ComputeType,
+                VadMode = transcript.Run?.VadMode ?? string.Empty,
+                WindowStrategy = transcript.Run?.WindowStrategy ?? string.Empty,
+                TimestampPrecision = transcript.Run?.TimestampPrecision ?? string.Empty,
+                ProcessingSeconds = transcript.Run?.ProcessingSeconds,
+                TotalProcessingSeconds = transcript.Run?.TotalProcessingSeconds,
+                RealTimeFactor = transcript.Run?.RealTimeFactor,
+                WarningCount = transcript.Run?.WarningCount ?? transcript.Run?.Warnings.Count ?? 0,
+                FallbackCount = transcript.Run?.FallbackCount ?? 0,
+                PeakVramBytes = transcript.Run?.PeakVramBytes,
+                Warnings = [.. (transcript.Run?.Warnings ?? []).Concat(request.Warnings ?? [])
+                    .Distinct(StringComparer.Ordinal)],
                 WorkerVersion = transcript.Model.WorkerVersion,
                 ProtocolVersion = request.ProtocolVersion,
                 RecognizesSpeech = transcript.Model.RecognizesSpeech,
@@ -431,7 +450,21 @@ public sealed class FileTranscriptionStore(ISessionStore sessions) : ITranscript
                 ("duration_seconds", record.DurationSeconds.ToString("R", CultureInfo.InvariantCulture)),
                 ("backend", record.Backend),
                 ("model_id", record.ModelId),
+                ("model_revision", record.ModelRevision),
+                ("backend_runtime", record.BackendRuntime),
                 ("profile", record.Profile ?? string.Empty),
+                ("requested_compute", record.RequestedComputeProfile),
+                ("actual_compute", record.ActualComputeProfile),
+                ("vad_mode", record.VadMode),
+                ("window_strategy", record.WindowStrategy),
+                ("timestamp_precision", record.TimestampPrecision),
+                ("processing_seconds", record.ProcessingSeconds?.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty),
+                ("total_processing_seconds", record.TotalProcessingSeconds?.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty),
+                ("real_time_factor", record.RealTimeFactor?.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty),
+                ("warning_count", Invariant(record.WarningCount)),
+                ("fallback_count", Invariant(record.FallbackCount)),
+                ("peak_vram_bytes", record.PeakVramBytes?.ToString(CultureInfo.InvariantCulture) ?? string.Empty),
+                ("warnings", string.Join("\u001e", record.Warnings)),
                 ("worker_version", record.WorkerVersion),
                 ("protocol_version", Invariant(record.ProtocolVersion)),
                 ("recognizes_speech", record.RecognizesSpeech ? "true" : "false")));
@@ -734,7 +767,31 @@ public sealed class FileTranscriptionStore(ISessionStore sessions) : ITranscript
             DurationSeconds = double.TryParse(entry.Field("duration_seconds"), NumberStyles.Float, CultureInfo.InvariantCulture, out double duration) ? duration : 0,
             Backend = entry.Field("backend") ?? string.Empty,
             ModelId = entry.Field("model_id") ?? string.Empty,
+            ModelRevision = entry.Field("model_revision") ?? string.Empty,
+            BackendRuntime = entry.Field("backend_runtime") ?? string.Empty,
             Profile = string.IsNullOrEmpty(entry.Field("profile")) ? null : entry.Field("profile"),
+            RequestedComputeProfile = entry.Field("requested_compute") ?? string.Empty,
+            ActualComputeProfile = entry.Field("actual_compute") ?? string.Empty,
+            VadMode = entry.Field("vad_mode") ?? string.Empty,
+            WindowStrategy = entry.Field("window_strategy") ?? string.Empty,
+            TimestampPrecision = entry.Field("timestamp_precision") ?? string.Empty,
+            ProcessingSeconds = double.TryParse(entry.Field("processing_seconds"), NumberStyles.Float, CultureInfo.InvariantCulture, out double processingSeconds)
+                ? processingSeconds
+                : null,
+            TotalProcessingSeconds = double.TryParse(entry.Field("total_processing_seconds"), NumberStyles.Float, CultureInfo.InvariantCulture, out double totalProcessingSeconds)
+                ? totalProcessingSeconds
+                : null,
+            RealTimeFactor = double.TryParse(entry.Field("real_time_factor"), NumberStyles.Float, CultureInfo.InvariantCulture, out double realTimeFactor)
+                ? realTimeFactor
+                : null,
+            WarningCount = entry.IntField("warning_count") ?? 0,
+            FallbackCount = entry.IntField("fallback_count") ?? 0,
+            PeakVramBytes = long.TryParse(entry.Field("peak_vram_bytes"), NumberStyles.Integer, CultureInfo.InvariantCulture, out long peakVram)
+                ? peakVram
+                : null,
+            Warnings = string.IsNullOrEmpty(entry.Field("warnings"))
+                ? []
+                : entry.Field("warnings")!.Split('\u001e', StringSplitOptions.RemoveEmptyEntries),
             WorkerVersion = entry.Field("worker_version") ?? string.Empty,
             ProtocolVersion = entry.IntField("protocol_version") ?? 0,
             RecognizesSpeech = entry.Field("recognizes_speech") == "true",

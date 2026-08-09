@@ -19,7 +19,8 @@ public sealed record ActivationRequest(
     string ExpectedSha256,
     TranscriptDocument Transcript,
     int ProtocolVersion,
-    string? Profile);
+    string? Profile,
+    IReadOnlyList<string>? Warnings = null);
 
 /// <summary>
 /// The result of trying to activate. A refusal names its reason and leaves the previously

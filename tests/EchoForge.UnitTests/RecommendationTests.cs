@@ -1,4 +1,5 @@
 using EchoForge.Contracts.Artifacts;
+using EchoForge.Contracts.Inference;
 using EchoForge.Contracts.Setup;
 using EchoForge.Core.Setup;
 
@@ -31,9 +32,21 @@ public sealed class RecommendationTests
         SetupRecommendation recommendation = ProfileRecommender.Recommend(Machines.WithNvidia(16 * Gb));
 
         Assert.Equal(ProcessingProfile.CudaFp16, recommendation.Transcription.ProfileId);
+        Assert.Equal(AsrModelIds.WhisperLargeV3, recommendation.Asr.ModelId);
+        Assert.Equal(ProcessingProfile.AsrWhisperLargeV3, recommendation.Asr.ArtifactProfileId);
         Assert.False(recommendation.Transcription.IsFallback);
         Assert.Equal(ProcessingProfile.SummaryCudaQ4, recommendation.Summarization.ProfileId);
         Assert.False(recommendation.RecordingOnly);
+    }
+
+    [Fact]
+    public void AModestCudaCardKeepsGpuFp16ButUsesTheSmallerTurboArtifact()
+    {
+        SetupRecommendation recommendation = ProfileRecommender.Recommend(Machines.WithNvidia(6 * Gb));
+
+        Assert.Equal(ProcessingProfile.CudaFp16, recommendation.Transcription.ProfileId);
+        Assert.Equal(AsrModelIds.WhisperLargeV3Turbo, recommendation.Asr.ModelId);
+        Assert.Equal(ProcessingProfile.AsrWhisperLargeV3Turbo, recommendation.Asr.ArtifactProfileId);
     }
 
     [Fact]

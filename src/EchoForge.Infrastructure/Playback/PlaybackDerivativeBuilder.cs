@@ -22,11 +22,11 @@ public sealed class PlaybackBuildProgressEventArgs(long completedFrames, long to
 }
 
 /// <summary>The outcome of preparing a session's audio for listening.</summary>
-public sealed record PlaybackBuildResult(PlaybackDerivativeRecord? Record, string? Code, string? Detail)
+public sealed record PlaybackBuildResult(PlaybackDerivativeRecord? Record, PlaybackEnergyEnvelope? Envelope, string? Code, string? Detail)
 {
     public bool Succeeded => Record is not null;
 
-    public static PlaybackBuildResult Fail(string code, string detail) => new(null, code, detail);
+    public static PlaybackBuildResult Fail(string code, string detail) => new(null, null, code, detail);
 }
 
 /// <summary>
@@ -102,14 +102,30 @@ public sealed class PlaybackDerivativeBuilder(ISessionStore sessions)
         {
             if (TryReuse(directory, manifest, options) is { } existing)
             {
-                return new PlaybackBuildResult(existing, null, null);
+                PlaybackEnergyEnvelope? cachedEnvelope = PlaybackEnergyBuilder.TryRead(directory, existing);
+                if (cachedEnvelope is null)
+                {
+                    try
+                    {
+                        string audioPath = Path.Combine(directory, "playback.wav");
+                        cachedEnvelope = await PlaybackEnergyBuilder
+                            .FromWavAsync(audioPath, existing, cancellationToken)
+                            .ConfigureAwait(false);
+                        PlaybackEnergyBuilder.TryWrite(directory, cachedEnvelope);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        // Playback remains valid; only the optional visual cache could not be made.
+                    }
+                }
+
+                return new PlaybackBuildResult(existing, cachedEnvelope, null, null);
             }
 
             Directory.CreateDirectory(directory);
-            return new PlaybackBuildResult(
-                await WriteAsync(request, paths, directory, manifest, options, cancellationToken).ConfigureAwait(false),
-                null,
-                null);
+            (PlaybackDerivativeRecord record, PlaybackEnergyEnvelope envelope) = await WriteAsync(
+                request, paths, directory, manifest, options, cancellationToken).ConfigureAwait(false);
+            return new PlaybackBuildResult(record, envelope, null, null);
         }
         catch (OperationCanceledException)
         {
@@ -133,7 +149,7 @@ public sealed class PlaybackDerivativeBuilder(ISessionStore sessions)
 
     // -- writing ---------------------------------------------------------------------------------
 
-    private async Task<PlaybackDerivativeRecord> WriteAsync(
+    private async Task<(PlaybackDerivativeRecord Record, PlaybackEnergyEnvelope Envelope)> WriteAsync(
         TranscriptionRequest request,
         SessionPaths paths,
         string directory,
@@ -143,6 +159,7 @@ public sealed class PlaybackDerivativeBuilder(ISessionStore sessions)
     {
         int rate = options.SampleRate;
         long total = DerivativeBuilder.FrameAt(request.DurationSeconds, rate);
+        PlaybackEnergyAccumulator energy = new(total);
 
         string audioPath = Path.Combine(directory, "playback.wav");
         string staging = StagingPath(directory);
@@ -174,6 +191,7 @@ public sealed class PlaybackDerivativeBuilder(ISessionStore sessions)
 
                 await you.FillAsync(cursor, left.AsMemory(0, frames), cancellationToken).ConfigureAwait(false);
                 await remote.FillAsync(cursor, right.AsMemory(0, frames), cancellationToken).ConfigureAwait(false);
+                energy.AddSeparate(cursor, left.AsSpan(0, frames), right.AsSpan(0, frames), frames);
 
                 for (int i = 0; i < frames; i++)
                 {
@@ -251,7 +269,9 @@ public sealed class PlaybackDerivativeBuilder(ISessionStore sessions)
         DerivativeBuilder.WriteAtomically(
             RecordPath(directory), JsonSerializer.SerializeToUtf8Bytes(record, PlaybackDerivativeRecord.Json));
 
-        return record;
+        PlaybackEnergyEnvelope envelope = energy.Build(record);
+        PlaybackEnergyBuilder.TryWrite(directory, envelope);
+        return (record, envelope);
     }
 
     // -- reuse -----------------------------------------------------------------------------------

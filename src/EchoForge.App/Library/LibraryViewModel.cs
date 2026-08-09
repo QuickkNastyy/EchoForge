@@ -51,6 +51,8 @@ public sealed record LibraryServices
     public IDeleteConfirmation? Confirmation { get; init; }
 
     public LibraryIndexMaintainer? Index { get; init; }
+
+    public FileMeetingTitleStore? Titles { get; init; }
 }
 
 /// <summary>One row in the meeting list.</summary>
@@ -60,11 +62,32 @@ public sealed record MeetingRow(LibraryEntry Entry)
 
     public string Title => Entry.Title;
 
-    public string When => Entry.CreatedUtc.ToLocalTime().ToString("ddd d MMM yyyy, HH:mm", CultureInfo.CurrentCulture);
+    public string When => (Entry.StartedUtc ?? Entry.CreatedUtc).ToLocalTime()
+        .ToString("ddd, MMM d, yyyy · h:mm tt", CultureInfo.CurrentCulture);
 
-    public string Length => Entry.Duration >= TimeSpan.FromHours(1)
-        ? Entry.Duration.ToString(@"h\:mm\:ss", CultureInfo.InvariantCulture)
-        : Entry.Duration.ToString(@"m\:ss", CultureInfo.InvariantCulture);
+    public string Length => FormatDuration(Entry.Duration);
+
+    public string DurationLabel => Length;
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        int seconds = Math.Max(0, (int)Math.Round(duration.TotalSeconds));
+        if (seconds < 60)
+        {
+            return $"{seconds} sec";
+        }
+
+        int minutes = seconds / 60;
+        int remainder = seconds % 60;
+        if (minutes < 60)
+        {
+            return remainder == 0 ? $"{minutes} min" : $"{minutes} min {remainder} sec";
+        }
+
+        int hours = minutes / 60;
+        int minuteRemainder = minutes % 60;
+        return minuteRemainder == 0 ? $"{hours} hr" : $"{hours} hr {minuteRemainder} min";
+    }
 
     public string Status => Entry.NeedsAttention ? "Needs attention" : Entry.State.ToString();
 
@@ -83,18 +106,8 @@ public sealed record MeetingRow(LibraryEntry Entry)
         }
     }
 
-    /// <summary>"14:02 → 14:47 · 45m 09s", the row's second line.</summary>
-    public string Sub
-    {
-        get
-        {
-            DateTimeOffset start = (Entry.StartedUtc ?? Entry.CreatedUtc).ToLocalTime();
-            DateTimeOffset end = start + Entry.Duration;
-            return string.Create(
-                CultureInfo.CurrentCulture,
-                $"{start:HH:mm} → {end:HH:mm} · {Length}");
-        }
-    }
+    /// <summary>The compact row's second line.</summary>
+    public string Sub => DurationLabel;
 
     /// <summary>A short status word for the row's chip.</summary>
     public string Chip => Entry.NeedsAttention ? "Needs attention"
@@ -167,6 +180,7 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
     private DateTime? _from;
     private DateTime? _to;
     private bool _busy;
+    private bool _initialised;
     private bool _disposed;
 
     public LibraryViewModel(
@@ -196,6 +210,11 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
         SummarizeAgainCommand = new AsyncRelayCommand(
             () => ReprocessAsync(transcribe: false), _gate, () => CanReprocess(transcribe: false), m => Status = m);
 
+        ProcessMeetingCommand = new AsyncRelayCommand(
+            ProcessAsync, _gate, () => CanProcess, m => Status = m);
+
+        CancelProcessingCommand = new RelayCommand(CancelProcessing, () => _processing is not null && !_cancellationRequested);
+
         DeleteMeetingCommand = new AsyncRelayCommand(
             DeleteAsync, _gate, () => _services.Deletion is not null && _selected is not null, m => Status = m);
     }
@@ -221,6 +240,44 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
     public AsyncRelayCommand SummarizeAgainCommand { get; }
 
     public AsyncRelayCommand DeleteMeetingCommand { get; }
+
+    /// <summary>Recording to brief, as one action, using the defaults chosen in Settings.</summary>
+    public AsyncRelayCommand ProcessMeetingCommand { get; }
+
+    public RelayCommand CancelProcessingCommand { get; }
+
+    private CancellationTokenSource? _processing;
+    private bool _cancellationRequested;
+    private string _processingStage = string.Empty;
+
+    public bool CanProcess =>
+        !_busy && _selected is not null && _services.Reprocessor is { CanTranscribe: true };
+
+    public bool IsProcessing => _processing is not null;
+
+    /// <summary>
+    /// What is happening, in words rather than in stage names.
+    ///
+    /// <para>
+    /// An hour of audio takes a long time to read, and a bar that says nothing for twenty minutes
+    /// is indistinguishable from one that has stopped. The internal chunk arithmetic stays where it
+    /// belongs — diagnostics — and this says which of the few things a person cares about is under
+    /// way.
+    /// </para>
+    /// </summary>
+    public string ProcessingStage => _processingStage;
+
+    /// <summary>
+    /// What the primary action on an unprocessed meeting says.
+    ///
+    /// <para>
+    /// One button. It used to be two, in an order the user had to know, and a meeting could sit
+    /// transcribed and unsummarised because nobody realised there was a second step.
+    /// </para>
+    /// </summary>
+    public string ProcessActionLabel => _open?.HasSummary == true
+        ? "Reprocess meeting"
+        : _open?.HasTranscript == true ? "Finish processing" : "Process meeting";
 
     /// <summary>
     /// Loads the miniature conversation shape for one meeting, off the UI thread, and caches it.
@@ -445,6 +502,37 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public void CloseOpenMeeting() => SelectedMeeting = null;
 
+    /// <summary>
+    /// Opens one meeting by ID, loading the index first if this is the first look at it.
+    ///
+    /// <para>
+    /// What the recorder calls when a recording has just finished: the meeting the user made two
+    /// seconds ago is the one they want, and finding it in a list they have not opened yet is work
+    /// they should not have to do.
+    /// </para>
+    /// </summary>
+    public async Task OpenAsync(string sessionId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+
+        if (Meetings.Count == 0)
+        {
+            await InitializeAsync().ConfigureAwait(true);
+        }
+
+        if (Meetings.FirstOrDefault(row => string.Equals(row.SessionId, sessionId, StringComparison.Ordinal))
+            is not { } wanted)
+        {
+            await RefreshMeetingAsync(sessionId).ConfigureAwait(true);
+            wanted = Meetings.FirstOrDefault(row => string.Equals(row.SessionId, sessionId, StringComparison.Ordinal))!;
+        }
+
+        if (wanted is not null)
+        {
+            SelectedMeeting = wanted;
+        }
+    }
+
     public MeetingViewModel? OpenMeeting
     {
         get => _open;
@@ -465,6 +553,7 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
             // The action words follow the newly opened meeting's state, not the last one's.
             Changed(nameof(TranscribeActionLabel));
             Changed(nameof(SummarizeActionLabel));
+            Changed(nameof(ProcessActionLabel));
             Changed(nameof(WindowTitle));
         }
     }
@@ -484,6 +573,16 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>Opens the index, rebuilding it if that is what opening requires.</summary>
     public async Task InitializeAsync()
     {
+        // Once. Navigating to Settings and back used to run this again, and reloading the list
+        // clears it - which drops the ListBox's selection, which closes the meeting the user was
+        // reading. Losing your place every time you glance at Settings is not a refresh, it is a
+        // bug wearing a refresh's clothes. Refresh is a button, and it is deliberately explicit.
+        if (_initialised)
+        {
+            return;
+        }
+
+        _initialised = true;
         IsBusy = true;
 
         try
@@ -606,6 +705,42 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
         ClearSearchCommand.RaiseCanExecuteChanged();
     }
 
+    /// <summary>Renames a recording through a presentation-only overlay, then refreshes its row.</summary>
+    public async Task<bool> RenameMeetingAsync(MeetingRow row, string? title)
+    {
+        ArgumentNullException.ThrowIfNull(row);
+        if (_services.Titles is not { } titles)
+        {
+            Status = "Renaming is not available in this build.";
+            return false;
+        }
+
+        if (!titles.Rename(row.SessionId, title))
+        {
+            Status = "The recording name could not be saved.";
+            return false;
+        }
+
+        bool refreshed = await RefreshMeetingAsync(row.SessionId).ConfigureAwait(true);
+        Status = refreshed ? null : "The recording was renamed, but the list could not refresh yet.";
+        return refreshed;
+    }
+
+    /// <summary>Plain, human-readable selected transcript for the row context menu.</summary>
+    public string? BuildTranscriptText(MeetingRow row)
+    {
+        ArgumentNullException.ThrowIfNull(row);
+        if (!row.HasTranscript)
+        {
+            return null;
+        }
+
+        using MeetingViewModel meeting = new(row.Entry, _transcripts, _summaries, _aliases);
+        return string.Join(
+            Environment.NewLine,
+            meeting.Lines.Select(line => $"{line.Timestamp}  {line.Speaker}: {line.Text}"));
+    }
+
     /// <summary>Opens the meeting a search result came from, and points at the hit.</summary>
     public TranscriptLine? OpenResult(SearchRow row)
     {
@@ -638,7 +773,7 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
     /// way: what the reader sees comes from the revision, never from the database.
     /// </para>
     /// </summary>
-    public async Task RefreshMeetingAsync(string sessionId)
+    public async Task<bool> RefreshMeetingAsync(string sessionId)
     {
         // The transcript may have changed, so its cached shape is no longer trustworthy.
         _shapes.Remove(sessionId);
@@ -655,16 +790,44 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
         LibraryDocument? document = _projection.Build(sessionId);
         if (document is null)
         {
-            return;
+            return false;
         }
 
-        for (int i = 0; i < Meetings.Count; i++)
+        MeetingRow row = new(document.Entry);
+        int existing = IndexOf(sessionId);
+
+        if (existing >= 0)
         {
-            if (string.Equals(Meetings[i].SessionId, sessionId, StringComparison.Ordinal))
+            // Replacing the row removes the object the list had selected, so the selection is
+            // pushed back as null and the meeting closes. That happens at the worst possible
+            // moment - the instant processing finishes and the brief is finally worth reading -
+            // so the selection is restored when the row that was replaced was the open one.
+            bool wasSelected = string.Equals(_selected?.SessionId, sessionId, StringComparison.Ordinal);
+            Meetings[existing] = row;
+
+            // Through the property, not the field: the list has already pushed a null selection
+            // back by this point, which closed the meeting, so this has to genuinely reopen it.
+            // Reopening re-reads the canonical files, which is how the brief that was just written
+            // arrives on screen without anybody pressing anything.
+            if (wasSelected && !ReferenceEquals(_selected, row))
             {
-                Meetings[i] = new MeetingRow(document.Entry);
-                break;
+                SelectedMeeting = row;
             }
+        }
+        else if (Filter.Includes(document.Entry.CreatedUtc))
+        {
+            // A recording this list has never seen. Replacing a row that is not there was the
+            // whole of the old behaviour, which meant a meeting that had just been recorded
+            // silently failed to appear and the user was left looking for it. Inserted in the
+            // list's own order - newest first - rather than appended, so it lands where the day
+            // grouping expects it.
+            int at = 0;
+            while (at < Meetings.Count && Meetings[at].Entry.CreatedUtc > document.Entry.CreatedUtc)
+            {
+                at++;
+            }
+
+            Meetings.Insert(at, row);
         }
 
         if (OpenMeeting is { } open && string.Equals(open.SessionId, sessionId, StringComparison.Ordinal))
@@ -675,7 +838,10 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
             // saying "Transcribe" and start saying "Transcribe again".
             Changed(nameof(TranscribeActionLabel));
             Changed(nameof(SummarizeActionLabel));
+            Changed(nameof(ProcessActionLabel));
         }
+
+        return true;
     }
 
     // -- reprocessing --------------------------------------------------------------------------
@@ -722,6 +888,85 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
         // Whether it worked or not: a failed attempt still leaves a job record worth showing, and
         // a successful one leaves a revision the reader is waiting to see.
         await RefreshMeetingAsync(sessionId).ConfigureAwait(true);
+    }
+
+    /// <summary>
+    /// The normal path: transcribe and summarise in one go, with the defaults from Settings.
+    ///
+    /// <para>
+    /// Cancellation goes through the coordinators, which is what makes it safe — the worker process
+    /// is stopped and the model unloaded by the same code that would have done it on success. A
+    /// cancelled run leaves the previous revisions exactly as they were.
+    /// </para>
+    /// </summary>
+    private async Task ProcessAsync()
+    {
+        if (_selected is not { } row || _services.Reprocessor is not { } reprocessor)
+        {
+            return;
+        }
+
+        string sessionId = row.SessionId;
+
+        using CancellationTokenSource cancellation = new();
+        _processing = cancellation;
+        _cancellationRequested = false;
+        IsBusy = true;
+        _processingStage = "Preparing audio";
+        Changed(nameof(ProcessingStage));
+        Changed(nameof(IsProcessing));
+        Status = null;
+        CancelProcessingCommand.RaiseCanExecuteChanged();
+
+        Progress<string> stage = new(text => Dispatch(() =>
+        {
+            _processingStage = text;
+            Changed(nameof(ProcessingStage));
+        }));
+
+        try
+        {
+            ReprocessOutcome outcome = await reprocessor
+                .ProcessMeetingAsync(sessionId, stage, cancellation.Token)
+                .ConfigureAwait(true);
+
+            Status = outcome.Message;
+        }
+        catch (OperationCanceledException)
+        {
+            Status = "Processing was cancelled. Nothing was changed.";
+        }
+        finally
+        {
+            _processing = null;
+            _cancellationRequested = false;
+            _processingStage = string.Empty;
+            IsBusy = false;
+            Changed(nameof(ProcessingStage));
+            Changed(nameof(IsProcessing));
+            CancelProcessingCommand.RaiseCanExecuteChanged();
+        }
+
+        await RefreshMeetingAsync(sessionId).ConfigureAwait(true);
+    }
+
+    private void CancelProcessing()
+    {
+        if (_processing is null || _cancellationRequested)
+        {
+            return;
+        }
+
+        // Cancel both sides of the boundary. The token tells managed orchestration to stop, while
+        // the reprocessor hook wakes the coordinator/worker that may currently be waiting on native
+        // model work. The old button only did the former, which could leave "Cancel" looking dead.
+        _cancellationRequested = true;
+        _processingStage = "Cancelling…";
+        Changed(nameof(ProcessingStage));
+        CancelProcessingCommand.RaiseCanExecuteChanged();
+
+        _processing.Cancel();
+        _services.Reprocessor?.Cancel();
     }
 
     // -- deletion ------------------------------------------------------------------------------
@@ -799,6 +1044,19 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    private int IndexOf(string sessionId)
+    {
+        for (int i = 0; i < Meetings.Count; i++)
+        {
+            if (string.Equals(Meetings[i].SessionId, sessionId, StringComparison.Ordinal))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
     private void LoadMeetings()
     {
         string? keep = _selected?.SessionId;
@@ -823,6 +1081,8 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
         RebuildCommand.RaiseCanExecuteChanged();
         TranscribeAgainCommand.RaiseCanExecuteChanged();
         SummarizeAgainCommand.RaiseCanExecuteChanged();
+        ProcessMeetingCommand.RaiseCanExecuteChanged();
+        CancelProcessingCommand.RaiseCanExecuteChanged();
         DeleteMeetingCommand.RaiseCanExecuteChanged();
     }
 

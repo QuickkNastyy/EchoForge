@@ -35,7 +35,8 @@ public sealed class LibraryFixture : IDisposable
         Transcripts = new FileTranscriptionStore(Sessions);
         Summaries = new FileSummaryStore(Sessions);
         Aliases = new FileSpeakerAliasStore(Sessions);
-        Projection = new LibraryProjection(Sessions, Transcripts, Summaries, Aliases);
+        Titles = new FileMeetingTitleStore(Sessions);
+        Projection = new LibraryProjection(Sessions, Transcripts, Summaries, Aliases, Titles);
     }
 
     public string Root => _temp.Path;
@@ -47,6 +48,8 @@ public sealed class LibraryFixture : IDisposable
     public FileSummaryStore Summaries { get; }
 
     public FileSpeakerAliasStore Aliases { get; }
+
+    public FileMeetingTitleStore Titles { get; }
 
     public LibraryProjection Projection { get; }
 
@@ -62,7 +65,8 @@ public sealed class LibraryFixture : IDisposable
             sessions,
             new FileTranscriptionStore(sessions),
             new FileSummaryStore(sessions),
-            new FileSpeakerAliasStore(sessions));
+            new FileSpeakerAliasStore(sessions),
+            new FileMeetingTitleStore(sessions));
     }
 
     private DateTimeOffset Tick() => _clock = _clock.AddMinutes(1);
@@ -159,6 +163,53 @@ public sealed class LibraryFixture : IDisposable
             new ActivationRequest(attempt, Convert.ToHexStringLower(SHA256.HashData(payload)), transcript, 1, null),
             Tick());
 
+        Assert.True(outcome.Activated, outcome.Refusal);
+        return transcript;
+    }
+
+    /// <summary>Activates a transcript revision with exact segment timings for presentation tests.</summary>
+    public TranscriptDocument AddTimedTranscript(
+        string sessionId,
+        params (string Track, string Text, double StartSeconds, double EndSeconds)[] lines)
+    {
+        TranscriptionAttempt attempt = Transcripts.BeginAttempt(
+            sessionId, $"job-t{Guid.NewGuid():n}", new string('a', 64), new TranscriptionOptions(), Tick());
+
+        List<TranscriptSegment> segments = [];
+        for (int i = 0; i < lines.Length; i++)
+        {
+            (string track, string text, double startSeconds, double endSeconds) = lines[i];
+            (string speakerId, string speakerName) = TranscriptSpeakers.For(track);
+
+            segments.Add(new TranscriptSegment
+            {
+                Id = $"segment-{i + 1:D6}", Epoch = 1, StartSeconds = startSeconds, EndSeconds = endSeconds,
+                SpeakerId = speakerId, SpeakerName = speakerName, SourceTrack = track, Text = text,
+                Confidence = null, Language = "en", Words = [],
+            });
+        }
+
+        double duration = Math.Max(1, lines.Length == 0 ? 1 : lines.Max(line => line.EndSeconds));
+        TranscriptDocument transcript = new()
+        {
+            SessionId = sessionId, TranscriptRevision = attempt.Revision, CreatedAtUtc = Tick(),
+            SourceManifestSha256 = new string('a', 64), DurationSeconds = duration,
+            Model = new TranscriptModel("echoforge-mock", "mock", "mock-v1", "mock-v1", "none", false, "0.1.0"),
+            Epochs = [new TranscriptEpoch(1, 0, duration)],
+            Speakers =
+            [
+                new TranscriptSpeaker(TranscriptSpeakers.YouId, TranscriptSpeakers.YouName, TranscriptSpeakers.MicrophoneTrack),
+                new TranscriptSpeaker(TranscriptSpeakers.RemoteId, TranscriptSpeakers.RemoteName, TranscriptSpeakers.SystemTrack),
+            ],
+            Languages = [new TranscriptLanguage(TranscriptSpeakers.MicrophoneTrack, "en", null)],
+            Segments = segments,
+        };
+
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(transcript, TranscriptDocument.Json);
+        Directory.CreateDirectory(Path.GetDirectoryName(attempt.StagingPath)!);
+        File.WriteAllBytes(attempt.StagingPath, payload);
+        ActivationOutcome outcome = Transcripts.Activate(
+            new ActivationRequest(attempt, Convert.ToHexStringLower(SHA256.HashData(payload)), transcript, 1, null), Tick());
         Assert.True(outcome.Activated, outcome.Refusal);
         return transcript;
     }

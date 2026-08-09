@@ -1,6 +1,6 @@
 """Per-window results on disk, so an interrupted job resumes instead of starting again.
 
-A ten-minute window of a three-hour meeting is minutes of GPU time. Losing all of it because
+One model window of a long meeting can be minutes of GPU time. Losing all of it because
 window seventeen failed would make every transient fault cost the whole job, so each window's
 result is written the moment it succeeds and read back on the next run.
 

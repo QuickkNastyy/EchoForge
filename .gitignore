@@ -65,3 +65,8 @@ tests/fixtures/private/
 
 # ---- Packaging output ----
 packaging/inno/Output/
+
+# ---- Local agent tooling ----
+# Task-tracking state written by an external AI bridge tool. Machine-local scratch, not a
+# description of the product, and it changes every time a session runs.
+.ai-bridge/

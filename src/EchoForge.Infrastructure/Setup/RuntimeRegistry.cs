@@ -11,7 +11,8 @@ public sealed record SetupSnapshot(
     IReadOnlyList<RuntimeComponentState> Components,
     IReadOnlyList<CapabilityState> Capabilities,
     string TranscriptionProfileId,
-    string SummaryProfileId)
+    string SummaryProfileId,
+    string AsrModelProfileId)
 {
     public RuntimeComponentState Component(RuntimeComponentId id) =>
         Components.First(c => c.Id == id);
@@ -66,14 +67,20 @@ public sealed class RuntimeRegistry
     }
 
     /// <summary>Everything, for the profiles the user has chosen.</summary>
-    public SetupSnapshot Snapshot(string transcriptionProfileId, string summaryProfileId)
+    public SetupSnapshot Snapshot(
+        string transcriptionProfileId,
+        string summaryProfileId,
+        string? asrModelProfileId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(transcriptionProfileId);
         ArgumentException.ThrowIfNullOrWhiteSpace(summaryProfileId);
 
+        string speechProfileId = asrModelProfileId ?? transcriptionProfileId;
+        ArgumentException.ThrowIfNullOrWhiteSpace(speechProfileId);
+
         RuntimeComponentState python = _python.Status();
         RuntimeComponentState environment = _worker.Status();
-        RuntimeComponentState speech = SpeechModelStatus(transcriptionProfileId);
+        RuntimeComponentState speech = SpeechModelStatus(speechProfileId);
         RuntimeComponentState summaryRuntime = SummaryRuntimeStatus(summaryProfileId);
         RuntimeComponentState summaryModel = SummaryModelStatus(summaryProfileId);
         RuntimeComponentState benchmark = BenchmarkStatus();
@@ -100,13 +107,22 @@ public sealed class RuntimeRegistry
                 "Local summaries",
                 [python, environment, summaryRuntime, summaryModel]),
 
-            Capability(
+            new(
                 CapabilityLevel.Benchmarking,
-                "The comparison model",
-                [benchmark]),
+                benchmark.IsReady,
+                benchmark.IsReady
+                    ? "The optional comparison model is ready."
+                    : benchmark.Detail,
+                [],
+                0),
         ];
 
-        return new SetupSnapshot(components, capabilities, transcriptionProfileId, summaryProfileId);
+        return new SetupSnapshot(
+            components,
+            capabilities,
+            transcriptionProfileId,
+            summaryProfileId,
+            speechProfileId);
     }
 
     private static CapabilityState Capability(
@@ -288,10 +304,26 @@ public sealed class RuntimeRegistry
     /// one download becomes a failure of the whole setup.
     /// </para>
     /// </summary>
+    public Task<RuntimeComponentState> InstallAsync(
+        RuntimeComponentId id,
+        string transcriptionProfileId,
+        string summaryProfileId,
+        IProgress<ArtifactProgressEventArgs>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        InstallAsync(
+            id,
+            transcriptionProfileId,
+            summaryProfileId,
+            transcriptionProfileId,
+            progress,
+            cancellationToken);
+
+    /// <summary>Installs a component with ASR model artifacts selected independently of compute.</summary>
     public async Task<RuntimeComponentState> InstallAsync(
         RuntimeComponentId id,
         string transcriptionProfileId,
         string summaryProfileId,
+        string asrModelProfileId,
         IProgress<ArtifactProgressEventArgs>? progress = null,
         CancellationToken cancellationToken = default)
     {
@@ -307,7 +339,8 @@ public sealed class RuntimeRegistry
 
             case RuntimeComponentId.SpeechModel:
                 await EnsureArtifactsAsync(
-                    SpeechArtifacts(transcriptionProfileId), progress, cancellationToken).ConfigureAwait(false);
+                    SpeechArtifacts(asrModelProfileId), progress, cancellationToken)
+                    .ConfigureAwait(false);
                 break;
 
             case RuntimeComponentId.SummaryRuntime or RuntimeComponentId.SummaryModel:
@@ -331,7 +364,7 @@ public sealed class RuntimeRegistry
                 break;
         }
 
-        return Snapshot(transcriptionProfileId, summaryProfileId).Component(id);
+        return Snapshot(transcriptionProfileId, summaryProfileId, asrModelProfileId).Component(id);
     }
 
     /// <summary>
@@ -349,10 +382,26 @@ public sealed class RuntimeRegistry
     /// other than the one named.
     /// </para>
     /// </summary>
+    public Task<RuntimeComponentState> RepairAsync(
+        RuntimeComponentId id,
+        string transcriptionProfileId,
+        string summaryProfileId,
+        IProgress<ArtifactProgressEventArgs>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        RepairAsync(
+            id,
+            transcriptionProfileId,
+            summaryProfileId,
+            transcriptionProfileId,
+            progress,
+            cancellationToken);
+
+    /// <summary>Repairs a component with ASR model artifacts selected independently of compute.</summary>
     public async Task<RuntimeComponentState> RepairAsync(
         RuntimeComponentId id,
         string transcriptionProfileId,
         string summaryProfileId,
+        string asrModelProfileId,
         IProgress<ArtifactProgressEventArgs>? progress = null,
         CancellationToken cancellationToken = default)
     {
@@ -369,7 +418,7 @@ public sealed class RuntimeRegistry
             default:
                 IReadOnlyList<ArtifactEntry> entries = id switch
                 {
-                    RuntimeComponentId.SpeechModel => SpeechArtifacts(transcriptionProfileId),
+                    RuntimeComponentId.SpeechModel => SpeechArtifacts(asrModelProfileId),
                     RuntimeComponentId.SummaryRuntime => ProfileArtifacts(summaryProfileId, a =>
                         a.FileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)),
                     RuntimeComponentId.SummaryModel => ProfileArtifacts(summaryProfileId, a =>
@@ -395,7 +444,7 @@ public sealed class RuntimeRegistry
                 break;
         }
 
-        return Snapshot(transcriptionProfileId, summaryProfileId).Component(id);
+        return Snapshot(transcriptionProfileId, summaryProfileId, asrModelProfileId).Component(id);
     }
 
     private async Task EnsureArtifactsAsync(

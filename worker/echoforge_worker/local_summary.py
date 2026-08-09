@@ -23,6 +23,7 @@ call before it leaves this module, and then validated again, independently, on t
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Final, Sequence
@@ -31,6 +32,8 @@ from .llama_server import LlamaServer, LlamaServerError
 from .model_profiles import GEMMA_4_12B, SummaryModelProfile
 from .protocol import Cancelled, ErrorCode, Stage, WorkerFailure
 from .summarize import (
+    ACTION_CLASSIFICATIONS,
+    BRIEF_SECTIONS,
     EXPLICIT,
     INFERRED,
     UNKNOWN,
@@ -38,20 +41,33 @@ from .summarize import (
     SummaryBackend,
     TranscriptSegment,
     _resolve_due_date,
+    candidate_identities,
     deduplicate,
+    fallback_brief,
 )
 
 PROMPT_DIRECTORY: Final[Path] = Path(__file__).resolve().parent.parent / "prompts"
 
-#: Room reserved for the model's reply. Extraction output is small and highly structured; this is
-#: generous enough that a dense chunk does not hit the ceiling and get reported as truncated.
-REPLY_TOKENS: Final[int] = 2048
+#: Room reserved for one analysis reply.
+#:
+#: Raised from 2048 when the analysis stage grew from six kinds to nine. A dense slice of a real
+#: work meeting - commitments with classifications, dependencies, ideas, context - genuinely fills
+#: more than two thousand tokens, and the failure mode is not graceful: llama.cpp stops mid-object
+#: and the whole slice contributes nothing. Found by running an actual meeting through it.
+#:
+#: This is subtracted from the context before the transcript is fitted, so a larger reply budget
+#: buys smaller chunks rather than a risk of overflow.
+REPLY_TOKENS: Final[int] = 4096
 
 #: Slack for the chat template's own control tokens, which are added after the text this module
 #: measures. Measured against the pinned template it is a couple of dozen tokens; the margin is
 #: wide because being wrong in this direction costs one extra chunk and being wrong in the other
 #: costs a failed generation.
 TEMPLATE_OVERHEAD_TOKENS: Final[int] = 256
+
+#: Room for the final brief. Larger than an extraction reply because this one answer contains the
+#: whole document: prose, an ordered plan with reasons, and every section the meeting earned.
+BRIEF_REPLY_TOKENS: Final[int] = 4096
 
 _KINDS: Final[dict[str, str]] = {
     "key_points": "key_point",
@@ -60,9 +76,16 @@ _KINDS: Final[dict[str, str]] = {
     "open_questions": "question",
     "risks": "risk",
     "blockers": "blocker",
+    "dependencies": "dependency",
+    "future_ideas": "idea",
+    "important_context": "context",
 }
 
 _STATUSES: Final[frozenset[str]] = frozenset({EXPLICIT, INFERRED, UNKNOWN})
+
+_PLAN_AUDIENCES: Final[frozenset[str]] = frozenset({"you", "others", "unassigned"})
+_PLAN_TIMINGS: Final[frozenset[str]] = frozenset({"immediate", "next", "later"})
+_PLAN_BASES: Final[frozenset[str]] = frozenset({"explicit", "grounded_inference", "recommendation"})
 
 
 def load_prompt(name: str) -> str:
@@ -99,11 +122,17 @@ def extraction_schema() -> dict[str, Any]:
     action = {
         "type": "object",
         "additionalProperties": False,
-        "required": ["text", "certainty", "segment_ids", "owner", "owner_status", "due_date_text", "due_date_status"],
+        "required": [
+            "text", "certainty", "segment_ids", "classification",
+            "owner", "owner_status", "due_date_text", "due_date_status",
+        ],
         "properties": {
             "text": {"type": "string", "minLength": 1},
             "certainty": {"type": "string", "enum": [EXPLICIT, INFERRED, UNKNOWN]},
             "segment_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+            # Required, not optional. A model allowed to omit this would omit it exactly when the
+            # judgement is hard, which is the case the field exists for.
+            "classification": {"type": "string", "enum": sorted(ACTION_CLASSIFICATIONS)},
             "owner": {"type": ["string", "null"]},
             "owner_status": {"type": "string", "enum": [EXPLICIT, INFERRED, UNKNOWN]},
             # The model reports the words that were said. It never computes a calendar date:
@@ -124,7 +153,70 @@ def extraction_schema() -> dict[str, Any]:
             "open_questions": {"type": "array", "items": item},
             "risks": {"type": "array", "items": item},
             "blockers": {"type": "array", "items": item},
+            "dependencies": {"type": "array", "items": item},
+            "future_ideas": {"type": "array", "items": item},
+            "important_context": {"type": "array", "items": item},
         },
+    }
+
+
+def brief_schema() -> dict[str, Any]:
+    """The shape of the final brief.
+
+    Plan steps name their prerequisites by index rather than by an ID they would have to invent,
+    because a model that mints its own identifiers mints them inconsistently, and a dependency
+    graph is only useful if every edge resolves.
+    """
+    block = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["text", "fact_ids"],
+        "properties": {
+            # The pinned llama.cpp b10298 JSON-schema converter supports the structural
+            # constraints used here but rejects maxLength/maxItems at request time. REPLY_TOKENS
+            # bounds the raw answer; the allow-list bounds what is retained.
+            "text": {"type": "string", "minLength": 1},
+            "fact_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        },
+    }
+
+    step = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["title", "detail", "audience", "timing", "basis", "fact_ids"],
+        "properties": {
+            "title": {"type": "string", "minLength": 1},
+            "detail": {"type": "string"},
+            "audience": {"type": "string", "enum": sorted(_PLAN_AUDIENCES)},
+            "timing": {"type": "string", "enum": sorted(_PLAN_TIMINGS)},
+            "basis": {"type": "string", "enum": sorted(_PLAN_BASES)},
+            "depends_on": {"type": ["string", "null"]},
+            "depends_on_indexes": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+            # No owner or due date here on purpose. They are taken from the facts the step names,
+            # where they were already held to the owner/date invariants, so the final pass has no
+            # opportunity to improve one on the way past.
+            "fact_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        },
+    }
+
+    properties: dict[str, Any] = {
+        section: {"type": "array", "items": block} for section in BRIEF_SECTIONS
+    }
+    properties["action_plan"] = {"type": "array", "items": step}
+
+    # The summary is the one section that always exists, so the grammar is not allowed to express
+    # an absent one. Found on a real recording: a short test meeting assigned no work, the model
+    # correctly returned an empty plan, and then generalised that permission to the summary and
+    # returned nothing at all - which fell back to quoting facts and read like a list of
+    # disconnected observations. minItems is honoured by the pinned llama.cpp schema converter;
+    # maxItems and maxLength are not, which is why bounds elsewhere are enforced after the fact.
+    properties["summary"] = {"type": "array", "minItems": 1, "items": block}
+
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["summary", "action_plan"],
+        "properties": properties,
     }
 
 
@@ -178,16 +270,18 @@ class LocalSummaryBackend(SummaryBackend):
         extract_prompt: str | None = None,
         synthesize_prompt: str | None = None,
         repair_prompt: str | None = None,
-        prompt_version: str = "meeting-summary-v1",
+        brief_prompt: str | None = None,
+        prompt_version: str = "meeting-brief-v3",
         model_revision: str = "",
         worker_version: str | None = None,
     ) -> None:
         self._profile = profile or GEMMA_4_12B
         self.name = self._profile.backend
         self._server = server
-        self._extract_prompt = extract_prompt if extract_prompt is not None else load_prompt("extract-v1")
-        self._synthesize_prompt = synthesize_prompt if synthesize_prompt is not None else load_prompt("synthesize-v1")
+        self._extract_prompt = extract_prompt if extract_prompt is not None else load_prompt("analyze-v2")
+        self._synthesize_prompt = synthesize_prompt if synthesize_prompt is not None else load_prompt("synthesize-v2")
         self._repair_prompt = repair_prompt if repair_prompt is not None else load_prompt("repair-v1")
+        self._brief_prompt = brief_prompt if brief_prompt is not None else load_prompt("brief-v2")
         self._prompt_version = prompt_version
         self._model_id = self._profile.model_id
         self._model_revision = model_revision
@@ -368,7 +462,15 @@ class LocalSummaryBackend(SummaryBackend):
 
     @staticmethod
     def _fill_action(candidate: Candidate, entry: dict[str, Any], request: Any) -> None:
-        """Owner and date, held to the same invariants the placeholder was held to."""
+        """Owner, date and classification, held to the invariants the placeholder was held to."""
+        classification = entry.get("classification")
+        # An unrecognised classification is treated as a commitment rather than dropped: losing a
+        # real task because a model spelled a label wrong is the worse of the two failures, and the
+        # brief prompt is what decides whether it reaches the plan.
+        candidate.classification = (
+            classification if classification in ACTION_CLASSIFICATIONS else "post_meeting_commitment"
+        )
+
         owner = entry.get("owner")
         owner_status = entry.get("owner_status")
 
@@ -450,8 +552,16 @@ class LocalSummaryBackend(SummaryBackend):
                 max_tokens=REPLY_TOKENS,
                 on_response=self._record,
             )
-        except (LlamaServerError, Cancelled):
+        except Cancelled:
+            raise
+        except LlamaServerError as error:
             # Deterministic merging is a correct answer, just a less clever one.
+            self._note_fallback(
+                "synthesis",
+                "the model could not merge one fact group; deterministic evidence-preserving "
+                f"deduplication ran ({error.detail})",
+                error.out_of_memory,
+            )
             return deduplicate(group)
 
         parsed = _parse(raw)
@@ -459,6 +569,178 @@ class LocalSummaryBackend(SummaryBackend):
             return deduplicate(group)
 
         return _apply_merges(group, parsed.get("merges") or [])
+
+    def brief(
+        self,
+        candidates: Sequence[Candidate],
+        segments: Sequence[TranscriptSegment],
+        request: Any,
+    ) -> dict[str, Any] | None:
+        """Write the meeting brief in one pass over the whole meeting.
+
+        This is the stage the previous pipeline got wrong. It used to be handed a bag of extracted
+        one-line facts and asked to write prose about them, which is why it could describe a
+        meeting but could not tell anybody what to do first: nothing in its input said which piece
+        of work was waiting on which other piece, and it had no way to find out.
+
+        So the input is the meeting. When the transcript fits the context with room for the answer,
+        the model reads **all of it**, alongside the validated facts. When it does not, it reads a
+        consolidated view of every part of the meeting in order - built from those same facts, so
+        the beginning and the end both still reach this stage - and the fact text stands in for the
+        words. Either way the answer is one call, because an ordered plan cannot be produced in
+        batches: a step's position is a claim about every other step.
+
+        Grounding is unchanged. Every block and step names validated facts, and citations are built
+        from those facts' own segments, so reasoning further has not made anything easier to
+        fabricate.
+        """
+        identified = candidate_identities(candidates)
+        if not identified:
+            return None
+
+        by_segment = {segment.id: segment for segment in segments}
+        facts = {identifier: candidate for identifier, candidate in identified}
+        ordered = sorted(identified, key=lambda pair: (pair[1].first_time, pair[1].sort_key()))
+
+        schema = brief_schema()
+        try:
+            payload, notes = self._brief_payload(ordered, segments, by_segment, schema)
+        except Cancelled:
+            raise
+        except LlamaServerError as error:
+            self._note_fallback(
+                "brief",
+                f"the runtime could not budget the meeting brief; validated fact text was retained ({error.detail})",
+                error.out_of_memory,
+            )
+            return fallback_brief(candidates)
+
+        for note in notes:
+            self._note_fallback("brief", note, False)
+
+        try:
+            raw = self._server.generate_json(
+                system=self._brief_prompt,
+                user=json.dumps(payload, ensure_ascii=False),
+                schema=schema,
+                max_tokens=BRIEF_REPLY_TOKENS,
+                on_response=self._record,
+            )
+        except Cancelled:
+            raise
+        except LlamaServerError as error:
+            self._note_fallback(
+                "brief",
+                f"the meeting brief could not be generated; validated fact text was retained ({error.detail})",
+                error.out_of_memory,
+            )
+            return fallback_brief(candidates)
+
+        parsed = _parse(raw)
+        brief = _supported_brief(parsed, facts, request) if parsed is not None else None
+
+        if brief is None or not brief["summary"]:
+            self._note_fallback(
+                "brief",
+                "the meeting brief had no supported summary; validated fact text was retained",
+                False,
+            )
+            return fallback_brief(candidates)
+
+        return brief
+
+    def _brief_payload(
+        self,
+        ordered: Sequence[tuple[str, Candidate]],
+        segments: Sequence[TranscriptSegment],
+        by_segment: dict[str, TranscriptSegment],
+        schema: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Build the largest honest input that fits, and say what it cost when it had to shrink.
+
+        Four rungs, in order of how much they take away:
+
+        1. every fact with its quoted evidence, plus the entire transcript;
+        2. every fact with its quoted evidence, and the transcript replaced by an ordered digest;
+        3. every fact, with evidence reduced to identity and time;
+        4. the facts that carry work - commitments, decisions, blockers, dependencies, questions,
+           ideas - with the descriptive ones dropped last and reported.
+
+        Coverage of the meeting's *time* is preserved at every rung: the digest is built from the
+        whole span, so a two-hour meeting's last twenty minutes cannot fall off the end. What
+        degrades is detail, and each degradation is recorded on the run rather than hidden.
+        """
+        fixed = self._server.token_count(self._brief_prompt + json.dumps(schema))
+        available = self._server.context_tokens - BRIEF_REPLY_TOKENS - fixed - TEMPLATE_OVERHEAD_TOKENS
+        available = max(1024, available)
+
+        speakers = sorted({segment.speaker_name for segment in segments if segment.speaker_name})
+        notes: list[str] = []
+
+        def fits(candidate_payload: dict[str, Any]) -> bool:
+            return self._server.token_count(json.dumps(candidate_payload, ensure_ascii=False)) <= available
+
+        rich = [_brief_fact(identifier, candidate, by_segment, quote=True) for identifier, candidate in ordered]
+        transcript = render_segments(segments)
+
+        whole = {"speakers": speakers, "transcript": transcript, "facts": rich}
+        if fits(whole):
+            return whole, notes
+
+        digest = _thread_digest(ordered)
+        threaded = {"speakers": speakers, "threads": digest, "facts": rich}
+        if fits(threaded):
+            notes.append(
+                "the meeting was too long to give the final pass the whole transcript; it read an "
+                "ordered digest covering the entire meeting instead"
+            )
+            return threaded, notes
+
+        notes.append(
+            "the meeting was too long to give the final pass the whole transcript; it read an "
+            "ordered digest covering the entire meeting instead"
+        )
+
+        slim = [_brief_fact(identifier, candidate, by_segment, quote=False) for identifier, candidate in ordered]
+        threaded = {"speakers": speakers, "threads": digest, "facts": slim}
+        if fits(threaded):
+            notes.append("quoted evidence was omitted from the final pass; every citation was kept")
+            return threaded, notes
+
+        notes.append("quoted evidence was omitted from the final pass; every citation was kept")
+
+        # Last rung. Descriptive facts go before anything that could become work.
+        essential = [
+            _brief_fact(identifier, candidate, by_segment, quote=False)
+            for identifier, candidate in ordered
+            if candidate.kind != "key_point"
+        ]
+        dropped = len(slim) - len(essential)
+        threaded = {"speakers": speakers, "threads": digest, "facts": essential}
+        if fits(threaded) and essential:
+            notes.append(
+                f"{dropped} descriptive points were withheld from the final pass so that every "
+                "commitment, decision and blocker would fit; they remain in the supporting details"
+            )
+            return threaded, notes
+
+        # Nothing else to give up without losing work. The digest is thinned *within* each part
+        # rather than truncated to the first few, because dropping the later parts would drop the
+        # end of the meeting - and a brief that silently stops describing a two-hour call after the
+        # first hour is worse than a shorter one that covers all of it.
+        notes.append(
+            "the meeting exceeded what the final pass could read in one call; each part of the "
+            "ordered digest was shortened, and every part of the meeting is still represented"
+        )
+        return {
+            "speakers": speakers,
+            "threads": [{**part, "about": part["about"][:3]} for part in digest],
+            "facts": essential or slim,
+        }, notes
+
+    def _note_fallback(self, stage: str, detail: str, out_of_memory: bool) -> None:
+        if self.measurements is not None:
+            self.measurements.note_fallback(stage, detail, out_of_memory)
 
     def _record(self, response: dict[str, Any]) -> None:
         if self.measurements is not None:
@@ -471,6 +753,256 @@ class LocalSummaryBackend(SummaryBackend):
     @property
     def repair_prompt(self) -> str:
         return self._repair_prompt
+
+
+def _brief_fact(
+    identifier: str,
+    candidate: Candidate,
+    by_segment: dict[str, TranscriptSegment],
+    quote: bool,
+) -> dict[str, Any]:
+    """One validated fact as the final pass sees it.
+
+    ``quote`` controls whether the cited words travel with the fact. Dropping them is the first
+    thing given up on a long meeting, because the fact's own text already says what happened and
+    the quotation is duplication - but the citation identities always survive, since those are what
+    the reader clicks.
+    """
+    fact: dict[str, Any] = {
+        "fact_id": identifier,
+        "kind": candidate.kind,
+        "text": candidate.text,
+        "at": _display_time(candidate.first_time),
+    }
+
+    if candidate.kind == "action":
+        fact["classification"] = candidate.classification or "post_meeting_commitment"
+        if candidate.owner:
+            fact["owner"] = candidate.owner
+        if candidate.due_date_text:
+            fact["due_date_text"] = candidate.due_date_text
+
+    evidence = []
+    for segment_id in candidate.segment_ids:
+        segment = by_segment.get(segment_id)
+        if segment is None:
+            continue
+        reference: dict[str, Any] = {"segment_id": segment_id, "speaker": segment.speaker_name}
+        if quote:
+            reference["text"] = segment.text
+        evidence.append(reference)
+
+    fact["evidence"] = evidence
+    return fact
+
+
+#: How many parts a long meeting is digested into. Enough that a two-hour call is described in
+#: roughly ten-minute stretches, few enough that the digest itself stays readable.
+DIGEST_PARTS: Final[int] = 12
+
+
+def _thread_digest(ordered: Sequence[tuple[str, Candidate]]) -> list[dict[str, Any]]:
+    """An ordered, whole-meeting view for the final pass when the transcript will not fit.
+
+    Built by splitting the meeting's *time span* into equal parts and describing each from the
+    facts that fall inside it. Splitting by time rather than by fact count is what guarantees
+    complete coverage: a quiet stretch still gets a part, and the last twenty minutes of a long
+    meeting cannot be squeezed out by a talkative first hour.
+    """
+    if not ordered:
+        return []
+
+    times = [candidate.first_time for _, candidate in ordered]
+    start, end = min(times), max(times)
+    span = max(end - start, 1e-6)
+
+    parts: list[list[tuple[str, Candidate]]] = [[] for _ in range(DIGEST_PARTS)]
+    for identifier, candidate in ordered:
+        index = int((candidate.first_time - start) / span * DIGEST_PARTS)
+        parts[min(index, DIGEST_PARTS - 1)].append((identifier, candidate))
+
+    digest: list[dict[str, Any]] = []
+    for index, part in enumerate(parts):
+        if not part:
+            continue
+        digest.append(
+            {
+                "part": index + 1,
+                "from": _display_time(start + span * index / DIGEST_PARTS),
+                "to": _display_time(start + span * (index + 1) / DIGEST_PARTS),
+                "fact_ids": [identifier for identifier, _ in part],
+                "about": [candidate.text for _, candidate in part],
+            }
+        )
+    return digest
+
+
+def _display_time(seconds: float) -> str:
+    total = int(max(0.0, seconds))
+    return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+
+
+def _supported_brief(
+    parsed: dict[str, Any],
+    facts: dict[str, Candidate],
+    request: Any,
+) -> dict[str, Any] | None:
+    """Keep only what the validated facts support, and fill owner and date from those facts.
+
+    The model chose what to say and in what order. It did not choose who owns anything: owner and
+    due date are lifted from the action facts a step names, where they already passed the owner and
+    date invariants. That is why the plan can be useful about sequencing without being able to
+    invent a commitment - the two decisions were never in the same hands.
+    """
+    result: dict[str, Any] = {section: [] for section in BRIEF_SECTIONS}
+    result["action_plan"] = []
+
+    def resolve(raw_ids: Any) -> tuple[list[str], list[str]] | None:
+        if not isinstance(raw_ids, list):
+            return None
+        ids = [value for value in raw_ids if isinstance(value, str)]
+        # Reject the block rather than silently deleting the unsupported half of its basis.
+        if not ids or len(set(ids)) != len(ids) or any(identifier not in facts for identifier in ids):
+            return None
+        segment_ids: list[str] = []
+        for identifier in ids:
+            for segment_id in facts[identifier].segment_ids:
+                if segment_id not in segment_ids:
+                    segment_ids.append(segment_id)
+        return (ids, segment_ids) if segment_ids else None
+
+    for section in BRIEF_SECTIONS:
+        entries = parsed.get(section)
+        if not isinstance(entries, list):
+            continue
+        seen: set[str] = set()
+        for entry in entries[:12]:
+            if not isinstance(entry, dict):
+                continue
+            text = entry.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            resolved = resolve(entry.get("fact_ids"))
+            if resolved is None:
+                continue
+            cleaned = _clean_parenthetical_fact_ids(text.strip(), resolved[0])
+            # The same sentence under two headings is the duplication this brief exists to avoid.
+            if not cleaned or cleaned.casefold() in seen:
+                continue
+            seen.add(cleaned.casefold())
+            result[section].append(
+                {
+                    "text": cleaned,
+                    "supporting_item_ids": resolved[0],
+                    "segment_ids": resolved[1],
+                }
+            )
+
+    steps = parsed.get("action_plan")
+    if isinstance(steps, list):
+        for entry in steps[:20]:
+            if not isinstance(entry, dict):
+                continue
+            title = entry.get("title")
+            if not isinstance(title, str) or not title.strip():
+                continue
+            resolved = resolve(entry.get("fact_ids"))
+            if resolved is None:
+                continue
+
+            named = [facts[identifier] for identifier in resolved[0]]
+            owner, owner_status = _best_owner(named, request)
+            due_text, due, due_status = _best_due_date(named, request)
+
+            audience = entry.get("audience")
+            if audience not in _PLAN_AUDIENCES:
+                audience = "unassigned"
+            # A step addressed to somebody else with nobody named tells the reader this is not
+            # theirs and gives them no one to ask, which is worse than not splitting the list.
+            if audience == "others" and not owner:
+                audience = "unassigned"
+
+            detail = entry.get("detail")
+            result["action_plan"].append(
+                {
+                    "title": _clean_parenthetical_fact_ids(title.strip(), resolved[0]),
+                    "detail": _clean_parenthetical_fact_ids(detail.strip(), resolved[0])
+                    if isinstance(detail, str) and detail.strip()
+                    else "",
+                    "audience": audience,
+                    "timing": entry.get("timing") if entry.get("timing") in _PLAN_TIMINGS else "next",
+                    "basis": entry.get("basis") if entry.get("basis") in _PLAN_BASES else "recommendation",
+                    "depends_on": entry.get("depends_on")
+                    if isinstance(entry.get("depends_on"), str) and entry.get("depends_on").strip()
+                    else None,
+                    "depends_on_indexes": [
+                        value for value in (entry.get("depends_on_indexes") or []) if isinstance(value, int)
+                    ],
+                    "owner": owner,
+                    "owner_status": owner_status,
+                    "due_date": due,
+                    "due_date_text": due_text,
+                    "due_date_status": due_status,
+                    "supporting_item_ids": resolved[0],
+                    "segment_ids": resolved[1],
+                }
+            )
+
+    return result
+
+
+def _best_owner(named: Sequence[Candidate], request: Any) -> tuple[str | None, str]:
+    """The best-supported owner among the facts a step names, or nobody."""
+    best: tuple[str | None, str] = (None, UNKNOWN)
+    for candidate in named:
+        if candidate.owner_status == UNKNOWN or not candidate.owner:
+            continue
+        if candidate.owner_status == INFERRED and not getattr(request, "infer_owners", False):
+            continue
+        if _rank(candidate.owner_status) > _rank(best[1]):
+            best = (candidate.owner, candidate.owner_status)
+    return best
+
+
+def _best_due_date(named: Sequence[Candidate], request: Any) -> tuple[str | None, str | None, str]:
+    """The best-supported date among the facts a step names. EchoForge resolves it, never a model."""
+    best: tuple[str | None, str | None, str] = (None, None, UNKNOWN)
+    for candidate in named:
+        if not candidate.due_date_text:
+            continue
+        if candidate.due_date_status == INFERRED and not getattr(request, "infer_due_dates", False):
+            # Keep the wording, drop the claim, exactly as the extraction stage would have.
+            if best[0] is None:
+                best = (candidate.due_date_text, None, UNKNOWN)
+            continue
+        if _rank(candidate.due_date_status) >= _rank(best[2]):
+            resolved = candidate.due_date
+            if resolved is None:
+                resolved = _resolve_due_date(candidate.due_date_text, getattr(request, "meeting_date", None))
+            best = (
+                candidate.due_date_text,
+                resolved,
+                candidate.due_date_status if resolved is not None else UNKNOWN,
+            )
+    return best
+
+
+def _clean_parenthetical_fact_ids(text: str, fact_ids: Sequence[str]) -> str:
+    """Hide exact internal citation markers without rewriting narrative claims.
+
+    Some models copy an ID into otherwise good prose as ``(decision-001)``. Evidence remains on
+    the block and is available to the UI, so that marker is presentation noise. Only a bracketed
+    group made entirely from the block's own IDs is removed; arbitrary prose is never searched and
+    replaced.
+    """
+    if not fact_ids:
+        return text
+    identifiers = "|".join(re.escape(identifier) for identifier in fact_ids)
+    one = rf"(?:{identifiers})"
+    group = rf"{one}(?:\s*(?:,|;|and)\s*{one})*"
+    cleaned = re.sub(rf"\s*[\(\[]\s*{group}\s*[\)\]]", "", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
+    return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
 
 
 def _apply_merges(group: Sequence[Candidate], merges: Any) -> list[Candidate]:

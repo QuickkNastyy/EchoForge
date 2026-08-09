@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using EchoForge.Contracts.Inference;
 using EchoForge.Contracts.Transcripts;
 
 namespace EchoForge.Contracts.Processing;
@@ -52,8 +53,50 @@ public sealed record TranscriptRevisionRecord
     [JsonPropertyName("model_id")]
     public string ModelId { get; init; } = string.Empty;
 
+    [JsonPropertyName("model_revision")]
+    public string ModelRevision { get; init; } = string.Empty;
+
+    [JsonPropertyName("backend_runtime")]
+    public string BackendRuntime { get; init; } = string.Empty;
+
     [JsonPropertyName("profile")]
     public string? Profile { get; init; }
+
+    [JsonPropertyName("requested_compute_profile")]
+    public string RequestedComputeProfile { get; init; } = string.Empty;
+
+    [JsonPropertyName("actual_compute_profile")]
+    public string ActualComputeProfile { get; init; } = string.Empty;
+
+    [JsonPropertyName("vad_mode")]
+    public string VadMode { get; init; } = string.Empty;
+
+    [JsonPropertyName("window_strategy")]
+    public string WindowStrategy { get; init; } = string.Empty;
+
+    [JsonPropertyName("timestamp_precision")]
+    public string TimestampPrecision { get; init; } = string.Empty;
+
+    [JsonPropertyName("processing_seconds")]
+    public double? ProcessingSeconds { get; init; }
+
+    [JsonPropertyName("total_processing_seconds")]
+    public double? TotalProcessingSeconds { get; init; }
+
+    [JsonPropertyName("real_time_factor")]
+    public double? RealTimeFactor { get; init; }
+
+    [JsonPropertyName("warning_count")]
+    public int WarningCount { get; init; }
+
+    [JsonPropertyName("fallback_count")]
+    public int FallbackCount { get; init; }
+
+    [JsonPropertyName("peak_vram_bytes")]
+    public long? PeakVramBytes { get; init; }
+
+    [JsonPropertyName("warnings")]
+    public IReadOnlyList<string> Warnings { get; init; } = [];
 
     [JsonPropertyName("worker_version")]
     public string WorkerVersion { get; init; } = string.Empty;
@@ -116,6 +159,9 @@ public sealed record TranscriptionJobRecord
 
     [JsonPropertyName("backend")]
     public string? Backend { get; init; }
+
+    [JsonPropertyName("model_id")]
+    public string? ModelId { get; init; }
 
     [JsonPropertyName("profile")]
     public string? Profile { get; init; }
@@ -180,6 +226,12 @@ public sealed record TranscriptionOptions
     /// </summary>
     public string Backend { get; init; } = "mock";
 
+    /// <summary>
+    /// Stable model identity, independent of backend and compute. Empty is accepted only for old
+    /// callers and is resolved from <see cref="Backend"/> by the coordinator.
+    /// </summary>
+    public string ModelId { get; init; } = string.Empty;
+
     public string? Profile { get; init; }
 
     public string? Language { get; init; }
@@ -198,13 +250,27 @@ public sealed record TranscriptionOptions
     /// </summary>
     public string ComputeProfile { get; init; } = "cpu-int8";
 
+    /// <summary>
+    /// CPU fallback is opt-in at the request level. Whether the backend actually supports it is
+    /// still checked against the model registry, and any fallback is persisted and surfaced.
+    /// </summary>
+    public bool AllowCpuFallback { get; init; } = true;
+
     /// <summary>Words the recogniser would otherwise mis-hear: names, jargon, acronyms.</summary>
     public IReadOnlyList<string> Glossary { get; init; } = [];
 
     public string? InitialPrompt { get; init; }
 
-    /// <summary>Conservative voice-activity filtering, from the model inside the pinned wheel.</summary>
+    /// <summary>The named, persisted VAD strategy. Accuracy is non-destructive for Whisper.</summary>
+    public VadMode VadMode { get; init; } = VadMode.Balanced;
+
+    /// <summary>
+    /// Backwards-compatible read surface for requests written before named VAD modes. A false
+    /// value always wins and means Off; new code should set <see cref="VadMode"/>.
+    /// </summary>
     public bool VadFilter { get; init; } = true;
+
+    public VadMode EffectiveVadMode => VadFilter ? VadMode : VadMode.Off;
 
     public bool WordTimestamps { get; init; } = true;
 

@@ -26,6 +26,10 @@ public sealed class LiveReprocessorTests
 
         public string? Summarized { get; private set; }
 
+        public bool Cancelled { get; private set; }
+
+        public void Cancel() => Cancelled = true;
+
         public Task<ReprocessOutcome> TranscribeAgainAsync(string sessionId, CancellationToken cancellationToken = default)
         {
             Transcribed = sessionId;
@@ -37,7 +41,13 @@ public sealed class LiveReprocessorTests
             Summarized = sessionId;
             return Task.FromResult(new ReprocessOutcome(true, "summarized", "done", 1));
         }
-    }
+
+    public Task<ReprocessOutcome> ProcessMeetingAsync(
+        string sessionId,
+        IProgress<string>? stage = null,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new ReprocessOutcome(true, "processed", "processed", 1));
+}
 
     [Fact]
     public async Task WithNoRuntimeItRefusesInsteadOfFailing()
@@ -79,6 +89,17 @@ public sealed class LiveReprocessorTests
 
         Assert.True(outcome.Succeeded);
         Assert.Equal("01JLATE", live.Transcribed);
+    }
+
+    [Fact]
+    public void CancelReachesTheCurrentlyAttachedReprocessor()
+    {
+        SpyReprocessor live = new();
+        LiveReprocessor reprocessor = new(() => live);
+
+        reprocessor.Cancel();
+
+        Assert.True(live.Cancelled);
     }
 
     [Fact]

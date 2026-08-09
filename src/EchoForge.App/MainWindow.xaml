@@ -3,661 +3,191 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:app="clr-namespace:EchoForge.App"
         xmlns:rec="clr-namespace:EchoForge.App.Recording"
+        xmlns:lib="clr-namespace:EchoForge.App.Library"
+        xmlns:setup="clr-namespace:EchoForge.App.Setup"
         Style="{StaticResource AppWindow}"
         Title="{Binding WindowTitle, FallbackValue=EchoForge}"
-        Height="820" Width="1120" MinHeight="620" MinWidth="820"
+        Icon="pack://application:,,,/EchoForge.App;component/Assets/echoforge-mark.png"
+        Height="640" Width="980" MinHeight="640" MinWidth="980"
         WindowStyle="None" AllowsTransparency="False"
         app:AppWindow.Accent="{Binding IndicatorVisible, Converter={StaticResource RecordingAccent}}"
         WindowStartupLocation="CenterScreen">
 
+  <!--
+    One window, three destinations, one rail.
+
+    EchoForge used to be three top-level windows — the recorder, all recordings, and setup — which
+    is how the same Transcribe and Generate summary controls came to exist in two places at once.
+    Every page has one owner: Record records, Library is where a meeting is processed and read, and
+    Settings owns every choice about models and runtimes.
+
+    The window icon's pack URI is assembly-qualified on purpose: an unqualified one resolves
+    against the entry assembly, which is this application when it runs and the test host when a
+    render test builds the same window — where it throws rather than falling back.
+
+    The rail is labelled — icon and word — and it is the only navigation in the application.
+    Destinations sit above the divider; utilities below it. Settings expands in place, accordion
+    style, exposing its sections (and the theme toggle) as sub-items instead of a second sidebar.
+  -->
   <Grid>
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width="Auto" />
       <ColumnDefinition Width="*" />
     </Grid.ColumnDefinitions>
 
-    <!--
-      Primary navigation rail. Record is the current destination; All recordings and Setup reuse the
-      existing single library and setup windows (bring-to-front, never a duplicate). Icon colour
-      follows each button's Foreground so hover/focus/active all read correctly, and every icon-only
-      button carries a tooltip and an accessibility name for keyboard and screen-reader use.
-    -->
-    <Border Grid.Column="0" Width="58" Background="{StaticResource Sunken}"
-            BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
-      <DockPanel Margin="0,10,0,10" LastChildFill="False">
-        <Button DockPanel.Dock="Top" HorizontalAlignment="Center" Style="{StaticResource RailButton}"
-                Tag="active" ToolTip="Record" AutomationProperties.Name="Record"
-                IsHitTestVisible="False">
-          <Path Style="{StaticResource RailIcon}" Data="{StaticResource IconRecord}" />
+    <Border Grid.Column="0" Width="190" Background="{DynamicResource Panel}"
+            BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0">
+      <DockPanel Margin="10,12,10,12" LastChildFill="False">
+
+<!--
+          The mark. Painted from a raster authored at twice this size and sharpened for it: the
+          logo is a bevelled ring around a waveform, and the detail it is made of averages into a
+          green blob if WPF is asked to resample the full-resolution artwork down to 32 pixels.
+        -->
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="9,0,0,14">
+<!--
+            Inside a Viewbox, so the strokes scale with the geometry. A Path's StrokeThickness is
+            in device units and Stretch does not scale it, so the mark drawn directly at 30px wore
+            an eleven-pixel stroke and filled itself in as a solid disc.
+          -->
+          <Viewbox Width="30" Height="30" VerticalAlignment="Center" Stretch="Uniform"
+                   AutomationProperties.Name="EchoForge">
+            <Canvas Width="100" Height="100">
+              <Path Data="{StaticResource MarkRing}"
+                    Stroke="{DynamicResource Focus}" StrokeThickness="10"
+                    StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+              <Path Data="{StaticResource MarkWave}"
+                    Stroke="{DynamicResource Focus}" StrokeThickness="7"
+                    StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+            </Canvas>
+          </Viewbox>
+          <TextBlock Text="EchoForge" Margin="10,0,0,0" VerticalAlignment="Center"
+                     FontSize="14" FontWeight="Bold" Foreground="{DynamicResource Ink}" />
+        </StackPanel>
+
+        <Button DockPanel.Dock="Top" Style="{StaticResource NavButton}"
+                AutomationProperties.Name="Record"
+                Command="{Binding ShowRecordCommand}"
+                Tag="{Binding IsRecordPage, Converter={StaticResource ActiveTag}}">
+          <StackPanel Orientation="Horizontal">
+            <Path Style="{StaticResource NavIcon}" Data="{StaticResource IconRecord}" />
+            <TextBlock Text="Record" />
+          </StackPanel>
         </Button>
 
-        <Button DockPanel.Dock="Top" HorizontalAlignment="Center" Style="{StaticResource RailButton}"
-                ToolTip="All recordings" AutomationProperties.Name="All recordings"
-                Command="{Binding OpenLibraryCommand}"
-                IsEnabled="{Binding HasLibrary}">
-          <Path Style="{StaticResource RailIcon}" Data="{StaticResource IconLibrary}" />
+        <Button DockPanel.Dock="Top" Style="{StaticResource NavButton}"
+                AutomationProperties.Name="Recordings"
+                Command="{Binding ShowRecordingsCommand}"
+                Tag="{Binding IsRecordingsPage, Converter={StaticResource ActiveTag}}">
+          <StackPanel Orientation="Horizontal">
+            <Path Style="{StaticResource NavIcon}" Data="{StaticResource IconLibrary}" />
+            <TextBlock Text="Library" />
+          </StackPanel>
         </Button>
 
-        <!-- The palette toggle sits with setup rather than in the window bar: it is a preference,
-             not a window control, and the bar has three buttons people already know. -->
-        <Button DockPanel.Dock="Bottom" HorizontalAlignment="Center" Style="{StaticResource RailButton}"
-                ToolTip="Switch between the light and dark theme"
-                AutomationProperties.Name="Switch theme"
-                Command="{x:Static app:Theme.ToggleCommand}">
-          <Path Style="{StaticResource RailIcon}" Data="{StaticResource IconTheme}" />
+        <!-- Destinations above; utilities below. The line is the boundary. -->
+        <Border DockPanel.Dock="Top" Height="1" Background="{DynamicResource Line}" Margin="6,10" />
+
+        <Button DockPanel.Dock="Top" Style="{StaticResource NavButton}"
+                AutomationProperties.Name="Compact recorder"
+                ToolTip="Open the small always-on-top recorder"
+                Click="OnCompact">
+          <StackPanel Orientation="Horizontal">
+            <Path Style="{StaticResource NavIcon}" Data="{StaticResource IconCompact}" />
+            <TextBlock Text="Compact view" />
+          </StackPanel>
         </Button>
 
-        <Button DockPanel.Dock="Bottom" HorizontalAlignment="Center" Style="{StaticResource RailButton}"
-                ToolTip="Setup and diagnostics" AutomationProperties.Name="Setup"
-                Command="{Binding OpenSetupCommand}"
-                IsEnabled="{Binding HasSetup}">
-          <Path Style="{StaticResource RailIcon}" Data="{StaticResource IconSetup}" />
+        <Button DockPanel.Dock="Top" Style="{StaticResource NavButton}"
+                AutomationProperties.Name="Settings"
+                ToolTip="Settings, models and runtime"
+                Command="{Binding ShowSettingsCommand}"
+                Tag="{Binding IsSettingsPage, Converter={StaticResource ActiveTag}}">
+          <DockPanel Width="146">
+            <Path DockPanel.Dock="Right" Width="9" Height="6" Stretch="Uniform" VerticalAlignment="Center"
+                  Data="M 0 0 L 4 4 L 8 0" StrokeThickness="1.6"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                  RenderTransformOrigin="0.5,0.5">
+              <Path.Style>
+                <Style TargetType="Path">
+                  <Setter Property="RenderTransform">
+                    <Setter.Value>
+                      <RotateTransform Angle="-90" />
+                    </Setter.Value>
+                  </Setter>
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsSettingsPage}" Value="True">
+                      <Setter Property="RenderTransform">
+                        <Setter.Value>
+                          <RotateTransform Angle="0" />
+                        </Setter.Value>
+                      </Setter>
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Path.Style>
+            </Path>
+            <Path Style="{StaticResource NavIcon}" Data="{StaticResource IconSetup}" />
+            <TextBlock Text="Settings" />
+          </DockPanel>
         </Button>
+
+        <!--
+          The Settings accordion. It expands when Settings is the page and collapses when it is
+          not; each sub-item is a section of the one Settings page, and Theme lives here because
+          it is a preference, not a destination.
+        -->
+        <StackPanel DockPanel.Dock="Top"
+                    Visibility="{Binding IsSettingsPage, Converter={StaticResource BoolToVis}}">
+          <Button Style="{StaticResource SubNavButton}" Content="Transcription"
+                  AutomationProperties.Name="Transcription settings"
+                  Command="{Binding ShowTranscriptionSettingsCommand}"
+                  Tag="{Binding IsTranscriptionSection, Converter={StaticResource ActiveTag}}" />
+          <Button Style="{StaticResource SubNavButton}" Content="Meeting briefs"
+                  AutomationProperties.Name="Meeting brief settings"
+                  Command="{Binding ShowBriefsSettingsCommand}"
+                  Tag="{Binding IsBriefsSection, Converter={StaticResource ActiveTag}}" />
+          <Button Style="{StaticResource SubNavButton}" Content="Models"
+                  AutomationProperties.Name="Model settings"
+                  Command="{Binding ShowModelsSettingsCommand}"
+                  Tag="{Binding IsModelsSection, Converter={StaticResource ActiveTag}}" />
+          <Button Style="{StaticResource SubNavButton}" Content="This machine"
+                  AutomationProperties.Name="Machine settings"
+                  Command="{Binding ShowMachineSettingsCommand}"
+                  Tag="{Binding IsMachineSection, Converter={StaticResource ActiveTag}}" />
+          <Button Style="{StaticResource SubNavButton}" Content="Compare models"
+                  AutomationProperties.Name="Compare models"
+                  Command="{Binding ShowCompareSettingsCommand}"
+                  Tag="{Binding IsCompareSection, Converter={StaticResource ActiveTag}}" />
+
+          <Border Height="1" Background="{DynamicResource Line}" Margin="24,6,6,6" />
+
+          <Button Style="{StaticResource SubNavButton}"
+                  AutomationProperties.Name="Switch theme"
+                  ToolTip="Switch between the light and dark theme"
+                  Command="{x:Static app:Theme.ToggleCommand}">
+            <StackPanel Orientation="Horizontal">
+              <Path Width="13" Height="13" Margin="0,0,8,0" Stretch="Uniform" VerticalAlignment="Center"
+                    Data="{StaticResource IconTheme}" StrokeThickness="1.5"
+                    Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                    Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+              <TextBlock Text="Theme" />
+            </StackPanel>
+          </Button>
+        </StackPanel>
       </DockPanel>
     </Border>
 
-    <Grid Grid.Column="1" Margin="26,20,26,22">
-    <Grid.RowDefinitions>
-      <RowDefinition Height="Auto" />
-      <RowDefinition Height="Auto" />
-      <RowDefinition Height="Auto" />
-      <RowDefinition Height="Auto" />
-      <RowDefinition Height="*" />
-      <RowDefinition Height="Auto" />
-    </Grid.RowDefinitions>
+    <Grid Grid.Column="1" Background="{DynamicResource Surface}">
+      <rec:RecordPage Visibility="{Binding IsRecordPage, Converter={StaticResource BoolToVis}}" />
 
-    <!-- Status strip: the red dot is bound only to live capture state. -->
-    <Grid Grid.Row="0" Margin="0,0,0,14">
-      <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-        <Ellipse Width="12" Height="12" Fill="{StaticResource Rec}" VerticalAlignment="Center"
-                 Visibility="{Binding IndicatorVisible, Converter={StaticResource BoolToVis}}" />
-        <Ellipse Width="12" Height="12" Stroke="{StaticResource InkFaint}" StrokeThickness="2"
-                 VerticalAlignment="Center">
-          <Ellipse.Style>
-            <Style TargetType="Ellipse">
-              <Setter Property="Visibility" Value="Visible" />
-              <Style.Triggers>
-                <DataTrigger Binding="{Binding IndicatorVisible}" Value="True">
-                  <Setter Property="Visibility" Value="Collapsed" />
-                </DataTrigger>
-              </Style.Triggers>
-            </Style>
-          </Ellipse.Style>
-        </Ellipse>
+      <lib:RecordingsPage DataContext="{Binding Library}"
+                          Visibility="{Binding DataContext.IsRecordingsPage,
+                                       RelativeSource={RelativeSource AncestorType=Window},
+                                       Converter={StaticResource BoolToVis}}" />
 
-        <TextBlock Text="{Binding StatusHeadline}" Margin="12,0,0,0" VerticalAlignment="Center"
-                   FontFamily="{StaticResource DataFont}" FontSize="11" Foreground="{StaticResource InkDim}">
-          <TextBlock.Style>
-            <Style TargetType="TextBlock">
-              <Style.Triggers>
-                <DataTrigger Binding="{Binding IsRecording}" Value="True">
-                  <Setter Property="Foreground" Value="{StaticResource Rec}" />
-                </DataTrigger>
-              </Style.Triggers>
-            </Style>
-          </TextBlock.Style>
-        </TextBlock>
-
-        <TextBlock Text="{Binding Elapsed}" Margin="18,0,0,0" VerticalAlignment="Center"
-                   FontFamily="{StaticResource ClockFont}" FontSize="40" FontWeight="Bold"
-                   Foreground="{StaticResource Ink}"
-                   TextOptions.TextFormattingMode="Ideal" TextOptions.TextRenderingMode="ClearType" />
-      </StackPanel>
-
-      <!--
-        The facts worth knowing, which are different before and during a recording. At rest that is
-        how much room there is and how long it lasts; once capture is running it is what has been
-        written, how fast, what remains, and how many chunks are down. Four figures all reading
-        zero before anything has started is noise, so they are not shown until they mean something.
-      -->
-      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"
-                  Visibility="{Binding ShowCaptureFacts, Converter={StaticResource InvBoolToVis}}">
-        <StackPanel Margin="0,0,26,0">
-          <TextBlock Text="FREE SPACE" Style="{StaticResource Label}" HorizontalAlignment="Right" />
-          <TextBlock Text="{Binding FreeSpace}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
-        </StackPanel>
-        <StackPanel>
-          <TextBlock Text="HEADROOM" Style="{StaticResource Label}" HorizontalAlignment="Right" />
-          <TextBlock Text="{Binding Headroom}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
-        </StackPanel>
-      </StackPanel>
-
-      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"
-                  Visibility="{Binding ShowCaptureFacts, Converter={StaticResource BoolToVis}}">
-        <StackPanel Margin="0,0,24,0">
-          <TextBlock Text="WRITTEN" Style="{StaticResource Label}" HorizontalAlignment="Right" />
-          <TextBlock Text="{Binding Written}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
-        </StackPanel>
-        <StackPanel Margin="0,0,24,0">
-          <TextBlock Text="RATE" Style="{StaticResource Label}" HorizontalAlignment="Right" />
-          <TextBlock Text="{Binding StorageRate}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
-        </StackPanel>
-        <StackPanel Margin="0,0,24,0">
-          <TextBlock Text="FREE" Style="{StaticResource Label}" HorizontalAlignment="Right" />
-          <TextBlock Text="{Binding FreeSpace}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
-        </StackPanel>
-        <StackPanel>
-          <TextBlock Text="CHUNKS" Style="{StaticResource Label}" HorizontalAlignment="Right" />
-          <TextBlock Text="{Binding ChunkSummary}" Style="{StaticResource Data}" HorizontalAlignment="Right" />
-        </StackPanel>
-      </StackPanel>
-    </Grid>
-
-    <!-- One device dropped (scene 03): conspicuous, names the lost device, says the rest is safe. -->
-    <Border Grid.Row="1" Margin="0,0,0,14" CornerRadius="6" Padding="14,12"
-            Background="{StaticResource RecWash}" BorderBrush="{StaticResource Rec}" BorderThickness="1.5"
-            Visibility="{Binding IsDegraded, Converter={StaticResource BoolToVis}}">
-      <DockPanel>
-        <TextBlock DockPanel.Dock="Left" Text="!" Foreground="{StaticResource Rec}" FontWeight="Bold"
-                   FontFamily="{StaticResource DataFont}" FontSize="18" VerticalAlignment="Top" Margin="0,0,12,0" />
-        <StackPanel>
-          <TextBlock Text="{Binding DegradedHeadline}" FontWeight="SemiBold" Foreground="{StaticResource Ink}" />
-          <TextBlock Text="{Binding DegradedDetail}" TextWrapping="Wrap" Margin="0,3,0,0"
-                     Foreground="{StaticResource InkDim}" />
-        </StackPanel>
-      </DockPanel>
-    </Border>
-
-    <!-- Degraded / recovery notice -->
-    <Border Grid.Row="1" Margin="0,0,0,14" CornerRadius="6" Padding="14,11"
-            Background="{StaticResource RecWash}" BorderBrush="{StaticResource Rec}" BorderThickness="1"
-            Visibility="{Binding HasNotice, Converter={StaticResource BoolToVis}}">
-      <TextBlock Text="{Binding Notice}" TextWrapping="Wrap" Foreground="{StaticResource Ink}" />
-    </Border>
-
-    <!-- An unfinished recording found at startup. Shown, never acted on automatically. -->
-    <Border Grid.Row="1" Margin="0,0,0,14" CornerRadius="6" Padding="14,11"
-            Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1"
-            Visibility="{Binding HasPendingContinuation, Converter={StaticResource BoolToVis}}">
-      <StackPanel>
-        <TextBlock Text="{Binding ContinuationMessage}" TextWrapping="Wrap" FontWeight="SemiBold" />
-        <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Foreground="{StaticResource InkDim}"
-                   Text="Continuing adds a new segment to the same recording. Finishing keeps what was already captured." />
-        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-          <Button Content="Resume recovered recording" Style="{StaticResource PrimaryButton}"
-                  Command="{Binding ContinueRecoveredCommand}" Margin="0,0,10,0" />
-          <Button Content="Finish it instead" Command="{Binding FinishRecoveredCommand}" />
-        </StackPanel>
-      </StackPanel>
-    </Border>
-
-    <!-- Device selection. Disabled while recording: endpoints are pinned for the session. -->
-    <StackPanel Grid.Row="2" Margin="0,0,0,16" IsEnabled="{Binding DevicesEditable}">
-      <TextBlock Text="CAPTURE FROM" Style="{StaticResource Label}" Margin="0,0,0,8" />
-
-      <!--
-        A clean row per device: friendly name on the left, the negotiated format right-aligned in
-        the data font, and the track colour carried by the dot beside it — teal for the remote
-        (system) source, amber for you (the microphone). An explicit ItemTemplate is used rather
-        than DisplayMemberPath so the custom ComboBox template can never fall back to the record's
-        own ToString and paint an "AudioEndpointInfo { … }" line.
-      -->
-      <Grid Margin="0,0,0,8">
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="14" />
-          <ColumnDefinition Width="*" />
-        </Grid.ColumnDefinitions>
-        <Ellipse Grid.Column="0" Width="8" Height="8" Fill="{StaticResource Remote}" VerticalAlignment="Center" />
-        <ComboBox Grid.Column="1" Tag="Choose a playback device to record the other side from"
-                  ItemsSource="{Binding RenderDevices}" SelectedItem="{Binding SelectedRender}">
-          <ComboBox.ItemTemplate>
-            <DataTemplate>
-              <Grid>
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="*" />
-                  <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="{Binding FriendlyName}" Foreground="{StaticResource Ink}"
-                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center"
-                           FontFamily="{StaticResource DataFont}" FontSize="11" Foreground="{StaticResource InkFaint}"
-                           Text="{Binding MixFormat, Converter={StaticResource AudioFormat}}" />
-              </Grid>
-            </DataTemplate>
-          </ComboBox.ItemTemplate>
-        </ComboBox>
-      </Grid>
-
-      <Grid>
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="14" />
-          <ColumnDefinition Width="*" />
-        </Grid.ColumnDefinitions>
-        <Ellipse Grid.Column="0" Width="8" Height="8" Fill="{StaticResource You}" VerticalAlignment="Center" />
-        <ComboBox Grid.Column="1" Tag="Choose a microphone to record yourself from"
-                  ItemsSource="{Binding CaptureDevices}" SelectedItem="{Binding SelectedCapture}">
-          <ComboBox.ItemTemplate>
-            <DataTemplate>
-              <Grid>
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="*" />
-                  <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="{Binding FriendlyName}" Foreground="{StaticResource Ink}"
-                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center"
-                           FontFamily="{StaticResource DataFont}" FontSize="11" Foreground="{StaticResource InkFaint}"
-                           Text="{Binding MixFormat, Converter={StaticResource AudioFormat}}" />
-              </Grid>
-            </DataTemplate>
-          </ComboBox.ItemTemplate>
-        </ComboBox>
-      </Grid>
-    </StackPanel>
-
-    <!-- Level meters, coloured by track and by track alone. -->
-    <StackPanel Grid.Row="3" Margin="0,0,0,16">
-      <Grid Margin="0,0,0,9">
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="130" />
-          <ColumnDefinition Width="*" />
-          <ColumnDefinition Width="62" />
-        </Grid.ColumnDefinitions>
-        <TextBlock Grid.Column="0" Text="{Binding YouCaption}" Style="{StaticResource Label}"
-                   Foreground="{StaticResource You}" VerticalAlignment="Center" />
-        <ProgressBar Grid.Column="1" Style="{StaticResource Meter}"
-                     Foreground="{StaticResource You}" Value="{Binding YouLevel, Mode=OneWay}" />
-        <TextBlock Grid.Column="2" Text="{Binding YouLevelText}" Style="{StaticResource Label}"
-                   Foreground="{StaticResource InkDim}" HorizontalAlignment="Right"
-                   VerticalAlignment="Center" Margin="10,0,0,0" />
-      </Grid>
-
-      <Grid>
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="130" />
-          <ColumnDefinition Width="*" />
-          <ColumnDefinition Width="62" />
-        </Grid.ColumnDefinitions>
-        <TextBlock Grid.Column="0" Text="{Binding RemoteCaption}" Style="{StaticResource Label}"
-                   Foreground="{StaticResource Remote}" VerticalAlignment="Center" />
-        <ProgressBar Grid.Column="1" Style="{StaticResource Meter}"
-                     Foreground="{StaticResource Remote}" Value="{Binding RemoteLevel, Mode=OneWay}" />
-        <TextBlock Grid.Column="2" Text="{Binding RemoteLevelText}" Style="{StaticResource Label}"
-                   Foreground="{StaticResource InkDim}" HorizontalAlignment="Right"
-                   VerticalAlignment="Center" Margin="10,0,0,0" />
-      </Grid>
-
-      <!--
-        The signature element: a two-lane speech-density ribbon over a time ruler, drawn from the
-        canonical activity history. You is the amber top lane, Remote the teal bottom lane; silence
-        is flat, a lost track flatlines in red. It is presentation only and never affects capture.
-        The labels sit outside the drawn surface so the control can stay a single render pass.
-      -->
-      <Border Margin="0,12,0,0" CornerRadius="6" Padding="10,9,12,8"
-              Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1">
-        <Grid>
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="46" />
-            <ColumnDefinition Width="*" />
-          </Grid.ColumnDefinitions>
-          <StackPanel Grid.Column="0" VerticalAlignment="Center">
-            <TextBlock Text="YOU" Style="{StaticResource Label}" Foreground="{StaticResource You}" />
-            <TextBlock Text="REM" Style="{StaticResource Label}" Foreground="{StaticResource Remote}" Margin="0,34,0,0" />
-          </StackPanel>
-          <rec:SpeechRibbon Grid.Column="1" Height="96" MinWidth="120"
-                            History="{Binding RibbonHistory}"
-                            Revision="{Binding RibbonRevision}" />
-        </Grid>
-      </Border>
-
-      <!-- Device test: live levels with no recording. Open both endpoints, speak, play something. -->
-      <Border Margin="0,12,0,0" CornerRadius="6" Padding="12,10"
-              Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1"
-              Visibility="{Binding IsTesting, Converter={StaticResource BoolToVis}}">
-        <StackPanel>
-          <TextBlock Text="TESTING DEVICES — nothing is being recorded" Style="{StaticResource Label}"
-                     Foreground="{StaticResource InkDim}" Margin="0,0,0,8" />
-          <Grid Margin="0,0,0,6">
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="64" />
-              <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
-            <TextBlock Grid.Column="0" Text="You" Style="{StaticResource Label}" Foreground="{StaticResource You}"
-                       VerticalAlignment="Center" />
-            <ProgressBar Grid.Column="1" Style="{StaticResource Meter}" Foreground="{StaticResource You}"
-                         Value="{Binding TestYouLevel, Mode=OneWay}" />
-          </Grid>
-          <Grid>
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="64" />
-              <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
-            <TextBlock Grid.Column="0" Text="Remote" Style="{StaticResource Label}" Foreground="{StaticResource Remote}"
-                       VerticalAlignment="Center" />
-            <ProgressBar Grid.Column="1" Style="{StaticResource Meter}" Foreground="{StaticResource Remote}"
-                         Value="{Binding TestRemoteLevel, Mode=OneWay}" />
-          </Grid>
-          <TextBlock Text="{Binding TestStatus}" TextWrapping="Wrap" Margin="0,8,0,0"
-                     Foreground="{StaticResource InkDim}" />
-        </StackPanel>
-      </Border>
-    </StackPanel>
-
-    <ScrollViewer x:Name="ProcessingScroller" Grid.Row="4"
-                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-      <!--
-        Transcription and summary sit side by side, as the design pairs them, and stack when the
-        window is too narrow for two readable columns. They are two independent jobs against the
-        same recording, and seeing both at once is the point: one is usually waiting on the other.
-      -->
-      <UniformGrid Margin="0,0,0,4"
-                   Columns="{Binding ActualWidth, ElementName=ProcessingScroller,
-                             Converter={StaticResource ColumnsForWidth}}">
-
-        <!-- Transcription. Post-recording only: recording always has priority. -->
-        <Border Margin="0,0,6,0" CornerRadius="6" Padding="14,12"
-                Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1"
-                Visibility="{Binding HasTranscription, Converter={StaticResource BoolToVis}}">
-          <StackPanel DataContext="{Binding Transcription}">
-
-            <Grid>
-              <TextBlock Text="TRANSCRIPTION" Style="{StaticResource Label}" VerticalAlignment="Center" />
-              <TextBlock Text="{Binding StageText}" Style="{StaticResource Data}"
-                         HorizontalAlignment="Right" VerticalAlignment="Center" />
-            </Grid>
-
-            <!-- Progress. Visible only while a job is actually under way. -->
-            <StackPanel Margin="0,10,0,0"
-                        Visibility="{Binding IsWorking, Converter={StaticResource BoolToVis}}">
-              <ProgressBar Style="{StaticResource Meter}" Minimum="0" Maximum="100"
-                           Foreground="{StaticResource Remote}" Value="{Binding ProgressPercent, Mode=OneWay}" />
-              <TextBlock Margin="0,6,0,0" Style="{StaticResource Label}" Foreground="{StaticResource InkDim}"
-                         Text="{Binding ProgressDescription}" />
-            </StackPanel>
-
-            <!-- What this build actually does. Not a footnote. -->
-            <Border Margin="0,10,0,0" CornerRadius="4" Padding="10,8"
-                    Background="{StaticResource WarnWash}" BorderBrush="{StaticResource You}" BorderThickness="1"
-                    Visibility="{Binding IsPlaceholderBackend, Converter={StaticResource BoolToVis}}">
-              <TextBlock Text="{Binding PlaceholderWarning}" TextWrapping="Wrap"
-                         Foreground="{StaticResource Ink}" />
-            </Border>
-
-            <Border Margin="0,10,0,0" CornerRadius="4" Padding="10,8"
-                    Background="{StaticResource RecWash}" BorderBrush="{StaticResource Rec}" BorderThickness="1"
-                    Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}">
-              <TextBlock Text="{Binding Error}" TextWrapping="Wrap" Foreground="{StaticResource Ink}" />
-            </Border>
-
-            <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" Foreground="{StaticResource InkDim}"
-                       Text="{Binding Notice}"
-                       Visibility="{Binding HasNotice, Converter={StaticResource BoolToVis}}" />
-
-            <!-- What to run, and how. The backend label always says whether it recognises speech. -->
-            <!--
-              Wrapped rather than gridded. Paired with the summary panel these three sit in half a
-              window, and three fixed columns squeezed the backend name down to a few characters —
-              and that is the one of the three whose whole job is to say, in words, whether it
-              recognises speech at all.
-            -->
-            <WrapPanel Margin="0,12,-8,0">
-              <ComboBox Margin="0,0,8,8" MinWidth="248" Style="{StaticResource OptionPicker}"
-                        ItemsSource="{Binding Backends}" SelectedItem="{Binding SelectedBackend}" />
-
-              <ComboBox Margin="0,0,8,8" MinWidth="212" Style="{StaticResource OptionPicker}"
-                        ItemsSource="{Binding ComputeProfiles}" SelectedItem="{Binding SelectedComputeProfile}"
-                        IsEnabled="{Binding IsProductionSelected}" />
-
-              <ComboBox Margin="0,0,8,8" MinWidth="164" Style="{StaticResource OptionPicker}"
-                        ItemsSource="{Binding Languages}" SelectedItem="{Binding SelectedLanguage}"
-                        IsEnabled="{Binding IsProductionSelected}" />
-            </WrapPanel>
-
-            <Grid Margin="0,8,0,0" IsEnabled="{Binding IsProductionSelected}">
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="*" />
-              </Grid.ColumnDefinitions>
-              <TextBlock Grid.Column="0" Text="NAMES &amp; JARGON" Style="{StaticResource Label}"
-                         VerticalAlignment="Center" Margin="0,0,10,0" />
-              <TextBox Grid.Column="1" Text="{Binding Glossary, UpdateSourceTrigger=PropertyChanged}"
-                       ToolTip="Comma separated. Nudges the recogniser towards these words; it does not guarantee them." />
-            </Grid>
-
-            <Border Margin="0,10,0,0" CornerRadius="4" Padding="10,8"
-                    Background="{StaticResource WarnWash}" BorderBrush="{StaticResource You}" BorderThickness="1"
-                    Visibility="{Binding HasFallbackNotice, Converter={StaticResource BoolToVis}}">
-              <TextBlock Text="{Binding FallbackNotice}" TextWrapping="Wrap" Foreground="{StaticResource Ink}" />
-            </Border>
-
-            <WrapPanel Margin="0,12,-8,0">
-              <Button Content="Transcribe" Command="{Binding TranscribeCommand}" Margin="0,0,8,8">
-                <Button.Style>
-                  <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
-                    <Style.Triggers>
-                      <DataTrigger Binding="{Binding HasTranscript}" Value="True">
-                        <Setter Property="Visibility" Value="Collapsed" />
-                      </DataTrigger>
-                    </Style.Triggers>
-                  </Style>
-                </Button.Style>
-              </Button>
-              <Button Content="Transcribe again" Command="{Binding TranscribeAgainCommand}" Margin="0,0,8,8"
-                      Visibility="{Binding HasTranscript, Converter={StaticResource BoolToVis}}" />
-              <Button Content="Cancel" Command="{Binding CancelCommand}" Margin="0,0,8,8"
-                      Visibility="{Binding IsWorking, Converter={StaticResource BoolToVis}}" />
-            </WrapPanel>
-
-            <!-- Previous versions and export. Only meaningful once something was activated. -->
-            <StackPanel Margin="0,12,0,0"
-                        Visibility="{Binding HasTranscript, Converter={StaticResource BoolToVis}}">
-              <TextBlock Text="{Binding TranscriptSummary}" Style="{StaticResource Label}" />
-
-              <WrapPanel Margin="0,8,-8,0">
-                <ComboBox Margin="0,0,8,8" MinWidth="212" Style="{StaticResource OptionPicker}"
-                          ItemsSource="{Binding Revisions}" SelectedItem="{Binding SelectedRevision}" />
-
-                <ComboBox Margin="0,0,8,8" MinWidth="156" Style="{StaticResource OptionPicker}"
-                          ItemsSource="{Binding ExportFormats}" SelectedItem="{Binding SelectedExportFormat}" />
-
-                <Button Margin="0,0,8,8" Content="Export…" Command="{Binding ExportCommand}" />
-              </WrapPanel>
-
-              <TextBlock Margin="0,8,0,0" Style="{StaticResource Label}" Foreground="{StaticResource InkFaint}"
-                         Text="{Binding BackendSummary}" TextWrapping="Wrap" />
-            </StackPanel>
-
-            <!-- Production readiness. Separate from the transcription stage above, because this
-                 build can hold a finished placeholder transcript and no production models. -->
-            <StackPanel Margin="0,14,0,0"
-                        Visibility="{Binding SupportsProduction, Converter={StaticResource BoolToVis}}">
-              <Border Height="1" Background="{StaticResource Line}" Margin="0,0,0,12" />
-
-              <TextBlock Text="PRODUCTION SPEECH RECOGNITION" Style="{StaticResource Label}" />
-
-              <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="{StaticResource InkDim}"
-                         Text="Preparation installs the pinned models, converts the recording to 16 kHz mono, and plans the transcription windows. Choose the faster-whisper backend above to run real speech recognition on it." />
-
-              <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{StaticResource Ink}"
-                         Text="{Binding ProductionStatus}"
-                         Visibility="{Binding HasProductionStatus, Converter={StaticResource BoolToVis}}" />
-
-              <TextBlock Margin="0,4,0,0" Style="{StaticResource Label}" Foreground="{StaticResource Remote}"
-                         Text="{Binding ProductionPlanSummary}" />
-
-              <WrapPanel Margin="0,10,-8,0">
-                <Button Content="Check and prepare audio" Command="{Binding PrepareProductionCommand}"
-                        Margin="0,0,8,8" />
-                <Button Content="Download models and prepare" Command="{Binding InstallModelsCommand}"
-                        Margin="0,0,8,8" />
-              </WrapPanel>
-            </StackPanel>
-          </StackPanel>
-        </Border>
-
-        <!-- Summary. A separate stage with its own revisions, from one exact transcript version. -->
-        <Border Margin="6,0,0,0" CornerRadius="6" Padding="14,12"
-                Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1"
-                Visibility="{Binding HasSummary, Converter={StaticResource BoolToVis}}">
-          <StackPanel DataContext="{Binding Summary}">
-
-            <Grid>
-              <TextBlock Text="SUMMARY" Style="{StaticResource Label}" VerticalAlignment="Center" />
-              <TextBlock Text="{Binding StageText}" Style="{StaticResource Data}"
-                         HorizontalAlignment="Right" VerticalAlignment="Center" />
-            </Grid>
-
-            <StackPanel Margin="0,10,0,0"
-                        Visibility="{Binding IsWorking, Converter={StaticResource BoolToVis}}">
-              <ProgressBar Style="{StaticResource Meter}" Minimum="0" Maximum="100"
-                           Foreground="{StaticResource You}" Value="{Binding ProgressPercent, Mode=OneWay}" />
-              <TextBlock Margin="0,6,0,0" Style="{StaticResource Label}" Foreground="{StaticResource InkDim}"
-                         Text="{Binding ProgressDescription}" />
-            </StackPanel>
-
-            <!-- What this build actually does. Not a footnote. -->
-            <!-- Which summariser is about to run, and what it would take to change that. -->
-            <Border Margin="0,10,0,0" CornerRadius="4" Padding="10,8"
-                    Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" BorderThickness="1">
-              <StackPanel>
-                <CheckBox Content="Summarise with the local model"
-                          IsChecked="{Binding UseProductionModel, Mode=TwoWay}"
-                          IsEnabled="{Binding ProductionAvailable}"
-                          Foreground="{StaticResource Ink}" />
-                <TextBlock Margin="0,6,0,0" Style="{StaticResource Label}" Foreground="{StaticResource InkDim}"
-                           TextWrapping="Wrap" Text="{Binding BackendText}" />
-                <TextBlock Margin="0,4,0,0" Style="{StaticResource Label}" Foreground="{StaticResource InkDim}"
-                           TextWrapping="Wrap" Text="{Binding ModelStatusText}" />
-                <ProgressBar Height="4" Margin="0,6,0,0" Minimum="0" Maximum="100"
-                             Background="{StaticResource Sunken}" BorderThickness="0"
-                             Foreground="{StaticResource You}" Value="{Binding InstallPercent, Mode=OneWay}"
-                             Visibility="{Binding IsInstallingModel, Converter={StaticResource BoolToVis}}" />
-                <Button Content="Download the local summary model" Margin="0,8,0,0"
-                        HorizontalAlignment="Left"
-                        Command="{Binding InstallModelCommand}"
-                        Visibility="{Binding CanInstallModel, Converter={StaticResource BoolToVis}}" />
-              </StackPanel>
-            </Border>
-
-            <Border Margin="0,10,0,0" CornerRadius="4" Padding="10,8"
-                    Background="{StaticResource WarnWash}" BorderBrush="{StaticResource You}" BorderThickness="1"
-                    Visibility="{Binding IsPlaceholderBackend, Converter={StaticResource BoolToVis}}">
-              <TextBlock Text="{Binding PlaceholderWarning}" TextWrapping="Wrap"
-                         Foreground="{StaticResource Ink}" />
-            </Border>
-
-            <Border Margin="0,10,0,0" CornerRadius="4" Padding="10,8"
-                    Background="{StaticResource Surface}" BorderBrush="{StaticResource Line}" BorderThickness="1"
-                    Visibility="{Binding IsStale, Converter={StaticResource BoolToVis}}">
-              <TextBlock Text="{Binding StaleNotice}" TextWrapping="Wrap" Foreground="{StaticResource InkDim}" />
-            </Border>
-
-            <Border Margin="0,10,0,0" CornerRadius="4" Padding="10,8"
-                    Background="{StaticResource RecWash}" BorderBrush="{StaticResource Rec}" BorderThickness="1"
-                    Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}">
-              <TextBlock Text="{Binding Error}" TextWrapping="Wrap" Foreground="{StaticResource Ink}" />
-            </Border>
-
-            <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" Foreground="{StaticResource InkDim}"
-                       Text="{Binding Notice}"
-                       Visibility="{Binding HasNotice, Converter={StaticResource BoolToVis}}" />
-
-            <WrapPanel Margin="0,12,-8,0">
-              <Button Content="Generate summary" Command="{Binding GenerateCommand}" Margin="0,0,8,8">
-                <Button.Style>
-                  <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
-                    <Style.Triggers>
-                      <DataTrigger Binding="{Binding HasSummary}" Value="True">
-                        <Setter Property="Visibility" Value="Collapsed" />
-                      </DataTrigger>
-                    </Style.Triggers>
-                  </Style>
-                </Button.Style>
-              </Button>
-
-              <Button Content="Generate again" Command="{Binding GenerateAgainCommand}" Margin="0,0,8,8"
-                      Visibility="{Binding HasSummary, Converter={StaticResource BoolToVis}}" />
-
-              <Button Content="Cancel" Command="{Binding CancelCommand}" Margin="0,0,8,8"
-                      Visibility="{Binding IsWorking, Converter={StaticResource BoolToVis}}" />
-            </WrapPanel>
-
-            <StackPanel Margin="0,12,0,0"
-                        Visibility="{Binding HasSummary, Converter={StaticResource BoolToVis}}">
-              <TextBlock Text="{Binding SummarySummary}" Style="{StaticResource Label}" />
-              <ComboBox Margin="0,8,0,0" Style="{StaticResource OptionPicker}"
-                        ItemsSource="{Binding Revisions}" SelectedItem="{Binding SelectedRevision}" />
-            </StackPanel>
-          </StackPanel>
-        </Border>
-      </UniformGrid>
-    </ScrollViewer>
-
-    <!-- Controls -->
-    <StackPanel Grid.Row="5" Orientation="Horizontal" Margin="0,16,0,0">
-      <Button Content="Start recording" Command="{Binding StartCommand}" Margin="0,0,10,0">
-        <Button.Style>
-          <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
-            <Style.Triggers>
-              <DataTrigger Binding="{Binding IsRecording}" Value="True">
-                <Setter Property="Visibility" Value="Collapsed" />
-              </DataTrigger>
-              <DataTrigger Binding="{Binding IsPaused}" Value="True">
-                <Setter Property="Visibility" Value="Collapsed" />
-              </DataTrigger>
-            </Style.Triggers>
-          </Style>
-        </Button.Style>
-      </Button>
-
-      <Button Content="Pause" Command="{Binding PauseCommand}" Margin="0,0,10,0"
-              Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}" />
-
-      <Button Content="Resume" Style="{StaticResource PrimaryButton}" Command="{Binding ResumeCommand}"
-              Margin="0,0,10,0" Visibility="{Binding IsPaused, Converter={StaticResource BoolToVis}}" />
-
-      <Button Content="Stop recording" Command="{Binding StopCommand}" Margin="0,0,10,0">
-        <Button.Style>
-          <Style TargetType="Button" BasedOn="{StaticResource DangerButton}">
-            <Setter Property="Visibility" Value="Collapsed" />
-            <Style.Triggers>
-              <DataTrigger Binding="{Binding IsRecording}" Value="True">
-                <Setter Property="Visibility" Value="Visible" />
-              </DataTrigger>
-              <DataTrigger Binding="{Binding IsPaused}" Value="True">
-                <Setter Property="Visibility" Value="Visible" />
-              </DataTrigger>
-            </Style.Triggers>
-          </Style>
-        </Button.Style>
-      </Button>
-
-      <!-- Shrink to the floating recorder over the call. Only meaningful while capture is live. -->
-      <Button Content="Compact" Click="OnCompact" Margin="0,0,10,0"
-              ToolTip="Shrink to a small always-on-top recorder">
-        <Button.Style>
-          <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-            <Setter Property="Visibility" Value="Collapsed" />
-            <Style.Triggers>
-              <DataTrigger Binding="{Binding IsRecording}" Value="True">
-                <Setter Property="Visibility" Value="Visible" />
-              </DataTrigger>
-              <DataTrigger Binding="{Binding IsPaused}" Value="True">
-                <Setter Property="Visibility" Value="Visible" />
-              </DataTrigger>
-            </Style.Triggers>
-          </Style>
-        </Button.Style>
-      </Button>
-
-      <Button Content="{Binding TestButtonLabel}" Command="{Binding TestDevicesCommand}" Margin="0,0,10,0"
-              ToolTip="Open both devices to check their levels. This records nothing."
-              Visibility="{Binding HasDeviceTest, Converter={StaticResource BoolToVis}}" />
-
-      <Button Content="Refresh devices" Command="{Binding RefreshDevicesCommand}" />
-
-      <!-- All recordings and Setup now live on the navigation rail, not as footer buttons. -->
-
-      <TextBlock Style="{StaticResource Label}" VerticalAlignment="Center" Margin="18,0,0,0"
-                 Foreground="{StaticResource InkDim}" Text="{Binding ReadinessMessage}" />
-
-      <TextBlock Style="{StaticResource Label}" VerticalAlignment="Center" Margin="18,0,0,0"
-                 Text="Chunks · 60 s · PCM16 · separate tracks" />
-
-      <TextBlock Style="{StaticResource Label}" VerticalAlignment="Center" Margin="18,0,0,0"
-                 Foreground="{StaticResource InkFaint}" Text="{Binding QueueSummary}"
-                 Visibility="{Binding ShowCaptureFacts, Converter={StaticResource BoolToVis}}" />
-    </StackPanel>
+      <setup:SettingsPage Visibility="{Binding IsSettingsPage, Converter={StaticResource BoolToVis}}" />
     </Grid>
   </Grid>
 </Window>

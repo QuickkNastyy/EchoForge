@@ -95,6 +95,27 @@ regardless of how many automated tests are green.
 | **Phase** | Phase 1 sign-off, repeated at Phase 6. |
 | **Status** | `DEFERRED` |
 
+## H-08 · Local model load/unload hardware matrix
+
+| | |
+|---|---|
+| **Threshold** | Every installed production/experimental model selected for release loads through its declared backend and compute profile, processes a non-private safe fixture, reports requested and actual runtime/compute honestly, exits after the job, and returns dedicated VRAM to the pre-run idle range. No Windows shared-memory spill is accepted as a full-GPU fit. |
+| **Models** | Whisper Large V3 Turbo FP16, Whisper Large V3 FP16, Parakeet Unified EN FP16/BF16 where supported, Canary-Qwen FP16/BF16 where supported, Gemma 4 12B, and gpt-oss-20b if offered on the target. |
+| **Procedure** | Record `nvidia-smi` compute processes and dedicated memory before each run; process a repository-safe synthetic/spoken fixture; retain the content-free run telemetry; wait for the worker/llama process to exit; record the same GPU readings after exit. Run models sequentially. |
+| **Evidence to capture** | Exact artifact/runtime revisions, requested/actual compute, model-load and processing time, peak VRAM, process IDs, exit outcome, before/after VRAM, and any fallback/OOM rung. No private recording or transcript content. |
+| **Phase** | Local inference qualification. |
+| **Status** | `DEFERRED` |
+
+## H-09 · Held-out ASR and summary meeting bake-off
+
+| | |
+|---|---|
+| **Threshold** | No universal winner is assumed. A consented, human-corrected held-out corpus produces WER/normalized WER, short-utterance and speech-region recall, proper-name/acronym/numeric accuracy, You/Remote attribution, timestamp error, structured-fact accuracy, unsupported-claim counts, evidence validity, owner/date accuracy, and human usefulness ratings. |
+| **Procedure** | Run every ASR over the same source recordings, then run every compared summarizer over the same exact transcript revision. Use `AsrEvaluationCorpus`/`AsrScorer` for reference-backed ASR metrics and the existing summary corpus/scorer for facts/evidence. Keep development and held-out meetings separate. |
+| **Evidence to capture** | Corpus identity/digests, model/runtime/settings provenance, content-free telemetry, aggregate metrics, and human adjudication notes kept with the private corpus rather than general diagnostics. |
+| **Phase** | Model quality qualification. |
+| **Status** | `DEFERRED` |
+
 ---
 
 ## What is *not* deferred

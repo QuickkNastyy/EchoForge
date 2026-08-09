@@ -115,6 +115,14 @@ public static class ArtifactManifestReader
                 problems.Add(Invariant($"{id} does not name one exact file"));
             }
 
+            if (entry.StageFileName is { } stageFileName &&
+                (stageFileName.Length == 0 ||
+                 stageFileName.IndexOfAny(['*', '?']) >= 0 ||
+                 stageFileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0))
+            {
+                problems.Add(Invariant($"{id} does not name one exact staged file"));
+            }
+
             if (entry.SizeBytes <= 0)
             {
                 problems.Add(Invariant($"{id} has a non-positive size"));

@@ -52,7 +52,7 @@ public static class SummaryValidator
 
         List<string> problems = [];
 
-        if (summary.SchemaVersion != 1)
+        if (summary.SchemaVersion is not (1 or 2 or 3))
         {
             problems.Add(Invariant($"schema_version {summary.SchemaVersion} is not supported"));
         }
@@ -125,6 +125,16 @@ public static class SummaryValidator
             ValidateAction(action, allowed, summary, ids, problems);
         }
 
+        // A classification the host does not recognise would be silently treated as outstanding
+        // work, which is the exact failure this field exists to prevent.
+        foreach (SummaryAction action in summary.ActionItems)
+        {
+            if (action.Classification is { } classification && !ActionClassifications.IsKnown(classification))
+            {
+                problems.Add(Invariant($"action '{action.Id}' has an unknown classification '{classification}'"));
+            }
+        }
+
         // Decisions are what people act on afterwards, so an uncited one is never acceptable
         // however certain the model claimed to be.
         foreach (SummaryItem decision in summary.Decisions)
@@ -135,7 +145,301 @@ public static class SummaryValidator
             }
         }
 
+        ValidateNarrative(summary, allowed, ids, problems);
+        ValidateBrief(summary, allowed, ids, problems);
+
         return problems.Count == 0 ? SummaryVerdict.Valid : new SummaryVerdict(problems);
+    }
+
+    /// <summary>
+    /// Holds the brief to the same rule as the narrative, plus the ones only a plan has.
+    ///
+    /// <para>
+    /// A brief is allowed to reason further than the narrative was: it may say what to do first and
+    /// why, because it read the meeting rather than a bag of sentences. What it may not do is cite
+    /// something that was never said. Every block and every step still names validated facts, and
+    /// still cites only the segments those facts cite, so "do X first because Y blocks it" is
+    /// always one click from the two moments where Y and X were discussed.
+    /// </para>
+    /// </summary>
+    private static void ValidateBrief(
+        SummaryDocument summary,
+        Dictionary<string, TranscriptSegment> allowed,
+        HashSet<string> structuredIds,
+        List<string> problems)
+    {
+        if (summary.Brief is null)
+        {
+            // Only a v3 model document is required to carry one. Everything older is complete
+            // without it and is never rewritten to acquire one.
+            if (summary.SchemaVersion >= 3 && summary.Model.ProducesSummaries)
+            {
+                problems.Add("a schema-v3 model summary has no meeting brief");
+            }
+            return;
+        }
+
+        if (!summary.Model.ProducesSummaries)
+        {
+            problems.Add("a placeholder document must not claim a generated meeting brief");
+            return;
+        }
+
+        if (summary.Brief.Summary.Count == 0)
+        {
+            problems.Add("the meeting brief has no summary");
+        }
+
+        Dictionary<string, HashSet<string>> evidenceByItem = EvidenceByItem(summary);
+        HashSet<string> briefIds = new(StringComparer.Ordinal);
+
+        foreach (SummaryNarrativeBlock block in summary.Brief.AllBlocks)
+        {
+            ValidateGroundedBlock(
+                block.Id, block.Text, block.SupportingItemIds, block.Evidence,
+                allowed, structuredIds, evidenceByItem, summary, briefIds, problems);
+        }
+
+        HashSet<string> stepIds = new(StringComparer.Ordinal);
+        foreach (MeetingPlanStep step in summary.Brief.ActionPlan)
+        {
+            stepIds.Add(step.Id);
+        }
+
+        int expectedOrder = 1;
+        foreach (MeetingPlanStep step in summary.Brief.ActionPlan)
+        {
+            ValidateGroundedBlock(
+                step.Id, step.Title, step.SupportingItemIds, step.Evidence,
+                allowed, structuredIds, evidenceByItem, summary, briefIds, problems);
+
+            // The plan is one sequence. Two steps both called "3" would leave the reader to guess
+            // which comes first, which is the one thing the plan exists to answer.
+            if (step.Order != expectedOrder)
+            {
+                problems.Add(Invariant(
+                    $"plan step '{step.Id}' is numbered {step.Order} where {expectedOrder} was expected"));
+            }
+            expectedOrder++;
+
+            if (!PlanAudiences.IsKnown(step.Audience))
+            {
+                problems.Add(Invariant($"plan step '{step.Id}' has an unknown audience '{step.Audience}'"));
+            }
+
+            if (!PlanTimings.IsKnown(step.Timing))
+            {
+                problems.Add(Invariant($"plan step '{step.Id}' has an unknown timing '{step.Timing}'"));
+            }
+
+            if (!PlanBases.TryParse(step.Basis, out _))
+            {
+                problems.Add(Invariant($"plan step '{step.Id}' has an unknown basis '{step.Basis}'"));
+            }
+
+            if (!SupportStatuses.TryParse(step.OwnerStatus, out SupportStatus owner))
+            {
+                problems.Add(Invariant($"plan step '{step.Id}' has an unknown owner status '{step.OwnerStatus}'"));
+            }
+            else if (owner == SupportStatus.Unknown && step.Owner is not null)
+            {
+                problems.Add(Invariant($"plan step '{step.Id}' has an unknown owner but names one anyway"));
+            }
+
+            // Addressing work to somebody else without saying who is worse than not splitting the
+            // list at all: it tells the reader this is not theirs and gives them nobody to ask.
+            if (string.Equals(step.Audience, PlanAudiences.Others, StringComparison.Ordinal)
+                && string.IsNullOrWhiteSpace(step.Owner))
+            {
+                problems.Add(Invariant($"plan step '{step.Id}' is somebody else's work but names nobody"));
+            }
+
+            if (!SupportStatuses.TryParse(step.DueDateStatus, out SupportStatus due))
+            {
+                problems.Add(Invariant($"plan step '{step.Id}' has an unknown due-date status '{step.DueDateStatus}'"));
+            }
+            else
+            {
+                if (due == SupportStatus.Unknown && step.DueDate is not null)
+                {
+                    problems.Add(Invariant($"plan step '{step.Id}' has an unknown due date but names one anyway"));
+                }
+
+                if (step.DueDate is { } date &&
+                    !DateOnly.TryParseExact(date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+                {
+                    problems.Add(Invariant($"plan step '{step.Id}' has a due date that is not an ISO calendar date"));
+                }
+
+                if (due != SupportStatus.Unknown && step.DueDate is not null && summary.MeetingDate is null)
+                {
+                    problems.Add(Invariant(
+                        $"plan step '{step.Id}' resolves a due date, but the meeting date is unknown so nothing could be resolved against it"));
+                }
+            }
+
+            foreach (string dependency in step.DependsOnStepIds)
+            {
+                if (!stepIds.Contains(dependency))
+                {
+                    problems.Add(Invariant($"plan step '{step.Id}' depends on '{dependency}', which is not in this plan"));
+                }
+                else if (string.Equals(dependency, step.Id, StringComparison.Ordinal))
+                {
+                    problems.Add(Invariant($"plan step '{step.Id}' depends on itself"));
+                }
+            }
+        }
+    }
+
+    private static Dictionary<string, HashSet<string>> EvidenceByItem(SummaryDocument summary)
+    {
+        Dictionary<string, HashSet<string>> evidenceByItem = new(StringComparer.Ordinal);
+        foreach (SummaryItem item in summary.AllItems)
+        {
+            evidenceByItem[item.Id] = [.. item.Evidence.Select(reference => reference.SegmentId)];
+        }
+        foreach (SummaryAction action in summary.ActionItems)
+        {
+            evidenceByItem[action.Id] = [.. action.Evidence.Select(reference => reference.SegmentId)];
+        }
+        return evidenceByItem;
+    }
+
+    /// <summary>
+    /// The shared rule for anything the final pass wrote: real prose, named facts that exist, and
+    /// citations that come from those facts and nowhere else.
+    /// </summary>
+    private static void ValidateGroundedBlock(
+        string id,
+        string text,
+        IReadOnlyList<string> supportingItemIds,
+        IReadOnlyList<SummaryEvidence> evidence,
+        Dictionary<string, TranscriptSegment> allowed,
+        HashSet<string> structuredIds,
+        Dictionary<string, HashSet<string>> evidenceByItem,
+        SummaryDocument summary,
+        HashSet<string> seenIds,
+        List<string> problems)
+    {
+        if (!seenIds.Add(id))
+        {
+            problems.Add(Invariant($"brief entry id '{id}' appears more than once"));
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            problems.Add(Invariant($"brief entry '{id}' has no prose"));
+        }
+
+        if (supportingItemIds.Count == 0)
+        {
+            problems.Add(Invariant($"brief entry '{id}' names no validated facts"));
+        }
+
+        HashSet<string> permitted = new(StringComparer.Ordinal);
+        foreach (string itemId in supportingItemIds.Distinct(StringComparer.Ordinal))
+        {
+            if (!structuredIds.Contains(itemId) || !evidenceByItem.TryGetValue(itemId, out HashSet<string>? itemEvidence))
+            {
+                problems.Add(Invariant($"brief entry '{id}' refers to unknown fact '{itemId}'"));
+                continue;
+            }
+            permitted.UnionWith(itemEvidence);
+        }
+
+        if (evidence.Count == 0)
+        {
+            problems.Add(Invariant($"brief entry '{id}' cites nothing"));
+        }
+
+        foreach (SummaryEvidence reference in evidence)
+        {
+            if (!permitted.Contains(reference.SegmentId))
+            {
+                problems.Add(Invariant(
+                    $"brief entry '{id}' cites '{reference.SegmentId}', which does not support its named facts"));
+            }
+        }
+
+        ValidateEvidence(id, evidence, allowed, summary, problems);
+    }
+
+    private static void ValidateNarrative(
+        SummaryDocument summary,
+        Dictionary<string, TranscriptSegment> allowed,
+        HashSet<string> structuredIds,
+        List<string> problems)
+    {
+        if (summary.SchemaVersion == 1)
+        {
+            return;
+        }
+
+        if (!summary.Model.ProducesSummaries)
+        {
+            if (summary.Narrative is not null)
+            {
+                problems.Add("a placeholder document must not claim a generated narrative");
+            }
+            return;
+        }
+
+        if (summary.Narrative is null || summary.Narrative.Summary.Count == 0)
+        {
+            // From v3 the brief is the final pass and the narrative is history. Demanding both
+            // would make every new summary carry a second, near-identical document purely to
+            // satisfy a check written when only one existed.
+            if (summary.SchemaVersion < 3)
+            {
+                problems.Add("a schema-v2 model summary has no final narrative");
+            }
+            return;
+        }
+
+        Dictionary<string, HashSet<string>> evidenceByItem = EvidenceByItem(summary);
+
+        HashSet<string> narrativeIds = new(StringComparer.Ordinal);
+        foreach (SummaryNarrativeBlock block in summary.Narrative.AllBlocks)
+        {
+            if (!narrativeIds.Add(block.Id))
+            {
+                problems.Add(Invariant($"narrative block id '{block.Id}' appears more than once"));
+            }
+            if (string.IsNullOrWhiteSpace(block.Text))
+            {
+                problems.Add(Invariant($"narrative block '{block.Id}' has no prose"));
+            }
+            if (block.SupportingItemIds.Count == 0)
+            {
+                problems.Add(Invariant($"narrative block '{block.Id}' names no validated facts"));
+            }
+
+            HashSet<string> permittedEvidence = new(StringComparer.Ordinal);
+            foreach (string itemId in block.SupportingItemIds.Distinct(StringComparer.Ordinal))
+            {
+                if (!structuredIds.Contains(itemId) || !evidenceByItem.TryGetValue(itemId, out HashSet<string>? itemEvidence))
+                {
+                    problems.Add(Invariant($"narrative block '{block.Id}' refers to unknown fact '{itemId}'"));
+                    continue;
+                }
+                permittedEvidence.UnionWith(itemEvidence);
+            }
+
+            if (block.Evidence.Count == 0)
+            {
+                problems.Add(Invariant($"narrative block '{block.Id}' cites nothing"));
+            }
+            foreach (SummaryEvidence reference in block.Evidence)
+            {
+                if (!permittedEvidence.Contains(reference.SegmentId))
+                {
+                    problems.Add(Invariant(
+                        $"narrative block '{block.Id}' cites '{reference.SegmentId}', which does not support its named facts"));
+                }
+            }
+            ValidateEvidence(block.Id, block.Evidence, allowed, summary, problems);
+        }
     }
 
     private static void ValidateItem(

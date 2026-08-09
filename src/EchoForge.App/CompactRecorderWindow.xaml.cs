@@ -19,6 +19,8 @@ public partial class CompactRecorderWindow : Window
     /// a click that a button took is not a drag, and starting one would swallow it.
     /// </para>
     /// </summary>
+    private void OnReturnToFull(object sender, RoutedEventArgs e) => Close();
+
     private void OnDragged(object sender, MouseButtonEventArgs e)
     {
         if (e.Handled || e.ButtonState != MouseButtonState.Pressed)

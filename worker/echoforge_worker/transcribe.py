@@ -1,9 +1,9 @@
 """Transcription: the backend seam, the deterministic placeholder backend, and the merge.
 
-The backend interface takes a whole track rather than a chunk at a time. That is deliberate:
-60-second source chunk boundaries are not speech boundaries, and the production backend will
-form its own ten-minute windows with overlap across them. An interface shaped around single
-chunks would have to be rewritten to allow that, and the protocol would move with it.
+The backend interface takes a whole track rather than a storage chunk at a time. That is
+deliberate: 60-second source chunk boundaries are not speech boundaries, and the selected model
+owns its prepared window duration and overlap. An interface shaped around source chunks would
+lose that capability and would force the protocol to change for every backend.
 
 The placeholder backend registered here performs **no speech recognition of any kind**. It
 reads the real audio, finds where energy exists, and emits deterministic filler text derived
@@ -150,6 +150,10 @@ class TranscriptionBackend(ABC):
     ) -> list[Segment]:
         """Segments for one track, in any order. The merge sorts and identifies them."""
 
+    def run_metadata(self, options: RequestOptions) -> dict[str, Any] | None:
+        """Bounded non-content settings/measurements, or None for schema-v1-style backends."""
+        return None
+
 
 class MockBackend(TranscriptionBackend):
     """Deterministic placeholder. Reads real audio; recognises nothing.
@@ -175,6 +179,36 @@ class MockBackend(TranscriptionBackend):
             recognizes_speech=False,
             worker_version=WORKER_VERSION,
         )
+
+    def run_metadata(self, options: RequestOptions) -> dict[str, Any]:
+        return {
+            "requested_compute_profile": options.compute_profile or "cpu-int8",
+            "actual_compute_profile": "none",
+            "language": options.language or "und",
+            "vad_mode": "off",
+            "vad_settings": {},
+            "window_strategy": options.window_strategy or "mock-grid-v1",
+            "window_seconds": float(options.segment_seconds or DEFAULT_SEGMENT_SECONDS),
+            "overlap_seconds": 0.0,
+            "timestamp_capability": "segment",
+            "timestamp_precision": "window-approximate",
+            "model_load_seconds": 0.0,
+            "processing_seconds": 0.0,
+            "total_processing_seconds": 0.0,
+            "peak_vram_bytes": None,
+            "source_duration_seconds": 0.0,
+            "audio_duration_seconds": 0.0,
+            "real_time_factor": None,
+            "vad_retained_seconds": 0.0,
+            "vad_excluded_seconds": 0.0,
+            "speech_region_count": 0,
+            "asr_segment_count": 0,
+            "window_count": 0,
+            "signal_windows_without_text": 0,
+            "warning_count": 0,
+            "fallback_count": 0,
+            "warnings": [],
+        }
 
     def transcribe_track(
         self,
@@ -274,7 +308,15 @@ def _production_backends() -> dict[str, Any]:
     """
     from .whisper_backend import FasterWhisperBackend, production_stack_available
 
-    return {FasterWhisperBackend.name: FasterWhisperBackend} if production_stack_available() else {}
+    backends = {FasterWhisperBackend.name: FasterWhisperBackend} if production_stack_available() else {}
+
+    # NeMo lives in its own Linux/WSL environment. Importing this small adapter does not import
+    # torch; it advertises itself only when that isolated environment is complete.
+    from .nemo_backend import NemoBackend, production_stack_available as nemo_stack_available
+
+    if nemo_stack_available():
+        backends[NemoBackend.name] = NemoBackend
+    return backends
 
 
 def _registry() -> dict[str, Any]:
@@ -399,6 +441,13 @@ def build_transcript(
         for track in sorted(request.tracks, key=lambda t: SOURCE_TRACKS.index(t.source_track))
     )
 
+    run = backend.run_metadata(request.options)
+    if run is not None:
+        # The session timeline is the immutable source duration. ``audio_duration_seconds`` is
+        # deliberately separate because two tracks and overlap mean the recogniser may receive
+        # more audio than wall-clock meeting length.
+        run["source_duration_seconds"] = request.duration_seconds
+
     return Transcript(
         session_id=request.session_id,
         transcript_revision=request.transcript_revision,
@@ -409,6 +458,7 @@ def build_transcript(
         epochs=request.epochs,
         languages=languages,
         segments=segments,
+        run=run,
     )
 
 

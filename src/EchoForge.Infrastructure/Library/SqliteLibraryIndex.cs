@@ -44,8 +44,14 @@ public sealed class SqliteLibraryIndex : IDisposable
     /// same UTC offset — true today and not a thing to build a date filter on. An integer is
     /// unambiguous, and bumping the version costs a rebuild, which is exactly what a cache is for.
     /// </para>
+    ///
+    /// <para>
+    /// Version 3 refreshes presentation data cached in <c>meetings</c>: default recording titles
+    /// now use the user's local 12-hour clock, and a presentation-only title sidecar can override
+    /// them. The SQL columns did not change, but old cached titles still need one rebuild on upgrade.
+    /// </para>
     /// </summary>
-    public const int SchemaVersion = 2;
+    public const int SchemaVersion = 3;
 
     private readonly string _databasePath;
     private readonly LibraryProjection _projection;

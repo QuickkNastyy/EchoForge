@@ -4,8 +4,12 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Windows.Threading;
 using EchoForge.Contracts.Artifacts;
+using EchoForge.Contracts.Inference;
+using EchoForge.Contracts.Settings;
 using EchoForge.Contracts.Summaries;
 using EchoForge.Contracts.Transcripts;
+using EchoForge.Core.Inference;
+using EchoForge.Core.Summaries;
 using EchoForge.Infrastructure.Summaries;
 
 namespace EchoForge.App;
@@ -17,6 +21,38 @@ public sealed record SummaryRevisionOption(
     bool ProducesSummaries,
     bool IsStale,
     bool WasRepaired);
+
+public sealed record SummaryModelOption(
+    string ModelId,
+    string Backend,
+    string ProfileId,
+    string DisplayName,
+    bool Installed,
+    bool ProducesSummaries,
+    string Status)
+{
+    public string Label => $"{DisplayName} — {Status}";
+}
+
+public sealed class SummaryComparisonChoice(SummaryModelOption model) : INotifyPropertyChanged
+{
+    private bool _isSelected;
+    public SummaryModelOption Model { get; } = model;
+    public string Label => Model.DisplayName;
+    public bool IsEnabled => Model.Installed && Model.ProducesSummaries;
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set
+        {
+            bool selected = value && IsEnabled;
+            if (_isSelected == selected) return;
+            _isSelected = selected;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelected)));
+        }
+    }
+    public event PropertyChangedEventHandler? PropertyChanged;
+}
 
 /// <summary>
 /// The summary surface.
@@ -30,6 +66,7 @@ public sealed record SummaryRevisionOption(
 public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly SummaryCoordinator _coordinator;
+    private readonly ISettingsStore? _settings;
     private readonly OperationGate _gate = new();
 
     private string? _sessionId;
@@ -42,20 +79,25 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
     private SummaryState _state = SummaryState.Empty;
     private string? _notice;
     private string? _error;
-    private bool _useProductionModel;
     private double _installPercent;
     private bool _installing;
 
-    public SummaryViewModel(SummaryCoordinator coordinator)
+    public SummaryViewModel(SummaryCoordinator coordinator, ISettingsStore? settings = null)
     {
         _coordinator = coordinator ?? throw new ArgumentNullException(nameof(coordinator));
+        _settings = settings;
 
         GenerateCommand = new AsyncRelayCommand(GenerateAsync, _gate, () => CanGenerate, m => Error = m);
         InstallModelCommand = new AsyncRelayCommand(InstallModelAsync, _gate, () => CanInstallModel, m => Error = m);
+        RunModelComparisonCommand = new AsyncRelayCommand(
+            RunModelComparisonAsync, _gate, () => CanRunModelComparison, m => Error = m);
+        CompareRevisionsCommand = new AsyncRelayCommand(
+            CompareRevisionsAsync, _gate, () => CanCompareRevisions, m => Error = m);
 
         // Preferred whenever it is actually here. Defaulting to it when it is not would make the
         // first click fail for a reason the user never chose.
-        _useProductionModel = coordinator.ProductionAvailable;
+        RebuildModels();
+        SelectInitialModel();
         GenerateAgainCommand = new AsyncRelayCommand(GenerateAsync, _gate, () => CanGenerateAgain, m => Error = m);
         CancelCommand = new AsyncRelayCommand(CancelAsync, _gate, () => CanCancel, m => Error = m);
 
@@ -75,7 +117,36 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
 
     public AsyncRelayCommand InstallModelCommand { get; }
 
+    public AsyncRelayCommand RunModelComparisonCommand { get; }
+
+    public AsyncRelayCommand CompareRevisionsCommand { get; }
+
+    public Action<SummaryComparisonResult>? ShowComparison { get; set; }
+
     // -- which summariser ---------------------------------------------------------------------
+
+    public ObservableCollection<SummaryModelOption> SummaryModels { get; } = [];
+
+    public ObservableCollection<SummaryComparisonChoice> ComparisonModels { get; } = [];
+
+    private SummaryModelOption? _selectedSummaryModel;
+
+    public SummaryModelOption SelectedSummaryModel
+    {
+        get => _selectedSummaryModel ?? SummaryModels[0];
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            if (ReferenceEquals(_selectedSummaryModel, value)) return;
+            _selectedSummaryModel = value;
+            if (_settings is not null)
+            {
+                AppSettings current = _settings.Load();
+                _settings.Save(current with { SummaryModelId = value.ModelId });
+            }
+            Refresh();
+        }
+    }
 
     /// <summary>
     /// True to run the local language model, false to run the deterministic placeholder.
@@ -88,26 +159,26 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public bool UseProductionModel
     {
-        get => _useProductionModel;
+        get => SelectedSummaryModel.ProducesSummaries;
         set
         {
-            if (_useProductionModel == value)
+            SummaryModelOption? desired = value
+                ? SummaryModels.FirstOrDefault(model => model.Backend == SummaryOptions.ProductionBackend && model.Installed)
+                : SummaryModels.FirstOrDefault(model => model.Backend == SummaryOptions.MockBackend);
+            if (desired is null || ReferenceEquals(desired, _selectedSummaryModel))
             {
                 return;
             }
-
-            _useProductionModel = value;
-            Refresh();
+            SelectedSummaryModel = desired;
         }
     }
 
     public bool ProductionAvailable => _coordinator.ProductionAvailable;
 
     /// <summary>Which summariser the next run would actually use. Never a guess.</summary>
-    public string BackendText =>
-        UseProductionModel && ProductionAvailable
-            ? "Local model (Gemma 4 12B, on this machine)"
-            : "Deterministic placeholder (quotes the transcript, understands nothing)";
+    public string BackendText => SelectedSummaryModel.ProducesSummaries
+        ? $"{SelectedSummaryModel.DisplayName} · local llama.cpp · exact transcript revision {_transcriptRevision?.ToString(CultureInfo.InvariantCulture) ?? "—"}"
+        : "Deterministic placeholder (quotes the transcript, understands nothing)";
 
     /// <summary>What the local model still needs, in one line the panel can show.</summary>
     public string ModelStatusText
@@ -120,7 +191,8 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
                     $"Downloading and verifying the local summary model - {_installPercent:F0}%");
             }
 
-            if (_coordinator.RuntimeStatus() is not { } status)
+            SummaryModelOption target = InstallTarget;
+            if (_coordinator.RuntimeStatus(target.ProfileId) is not { } status)
             {
                 return "No verified summary model is installed yet. Install it below to summarise with the local model.";
             }
@@ -128,7 +200,7 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
             if (status.Ready)
             {
                 return string.Create(CultureInfo.InvariantCulture,
-                    $"Local summary model ready ({status.BytesRequired / 1_000_000_000.0:F1} GB, {status.ProfileId}).");
+                    $"{target.DisplayName} ready ({status.BytesRequired / 1_000_000_000.0:F1} GB, {status.ProfileId}).");
             }
 
             return status.BytesInstalled > 0
@@ -140,14 +212,34 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
     }
 
     public bool CanInstallModel =>
-        !_installing && !ProductionAvailable && !_recordingActive && !IsWorking && !_shuttingDown &&
-        _coordinator.RuntimeStatus() is { AnythingToDownload: true };
+        !_installing && !InstallTarget.Installed
+        && !_recordingActive && !IsWorking && !_shuttingDown &&
+        _coordinator.RuntimeStatus(InstallTarget.ProfileId) is { AnythingToDownload: true };
+
+    private SummaryModelOption InstallTarget => SelectedSummaryModel.ProducesSummaries
+        ? SelectedSummaryModel
+        : SummaryModels.First(model => model.Backend == SummaryOptions.ProductionBackend);
 
     public double InstallPercent => _installPercent;
 
     public bool IsInstallingModel => _installing;
 
     public ObservableCollection<SummaryRevisionOption> Revisions { get; } = [];
+
+    private SummaryRevisionOption? _comparisonLeftRevision;
+    private SummaryRevisionOption? _comparisonRightRevision;
+
+    public SummaryRevisionOption? ComparisonLeftRevision
+    {
+        get => _comparisonLeftRevision;
+        set { _comparisonLeftRevision = value; OnChanged(); RaiseCommands(); }
+    }
+
+    public SummaryRevisionOption? ComparisonRightRevision
+    {
+        get => _comparisonRightRevision;
+        set { _comparisonRightRevision = value; OnChanged(); RaiseCommands(); }
+    }
 
     public SummaryRevisionOption? SelectedRevision
     {
@@ -189,11 +281,26 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
 
     public bool HasSummary => _state.Selected is not null;
 
-    public string SummarySummary => _state.Selected is { } selected
-        ? string.Create(
-            CultureInfo.InvariantCulture,
-            $"Version {selected.Revision} · {selected.DecisionCount} decisions · {selected.ActionCount} actions · from transcript v{selected.TranscriptRevision}")
-        : string.Empty;
+    public string SummarySummary
+    {
+        get
+        {
+            if (_state.Selected is not { } selected)
+            {
+                return string.Empty;
+            }
+
+            string timing = selected.ProcessingSeconds is > 0
+                ? string.Create(CultureInfo.InvariantCulture,
+                    $" · {TimeSpan.FromSeconds(selected.ProcessingSeconds.Value):hh\\:mm\\:ss} processing")
+                : string.Empty;
+            string fallback = selected.FellBack ? " · fallback used" : string.Empty;
+            return string.Create(
+                CultureInfo.InvariantCulture,
+                $"Version {selected.Revision} · {selected.ModelId} · {selected.DecisionCount} decisions · " +
+                $"{selected.ActionCount} actions · from transcript v{selected.TranscriptRevision}{timing}{fallback}");
+        }
+    }
 
     /// <summary>
     /// True whenever the summary on show was not written by a real summariser — and before
@@ -210,7 +317,7 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public bool IsPlaceholderBackend => _state.Selected is { } shown
         ? !shown.ProducesSummaries
-        : !(UseProductionModel && ProductionAvailable);
+        : !SelectedSummaryModel.ProducesSummaries;
 
     public string PlaceholderWarning => _state.Selected is { ProducesSummaries: false } selected
         ? $"Version {selected.Revision.ToString(CultureInfo.InvariantCulture)} was produced by a deterministic " +
@@ -254,13 +361,24 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
 
     public bool CanGenerate =>
         _sessionId is not null && _hasTranscript && _hostReady && !_shuttingDown &&
+        (SelectedSummaryModel.Installed || !SelectedSummaryModel.ProducesSummaries) &&
         !_recordingActive && !IsWorking && !_coordinator.IsRunning && !HasSummary;
 
     public bool CanGenerateAgain =>
         _sessionId is not null && _hasTranscript && _hostReady && !_shuttingDown &&
+        (SelectedSummaryModel.Installed || !SelectedSummaryModel.ProducesSummaries) &&
         !_recordingActive && !IsWorking && !_coordinator.IsRunning && HasSummary;
 
     public bool CanCancel => IsWorking && !_shuttingDown;
+
+    public bool CanRunModelComparison =>
+        _sessionId is not null && _transcriptRevision is not null && _hostReady && !_shuttingDown
+        && !_recordingActive && !IsWorking && !_coordinator.IsRunning
+        && ComparisonModels.Count(choice => choice.IsSelected && choice.IsEnabled) >= 2;
+
+    public bool CanCompareRevisions =>
+        ComparisonLeftRevision is { } left && ComparisonRightRevision is { } right
+        && left.Revision != right.Revision && !_shuttingDown && !IsWorking;
 
     /// <summary>
     /// Pushed by the main view model, so there is one place that reads recorder state and the
@@ -309,9 +427,9 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public SummaryOptions CurrentOptions() => new()
     {
-        Backend = UseProductionModel && ProductionAvailable
-            ? SummaryOptions.ProductionBackend
-            : SummaryOptions.MockBackend,
+        Backend = SelectedSummaryModel.Backend,
+        SummaryProfile = SelectedSummaryModel.ProfileId,
+        TranscriptRevision = _transcriptRevision,
     };
 
     private async Task GenerateAsync()
@@ -350,6 +468,89 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
         Refresh();
     }
 
+    private async Task RunModelComparisonAsync()
+    {
+        if (_sessionId is not { } sessionId || _transcriptRevision is not { } transcriptRevision)
+        {
+            return;
+        }
+
+        List<SummaryModelOption> models =
+        [
+            .. ComparisonModels.Where(choice => choice.IsSelected && choice.IsEnabled)
+                .Select(choice => choice.Model)
+        ];
+        if (models.Count < 2)
+        {
+            Error = "Select at least two installed summary models.";
+            return;
+        }
+
+        Error = null;
+        List<int> revisions = [];
+        for (int index = 0; index < models.Count; index++)
+        {
+            SummaryModelOption model = models[index];
+            Notice = $"Running {index + 1} of {models.Count}: {model.DisplayName}. Models are loaded sequentially.";
+            SummaryRunResult result = await Task.Run(() => _coordinator.SummarizeAsync(
+                sessionId,
+                new SummaryOptions
+                {
+                    Backend = model.Backend,
+                    SummaryProfile = model.ProfileId,
+                    TranscriptRevision = transcriptRevision,
+                })).ConfigureAwait(true);
+
+            if (!result.Succeeded)
+            {
+                if (result.State == ProcessingStageState.Cancelled)
+                {
+                    Notice = $"Summary comparison cancelled after {revisions.Count} completed runs.";
+                }
+                else
+                {
+                    Error = $"{model.DisplayName}: {result.Message}";
+                }
+                break;
+            }
+            if (result.Revision is { } revision) revisions.Add(revision);
+            Refresh();
+        }
+
+        if (revisions.Count == models.Count)
+        {
+            Notice = $"Comparison complete. {revisions.Count} immutable summaries were saved from transcript v{transcriptRevision}.";
+            RebuildRevisions();
+            ComparisonLeftRevision = Revisions.FirstOrDefault(option => option.Revision == revisions[^2]);
+            ComparisonRightRevision = Revisions.FirstOrDefault(option => option.Revision == revisions[^1]);
+        }
+        Refresh();
+    }
+
+    private async Task CompareRevisionsAsync()
+    {
+        if (_sessionId is not { } sessionId
+            || ComparisonLeftRevision is not { } left
+            || ComparisonRightRevision is not { } right)
+        {
+            return;
+        }
+
+        SummaryComparisonResult? comparison = await Task.Run(() =>
+        {
+            SummaryDocument? a = _coordinator.ReadSummary(sessionId, left.Revision);
+            SummaryDocument? b = _coordinator.ReadSummary(sessionId, right.Revision);
+            return a is null || b is null ? null : SummaryComparer.Compare(a, b);
+        }).ConfigureAwait(true);
+
+        if (comparison is null)
+        {
+            Error = "One of those summary revisions could not be read.";
+            return;
+        }
+        ShowComparison?.Invoke(comparison);
+    }
+
     /// <summary>
     /// Downloads and unpacks the local model. Seven gigabytes, so it is never implicit.
     ///
@@ -360,6 +561,7 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     private async Task InstallModelAsync()
     {
+        SummaryModelOption target = InstallTarget;
         Error = null;
         Notice = null;
         _installing = true;
@@ -376,14 +578,18 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             bool installed = await Task
-                .Run(() => _coordinator.InstallProductionAsync(progress: progress))
+                .Run(() => _coordinator.InstallProductionAsync(
+                    profileId: target.ProfileId, progress: progress))
                 .ConfigureAwait(true);
 
             Notice = installed
                 ? "The local summary model is ready. Summaries are now generated on this machine by a real model."
                 : "The summary model could not be installed. Nothing was changed, and the placeholder still works.";
 
-            _useProductionModel = installed || _useProductionModel;
+            string selectedId = installed ? target.ModelId : SelectedSummaryModel.ModelId;
+            RebuildModels();
+            _selectedSummaryModel = SummaryModels.FirstOrDefault(model => model.ModelId == selectedId)
+                ?? SummaryModels[0];
         }
         finally
         {
@@ -461,6 +667,8 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
 
     private void RebuildRevisions()
     {
+        int? leftRevision = _comparisonLeftRevision?.Revision;
+        int? rightRevision = _comparisonRightRevision?.Revision;
         List<SummaryRevisionOption> wanted =
         [
             .. _state.Revisions
@@ -470,7 +678,7 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
                     r.Revision,
                     string.Create(
                         CultureInfo.InvariantCulture,
-                        $"Version {r.Revision} · {r.CreatedUtc.ToLocalTime():d MMM HH:mm} · transcript v{r.TranscriptRevision}{(r.ProducesSummaries ? string.Empty : " · placeholder")}{(r.WasRepaired ? " · regenerated after a refusal" : string.Empty)}"),
+                        $"Version {r.Revision} · {r.ModelId} · {r.CreatedUtc.ToLocalTime():MMM d, h:mm tt} · transcript v{r.TranscriptRevision}{(r.ProducesSummaries ? string.Empty : " · placeholder")}{(r.WasRepaired ? " · regenerated after a refusal" : string.Empty)}{(r.FellBack ? " · fallback used" : string.Empty)}"),
                     r.ProducesSummaries,
                     r.IsStaleAgainst(_transcriptRevision),
                     r.WasRepaired))
@@ -486,6 +694,87 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
         {
             Revisions.Add(option);
         }
+
+        _comparisonLeftRevision = leftRevision is { } left
+            ? Revisions.FirstOrDefault(option => option.Revision == left)
+            : Revisions.Skip(1).FirstOrDefault();
+        _comparisonRightRevision = rightRevision is { } right
+            ? Revisions.FirstOrDefault(option => option.Revision == right)
+            : Revisions.FirstOrDefault();
+        OnChanged(nameof(ComparisonLeftRevision));
+        OnChanged(nameof(ComparisonRightRevision));
+    }
+
+    private void RebuildModels()
+    {
+        string? selectedId = _selectedSummaryModel?.ModelId;
+        HashSet<string> compared =
+        [
+            .. ComparisonModels.Where(choice => choice.IsSelected).Select(choice => choice.Model.ModelId)
+        ];
+
+        SummaryModels.Clear();
+        SummaryModels.Add(new SummaryModelOption(
+            SummaryModelIds.Mock,
+            SummaryOptions.MockBackend,
+            string.Empty,
+            "Deterministic placeholder",
+            Installed: true,
+            ProducesSummaries: false,
+            "Available"));
+        foreach (SummaryModelDefinition definition in InferenceModelRegistry.SummaryModels)
+        {
+            bool installed = _coordinator.RuntimeStatus(definition.ArtifactProfileId)?.Ready == true;
+            string status = installed
+                ? "Installed"
+                : definition.Maturity == ModelMaturity.Experimental ? "Optional / install" : "Install";
+            SummaryModels.Add(new SummaryModelOption(
+                definition.Id,
+                definition.BackendId,
+                definition.ArtifactProfileId,
+                definition.DisplayName,
+                installed,
+                ProducesSummaries: true,
+                status));
+        }
+
+        if (selectedId is not null)
+        {
+            _selectedSummaryModel = SummaryModels.FirstOrDefault(model => model.ModelId == selectedId)
+                ?? _selectedSummaryModel;
+        }
+
+        foreach (SummaryComparisonChoice choice in ComparisonModels)
+        {
+            choice.PropertyChanged -= OnComparisonChoiceChanged;
+        }
+        ComparisonModels.Clear();
+        foreach (SummaryModelOption model in SummaryModels.Where(model => model.ProducesSummaries))
+        {
+            SummaryComparisonChoice choice = new(model) { IsSelected = compared.Contains(model.ModelId) };
+            choice.PropertyChanged += OnComparisonChoiceChanged;
+            ComparisonModels.Add(choice);
+        }
+        OnChanged(nameof(SummaryModels));
+        OnChanged(nameof(ComparisonModels));
+    }
+
+    private void SelectInitialModel()
+    {
+        string? remembered = _settings?.Load().SummaryModelId;
+        _selectedSummaryModel = SummaryModels.FirstOrDefault(model => model.ModelId == remembered)
+            ?? SummaryModels.FirstOrDefault(model =>
+                model.Backend == SummaryOptions.ProductionBackend && model.Installed)
+            ?? SummaryModels[0];
+    }
+
+    private void OnComparisonChoiceChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(SummaryComparisonChoice.IsSelected))
+        {
+            OnChanged(nameof(CanRunModelComparison));
+            RaiseCommands();
+        }
     }
 
     private static readonly string[] RefreshedProperties =
@@ -496,7 +785,9 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
         nameof(ProgressPercent), nameof(ProgressDescription),
         nameof(UseProductionModel), nameof(ProductionAvailable), nameof(BackendText),
         nameof(ModelStatusText), nameof(CanInstallModel), nameof(IsInstallingModel),
-        nameof(InstallPercent),
+        nameof(InstallPercent), nameof(SelectedSummaryModel), nameof(SummaryModels),
+        nameof(ComparisonLeftRevision), nameof(ComparisonRightRevision),
+        nameof(CanRunModelComparison), nameof(CanCompareRevisions),
     ];
 
     private void RaiseCommands()
@@ -505,6 +796,8 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
         GenerateAgainCommand.RaiseCanExecuteChanged();
         CancelCommand.RaiseCanExecuteChanged();
         InstallModelCommand.RaiseCanExecuteChanged();
+        RunModelComparisonCommand.RaiseCanExecuteChanged();
+        CompareRevisionsCommand.RaiseCanExecuteChanged();
     }
 
     private static void Dispatch(Action action)
@@ -533,5 +826,9 @@ public sealed class SummaryViewModel : INotifyPropertyChanged, IDisposable
         _disposed = true;
         _coordinator.StateChanged -= OnStateChanged;
         _coordinator.ProgressChanged -= OnProgress;
+        foreach (SummaryComparisonChoice choice in ComparisonModels)
+        {
+            choice.PropertyChanged -= OnComparisonChoiceChanged;
+        }
     }
 }

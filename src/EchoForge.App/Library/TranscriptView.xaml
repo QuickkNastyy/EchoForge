@@ -1,0 +1,93 @@
+<UserControl x:Class="EchoForge.App.Library.TranscriptView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <!--
+    The transcript, unchanged in what it does: speaker, timestamp, text, search, and a double-click
+    that plays from that moment. You and Remote keep their colours, and a named speaker shows the
+    name that was given to them.
+  -->
+  <DockPanel Margin="0,10,0,0">
+    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+      <TextBlock DockPanel.Dock="Right" Style="{StaticResource Label}" VerticalAlignment="Center"
+                 Foreground="{DynamicResource Focus}"
+                 Visibility="{Binding HasEvidenceFocus, Converter={StaticResource BoolToVis}}">
+        <Run Text="jumped to " /><Run Text="{Binding EvidenceTimestamp, Mode=OneWay}" />
+      </TextBlock>
+
+      <Border Background="{DynamicResource Raised}" BorderBrush="{DynamicResource Line}" BorderThickness="1"
+              CornerRadius="5" Padding="8,2" Margin="0,0,12,0" HorizontalAlignment="Left">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Left" Text="⌕" Foreground="{DynamicResource InkFaint}"
+                     VerticalAlignment="Center" Margin="0,0,6,0" />
+          <TextBox x:Name="TranscriptSearch" BorderThickness="0" Background="Transparent" Width="180"
+                   Foreground="{DynamicResource Ink}" VerticalAlignment="Center"
+                   TextChanged="OnTranscriptSearchChanged"
+                   ToolTip="Find within this recording" />
+        </DockPanel>
+      </Border>
+    </DockPanel>
+
+    <ListBox x:Name="TranscriptList" ItemsSource="{Binding Lines}"
+             Background="Transparent" BorderThickness="0"
+             SelectionMode="Extended" HorizontalContentAlignment="Stretch"
+             MouseDoubleClick="OnTranscriptLineActivated"
+             ToolTip="Double-click a line to play from that moment."
+             VirtualizingStackPanel.IsVirtualizing="True"
+             VirtualizingStackPanel.VirtualizationMode="Recycling"
+             ScrollViewer.CanContentScroll="True"
+             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+      <ListBox.ItemTemplate>
+        <DataTemplate>
+          <Grid Margin="0,3">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="10" />
+              <ColumnDefinition Width="60" />
+              <ColumnDefinition Width="80" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Everything but the cited line recedes while a claim is being followed. -->
+            <Grid.Opacity>
+              <MultiBinding Converter="{StaticResource EvidenceFocus}">
+                <Binding Path="SegmentIds" />
+                <Binding Path="DataContext.EvidenceSegmentId"
+                         RelativeSource="{RelativeSource AncestorType=ListBox}" />
+              </MultiBinding>
+            </Grid.Opacity>
+
+            <Border Grid.Column="0" Width="3" HorizontalAlignment="Left" Margin="0,1"
+                    CornerRadius="2" Background="{DynamicResource Focus}">
+              <Border.Visibility>
+                <MultiBinding Converter="{StaticResource EvidenceFocus}" ConverterParameter="mark">
+                  <Binding Path="SegmentIds" />
+                  <Binding Path="DataContext.EvidenceSegmentId"
+                           RelativeSource="{RelativeSource AncestorType=ListBox}" />
+                </MultiBinding>
+              </Border.Visibility>
+            </Border>
+
+            <TextBlock Grid.Column="1" Text="{Binding Timestamp}" FontFamily="{StaticResource DataFont}"
+                       FontSize="11" Foreground="{DynamicResource InkFaint}" VerticalAlignment="Top" Margin="0,2,0,0" />
+            <TextBlock Grid.Column="2" Text="{Binding Speaker}" FontFamily="{StaticResource UiFont}" FontSize="11.5"
+                       FontWeight="SemiBold" VerticalAlignment="Top" Margin="0,2,0,0"
+                       TextTrimming="CharacterEllipsis" MouseRightButtonUp="OnSpeakerRightClick"
+                       ToolTip="Right-click a remote speaker to name them">
+              <TextBlock.Style>
+                <Style TargetType="TextBlock">
+                  <Setter Property="Foreground" Value="{DynamicResource Remote}" />
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsYou}" Value="True">
+                      <Setter Property="Foreground" Value="{DynamicResource You}" />
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </TextBlock.Style>
+            </TextBlock>
+            <TextBox Grid.Column="3" Text="{Binding Text, Mode=OneWay}" Style="{StaticResource ReadingText}" />
+          </Grid>
+        </DataTemplate>
+      </ListBox.ItemTemplate>
+    </ListBox>
+  </DockPanel>
+</UserControl>

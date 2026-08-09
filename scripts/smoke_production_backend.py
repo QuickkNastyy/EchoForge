@@ -101,7 +101,7 @@ def main() -> int:
     devices = compute.cuda_device_count()
     print(f"CUDA devices visible to CTranslate2: {devices}")
 
-    requested = compute.CUDA_INT8_FLOAT16 if devices > 0 else compute.CPU_INT8
+    requested = compute.CUDA_FP16 if devices > 0 else compute.CPU_INT8
     print(f"requested profile: {requested}")
 
     with tempfile.TemporaryDirectory() as temporary:
@@ -148,11 +148,20 @@ def main() -> int:
 
         options = RequestOptions(
             backend="faster-whisper",
+            model_id=os.environ.get("ECHOFORGE_SMOKE_MODEL_ID", "whisper-large-v3-turbo"),
+            model_revision=os.environ.get("ECHOFORGE_SMOKE_MODEL_REVISION"),
             model_path=model_path,
             compute_profile=requested,
             language="en",
-            vad_filter=True,
+            vad_mode="accuracy",
+            vad_filter=False,
             word_timestamps=True,
+            allow_cpu_fallback=False,
+            window_strategy="whisper-long-v2",
+            window_seconds=600.0,
+            overlap_seconds=5.0,
+            timestamp_capability="word",
+            timestamp_precision="word-native",
         )
 
         backend = FasterWhisperBackend()
@@ -183,6 +192,9 @@ def main() -> int:
 
         model = backend.describe(options)
         print(f"model:            {model.model_id} / {model.compute_type} / recognises speech: {model.recognizes_speech}")
+        run = backend.run_metadata(options)
+        peak = run.get("peak_vram_bytes")
+        print(f"peak VRAM:        {peak if peak is not None else 'unavailable under WDDM'}")
         assert model.recognizes_speech is True
 
     print("")

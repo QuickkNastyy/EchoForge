@@ -220,12 +220,20 @@ class WorkerSession:
 
         if server is not None:
             measurements.actual_context = server.context_tokens
-            measurements.requested_context = server.profile.context_tokens
-            measurements.requested_gpu_layers = server.profile.gpu_layers
             measurements.kv_cache_type = server.profile.cache_type
             measurements.runtime_tier = server.profile.name
             measurements.used_cpu_only = not server.profile.uses_gpu
             setattr(backend, "measurements", measurements)
+
+        def sample_vram() -> None:
+            if server is None:
+                return
+            observed, source = process_vram_bytes(server.pid)
+            if observed >= measurements.peak_vram_bytes:
+                measurements.peak_vram_bytes = observed
+                measurements.vram_source = source
+
+        sample_vram()
 
         try:
             faults.during_transcription(self._cancel.is_set)
@@ -243,8 +251,7 @@ class WorkerSession:
 
             # Sampled while the model is still resident. Asking after the server has stopped
             # would measure an empty card.
-            if server is not None:
-                measurements.peak_vram_bytes, measurements.vram_source = process_vram_bytes(server.pid)
+            sample_vram()
 
             self._check_cancelled()
             self._emit_progress(Stage.MERGING)
@@ -266,18 +273,29 @@ class WorkerSession:
 
             measurements.synthesis_seconds = time.perf_counter() - synthesis_started
             measurements.synthesis_levels = synthesis.levels
+            sample_vram()
+
+            self._check_cancelled()
+            self._emit_progress(Stage.PLANNING)
+            narrative_started = time.perf_counter()
+            brief = backend.brief(synthesis.candidates, segments, request)
+            measurements.narrative_seconds = time.perf_counter() - narrative_started
+            sample_vram()
 
             self._check_cancelled()
             self._emit_progress(Stage.VALIDATING)
-            summary = build_summary(request, document, segments, synthesis.candidates, backend, synthesis)
+            summary = build_summary(
+                request, document, segments, synthesis.candidates, backend, synthesis, brief
+            )
 
             self._check_cancelled()
             self._emit_progress(Stage.WRITING_OUTPUT)
+            measurements.total_seconds = time.perf_counter() - started_at
+            summary["run"] = measurements.to_json()
             digest = _write_json(request.output_path, faults.corrupt_summary(summary))
 
-            measurements.total_seconds = time.perf_counter() - started_at
-            # Beside the summary, never inside it: prose and measurements are different things
-            # with different readers, and telemetry must stay free of meeting content.
+            # A sidecar supports bake-off tooling; the same bounded, content-free fields are also
+            # persisted on the immutable revision so provenance survives moving/exporting it.
             write_telemetry(request.output_path, measurements)
         except Cancelled:
             self._writer.send(protocol.cancelled(job_id, self._stage))
@@ -318,6 +336,7 @@ class WorkerSession:
         from .llama_server import (
             CPU_ONLY_LADDER,
             DEFAULT_LADDER,
+            GPT_OSS_LADDER,
             LlamaServerError,
             failure_from,
             start_with_fallback,
@@ -330,7 +349,17 @@ class WorkerSession:
                 "the production summary backend was asked for without a verified runtime and model",
             )
 
-        ladder = CPU_ONLY_LADDER if request.summary_profile == "summary-cpu-q4" else DEFAULT_LADDER
+        ladder = (
+            CPU_ONLY_LADDER
+            if request.summary_profile == "summary-cpu-q4"
+            else GPT_OSS_LADDER
+            if request.backend == "gpt-oss-20b"
+            else DEFAULT_LADDER
+        )
+
+        if measurements is not None:
+            measurements.requested_context = ladder[0].context_tokens
+            measurements.requested_gpu_layers = ladder[0].gpu_layers
 
         def stepped_down(tried: Any, next_profile: Any, detail: str, out_of_memory: bool) -> None:
             # Never silent. The user is told the model would not run at the size EchoForge asked
@@ -382,6 +411,7 @@ class WorkerSession:
         )
 
     def _run_transcription_job(self, job_id: str, request: TranscriptionRequest) -> int:
+        job_started = time.perf_counter()
         faults = FaultInjector.from_environment(
             request.options.test_mode, request.options.test_delay_seconds, self._env
         )
@@ -396,6 +426,11 @@ class WorkerSession:
                 )
             )
 
+        # Validate model/backend/compute/VAD/window capabilities before anything is loaded.
+        # Legacy protocol-v1 requests are mapped to Turbo or mock explicitly by the registry.
+        from .asr_registry import resolve_model
+
+        resolve_model(request.options)
         backend = resolve_backend(request.options.backend)
         self._writer.send(protocol.started(job_id, backend.name, backend.recognizes_speech))
 
@@ -410,13 +445,19 @@ class WorkerSession:
         try:
             faults.during_transcription(self._cancel.is_set)
 
+            run_warnings: list[str] = []
+
+            def report_warning(code: str, detail: str) -> None:
+                warning = f"{code}: {detail}"
+                if warning not in run_warnings:
+                    run_warnings.append(warning)
+                self._writer.send(protocol.warning(job_id, code, detail))
+
             context = BackendContext(
                 session_root=request.session_root,
                 cancelled=self._cancel.is_set,
                 on_chunk_completed=self._chunk_completed,
-                on_warning=lambda code, detail: self._writer.send(
-                    protocol.warning(job_id, code, detail)
-                ),
+                on_warning=report_warning,
                 # Without this the default of 0.0 reaches rebase(), which clamps every segment's
                 # end to the session duration - so every window-based run placed twelve recognised
                 # segments at zero length and returned an empty transcript. The placeholder backend
@@ -425,6 +466,27 @@ class WorkerSession:
             )
 
             transcript = build_transcript(request, backend, context, self._emit_progress)
+
+            if transcript.run is not None:
+                # The mock backend's byte determinism is a long-standing protocol guarantee used
+                # to test storage. It has no ASR performance to measure, so its zeroes stay
+                # deterministic; real recognisers record their observed wall time and RTF.
+                if transcript.model.recognizes_speech:
+                    total_seconds = time.perf_counter() - job_started
+                    transcript.run["total_processing_seconds"] = round(total_seconds, 6)
+                    audio_seconds = float(transcript.run.get("audio_duration_seconds") or 0.0)
+                    transcript.run["real_time_factor"] = (
+                        round(total_seconds / audio_seconds, 6) if audio_seconds > 0 else None
+                    )
+                recorded = transcript.run.setdefault("warnings", [])
+                combined: list[str] = []
+                if isinstance(recorded, list):
+                    for warning in [*recorded, *run_warnings]:
+                        bounded = str(warning)[:512]
+                        if bounded not in combined:
+                            combined.append(bounded)
+                transcript.run["warning_count"] = len(combined)
+                transcript.run["warnings"] = combined[:50]
 
             self._check_cancelled()
             self._emit_progress(Stage.VALIDATING)

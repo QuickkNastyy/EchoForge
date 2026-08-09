@@ -168,6 +168,29 @@ class TranscriptSegment:
     end_seconds: float
 
 
+#: How a commitment relates to the meeting that produced it. Only the first two are work that
+#: still exists once the call ends, and only those two ever reach the action plan. The rest are
+#: kept, classified, and shown where they cannot be mistaken for something to do - which is the
+#: whole difference between "stop the recording" appearing as a task and appearing as what it was.
+POST_MEETING_COMMITMENT: Final[str] = "post_meeting_commitment"
+INFERRED_NEXT_STEP: Final[str] = "inferred_next_step"
+EPHEMERAL_INSTRUCTION: Final[str] = "ephemeral_instruction"
+COMPLETED_IN_MEETING: Final[str] = "completed_in_meeting"
+FUTURE_IDEA: Final[str] = "future_idea"
+
+ACTION_CLASSIFICATIONS: Final[frozenset[str]] = frozenset(
+    {
+        POST_MEETING_COMMITMENT,
+        INFERRED_NEXT_STEP,
+        EPHEMERAL_INSTRUCTION,
+        COMPLETED_IN_MEETING,
+        FUTURE_IDEA,
+    }
+)
+
+OUTSTANDING_WORK: Final[frozenset[str]] = frozenset({POST_MEETING_COMMITMENT, INFERRED_NEXT_STEP})
+
+
 @dataclass(slots=True)
 class Candidate:
     """One extracted fact, before validation and before it has an identity."""
@@ -181,6 +204,9 @@ class Candidate:
     due_date_text: str | None = None
     due_date: str | None = None
     due_date_status: str = UNKNOWN
+    #: Only meaningful on an action. None on everything else, and on backends that never learned
+    #: to tell the difference.
+    classification: str | None = None
     confidence: float | None = None
     chunk_index: int = 0
     ordinal: int = 0
@@ -215,6 +241,20 @@ class SummaryBackend(ABC):
         enforces all three rather than trusting whatever produced the result.
         """
         return deduplicate(group)
+
+    def brief(
+        self,
+        candidates: Sequence[Candidate],
+        segments: Sequence[TranscriptSegment],
+        request: Any,
+    ) -> dict[str, list[dict[str, Any]]] | None:
+        """The final meeting brief, or None for a non-summarising placeholder.
+
+        A backend that can reason over the whole meeting overrides this. What comes back is prose
+        and an ordered plan, every piece of it naming the validated facts it rests on; the host
+        turns those names into citations and refuses anything that names a fact it does not have.
+        """
+        return None
 
 
 class MockSummaryBackend(SummaryBackend):
@@ -470,6 +510,8 @@ def deduplicate(candidates: Sequence[Candidate]) -> list[Candidate]:
                 existing.due_date = candidate.due_date
                 existing.due_date_text = candidate.due_date_text
                 existing.due_date_status = candidate.due_date_status
+            if existing.classification is None and candidate.classification is not None:
+                existing.classification = candidate.classification
 
             merged = True
             break
@@ -628,6 +670,19 @@ def _count_explicit(candidates: Sequence[Candidate]) -> int:
     )
 
 
+#: Prose sections of the brief, in the order a person reads them.
+BRIEF_SECTIONS: Final[tuple[str, ...]] = (
+    "summary",
+    "decisions",
+    "blockers",
+    "important_context",
+    "follow_ups",
+    "open_questions",
+    "backlog",
+    "risks",
+)
+
+
 def build_summary(
     request: Any,
     document: dict[str, Any],
@@ -635,6 +690,7 @@ def build_summary(
     candidates: Sequence[Candidate],
     backend: SummaryBackend,
     synthesis: SynthesisOutcome | None = None,
+    brief: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Assemble the canonical summary, citing only segments that exist.
 
@@ -665,18 +721,15 @@ def build_summary(
 
     buckets: dict[str, list[dict[str, Any]]] = {
         "key_points": [], "decisions": [], "open_questions": [], "risks": [], "blockers": [],
+        "future_ideas": [], "important_context": [], "dependencies": [],
     }
     actions: list[dict[str, Any]] = []
-    counters: dict[str, int] = {}
 
-    for candidate in candidates:
+    for identifier, candidate in candidate_identities(candidates):
         evidence = cite(candidate.segment_ids)
         if not evidence:
             # An item nothing supports is not shown. There is no partial credit here.
             continue
-
-        counters[candidate.kind] = counters.get(candidate.kind, 0) + 1
-        identifier = f"{candidate.kind}-{counters[candidate.kind]:03d}"
 
         if candidate.kind == "action":
             actions.append(
@@ -691,6 +744,10 @@ def build_summary(
                     "due_date": candidate.due_date,
                     "due_date_text": candidate.due_date_text,
                     "due_date_status": candidate.due_date_status,
+                    # Kept on every action rather than used to filter the list here: an in-meeting
+                    # instruction is a real thing that was said, and the reader who goes looking
+                    # for it should find it, labelled, instead of finding a gap.
+                    "classification": candidate.classification,
                 }
             )
             continue
@@ -700,6 +757,9 @@ def build_summary(
             "question": "open_questions",
             "risk": "risks",
             "blocker": "blockers",
+            "idea": "future_ideas",
+            "context": "important_context",
+            "dependency": "dependencies",
         }.get(candidate.kind, "key_points")
 
         buckets[bucket].append(
@@ -712,16 +772,23 @@ def build_summary(
             }
         )
 
+    rendered_brief = _render_brief(brief, cite) if backend.produces_summaries else None
+
+    if backend.produces_summaries and rendered_brief is None:
+        # A model that produced nothing citable still owes the reader the facts it validated.
+        # Quoting them is not a brief and does not pretend to be one, but it is honest, and it is
+        # far better than a document that claims a brief and contains an apology.
+        rendered_brief = _render_brief(fallback_brief(candidates), cite)
+
     # The overview describes whatever actually produced it. A production summary that called
     # itself a placeholder would be as misleading as a placeholder that called itself a summary,
     # and the earlier text was hard-coded from when only one of the two existed.
     if backend.produces_summaries:
-        overview = (
-            f"{len(buckets['decisions'])} decisions and {len(actions)} action items were extracted "
-            f"from {len(segments)} transcript segments by a local language model. Every claim below "
-            "cites the transcript segments it came from; nothing that could not be traced back to "
-            "one was kept. Read it as a reviewable draft, not as a record."
-        )
+        overview = " ".join(
+            block["text"] for block in (rendered_brief or {}).get("summary", [])
+        ).strip()
+        if not overview:
+            overview = "No evidence-grounded brief could be retained from this transcript."
     else:
         overview = (
             "This overview was assembled by EchoForge's deterministic placeholder summariser. "
@@ -730,14 +797,8 @@ def build_summary(
             f"from {len(segments)} transcript segments."
         )
 
-    if synthesis is not None and synthesis.levels > 1:
-        overview += (
-            f" The extracted facts were folded together over {synthesis.levels} passes, "
-            "because there were more of them than one pass considers at once."
-        )
-
     return {
-        "schema_version": 1,
+        "schema_version": 3 if rendered_brief is not None else 2,
         "session_id": request.session_id,
         "summary_revision": request.summary_revision,
         "created_at_utc": request.created_at_utc,
@@ -757,15 +818,179 @@ def build_summary(
             "merged_items": synthesis.merged,
             "reached_level_cap": synthesis.reached_level_cap,
         },
-        "title": "Meeting summary" if backend.produces_summaries else "Meeting summary (placeholder)",
+        "title": "Meeting brief" if backend.produces_summaries else "Meeting summary (placeholder)",
         "overview": overview,
+        # Written by every pipeline before the brief existed. New documents carry the brief
+        # instead; nothing rewrites an old one to acquire it.
+        "narrative": None,
+        "brief": rendered_brief,
         "key_points": buckets["key_points"],
         "decisions": buckets["decisions"],
         "action_items": actions,
         "open_questions": buckets["open_questions"],
         "risks": buckets["risks"],
         "blockers": buckets["blockers"],
+        "future_ideas": buckets["future_ideas"],
+        "important_context": buckets["important_context"],
+        "dependencies": buckets["dependencies"],
     }
+
+
+def fallback_brief(candidates: Sequence[Candidate]) -> dict[str, Any]:
+    """The safe failure path: validated facts, in the shape of a brief, and nothing invented.
+
+    It never writes connective prose, never orders anything, and never counts objects. The plan it
+    produces holds only the commitments that were classified as outstanding work, each stated in
+    the words the extraction gave it, which is the least a reader can be owed after a model failed
+    to write the document properly.
+    """
+    identified = candidate_identities(candidates)
+    result: dict[str, Any] = {section: [] for section in BRIEF_SECTIONS}
+    result["action_plan"] = []
+
+    def block(identifier: str, candidate: Candidate) -> dict[str, Any]:
+        return {
+            "text": candidate.text,
+            "supporting_item_ids": [identifier],
+            "segment_ids": list(candidate.segment_ids),
+        }
+
+    section_for_kind = {
+        "decision": "decisions",
+        "blocker": "blockers",
+        "context": "important_context",
+        "question": "open_questions",
+        "idea": "backlog",
+        "risk": "risks",
+        "dependency": "blockers",
+    }
+
+    ordered = sorted(identified, key=lambda pair: (pair[1].first_time, pair[1].sort_key()))
+
+    for identifier, candidate in ordered:
+        if candidate.kind == "action":
+            if candidate.classification is not None and candidate.classification not in OUTSTANDING_WORK:
+                continue
+            result["action_plan"].append(
+                {
+                    "title": candidate.text,
+                    "detail": "",
+                    "audience": "others" if candidate.owner else "unassigned",
+                    "timing": "next",
+                    # Nothing here was reasoned about, so nothing here may claim to have been.
+                    "basis": "explicit",
+                    "owner": candidate.owner,
+                    "owner_status": candidate.owner_status,
+                    "due_date": candidate.due_date,
+                    "due_date_text": candidate.due_date_text,
+                    "due_date_status": candidate.due_date_status,
+                    "supporting_item_ids": [identifier],
+                    "segment_ids": list(candidate.segment_ids),
+                }
+            )
+            continue
+
+        section = section_for_kind.get(candidate.kind)
+        if section is not None and len(result[section]) < 8:
+            result[section].append(block(identifier, candidate))
+
+    for identifier, candidate in ordered[:3]:
+        result["summary"].append(block(identifier, candidate))
+
+    return result
+
+
+def _render_brief(
+    brief: dict[str, Any] | None,
+    cite: Callable[[Sequence[str]], list[dict[str, Any]]],
+) -> dict[str, Any] | None:
+    """Turn the model's answer into the persisted brief, dropping anything that cannot be cited.
+
+    Citations are built here, from the segments the named facts already cite, so a block cannot
+    arrive carrying a timestamp of its own. A block or step that survives with no evidence is not
+    kept: an ordered plan whose steps point nowhere is the most confident-looking way to be wrong.
+    """
+    if brief is None:
+        return None
+
+    rendered: dict[str, Any] = {section: [] for section in BRIEF_SECTIONS}
+    rendered["action_plan"] = []
+
+    for section in BRIEF_SECTIONS:
+        for ordinal, raw in enumerate(brief.get(section) or []):
+            evidence = cite(raw.get("segment_ids") or [])
+            supporting = [str(value) for value in (raw.get("supporting_item_ids") or [])]
+            text = str(raw.get("text") or "").strip()
+            if not text or not evidence or not supporting:
+                continue
+            rendered[section].append(
+                {
+                    "id": f"brief-{section.replace('_', '-')}-{ordinal + 1:03d}",
+                    "text": text,
+                    "supporting_item_ids": supporting,
+                    "evidence": evidence,
+                }
+            )
+
+    order = 0
+    proposed = brief.get("action_plan") or []
+    identifiers = [f"step-{index + 1:03d}" for index in range(len(proposed))]
+    for index, raw in enumerate(proposed):
+        evidence = cite(raw.get("segment_ids") or [])
+        supporting = [str(value) for value in (raw.get("supporting_item_ids") or [])]
+        title = str(raw.get("title") or "").strip()
+        if not title or not evidence or not supporting:
+            continue
+
+        order += 1
+        # Dependencies are re-expressed against the steps that actually survived. A step that
+        # points at one which was dropped would leave the reader waiting on nothing.
+        depends = [
+            identifiers[int(value)]
+            for value in (raw.get("depends_on_indexes") or [])
+            if isinstance(value, int) and 0 <= value < len(identifiers) and value != index
+        ]
+
+        rendered["action_plan"].append(
+            {
+                "id": identifiers[index],
+                "order": order,
+                "title": title,
+                "detail": str(raw.get("detail") or "").strip(),
+                "audience": raw.get("audience") or "unassigned",
+                "timing": raw.get("timing") or "next",
+                "basis": raw.get("basis") or "explicit",
+                "depends_on": raw.get("depends_on") or None,
+                "depends_on_step_ids": depends,
+                "owner": raw.get("owner"),
+                "owner_status": raw.get("owner_status") or UNKNOWN,
+                "due_date": raw.get("due_date"),
+                "due_date_text": raw.get("due_date_text"),
+                "due_date_status": raw.get("due_date_status") or UNKNOWN,
+                "supporting_item_ids": supporting,
+                "evidence": evidence,
+            }
+        )
+
+    kept = {
+        step["id"] for step in rendered["action_plan"]
+    }
+    for step in rendered["action_plan"]:
+        step["depends_on_step_ids"] = [
+            identifier for identifier in step["depends_on_step_ids"] if identifier in kept
+        ]
+
+    return rendered if rendered["summary"] else None
+
+
+def candidate_identities(candidates: Sequence[Candidate]) -> list[tuple[str, Candidate]]:
+    """Assign the same stable fact IDs to structured rendering and the narrative pass."""
+    counters: dict[str, int] = {}
+    identified: list[tuple[str, Candidate]] = []
+    for candidate in candidates:
+        counters[candidate.kind] = counters.get(candidate.kind, 0) + 1
+        identified.append((f"{candidate.kind}-{counters[candidate.kind]:03d}", candidate))
+    return identified
 
 
 def _display(seconds: float) -> str:

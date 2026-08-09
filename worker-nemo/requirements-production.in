@@ -1,0 +1,18 @@
+# Canary requires PyTorch 2.6+; cu128 is required for the target Blackwell GPU.
+# The lock script routes PyTorch packages to NVIDIA's cu128 wheel index; other packages resolve
+# from PyPI under uv's safe first-index policy.
+torch==2.8.0+cu128
+
+# NeMo 3.0.0, not the 2.7.3 the Parakeet card names.
+#
+# The pinned parakeet-unified checkpoint does not load under 2.7.3: its encoder config carries
+# att_chunk_context_size, which that release's ConformerEncoder does not accept, and restoring it
+# raises before any audio is read. This was found by actually running the model rather than by
+# reading the card - which is the whole reason Install ends in a smoke test. 3.0.0 restores it,
+# runs it on the GPU, and still contains Canary's SALM implementation.
+nemo_toolkit[asr]==3.0.0
+
+# Canary-Qwen's SALM loader imports peft. NeMo 3.0.0's [asr] extra no longer pulls it in, so
+# without this the checkpoint restores far enough to fail on an import - which the smoke test
+# caught and a file listing never would have.
+peft

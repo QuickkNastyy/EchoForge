@@ -19,7 +19,10 @@ public partial class MainWindow : Window
     /// so it is a second view, never a second recorder. Closing it restores the full window; it does
     /// not stop the recording.
     /// </summary>
-    private void OnCompact(object sender, RoutedEventArgs e)
+    private void OnCompact(object sender, RoutedEventArgs e) => ShowCompactRecorder();
+
+    /// <summary>Opens the one shared compact recorder from either the rail or the Record page.</summary>
+    internal void ShowCompactRecorder()
     {
         if (_compact is not null)
         {

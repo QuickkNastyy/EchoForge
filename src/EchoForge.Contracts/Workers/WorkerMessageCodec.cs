@@ -210,6 +210,13 @@ public static class WorkerMessageCodec
             "ready declares no supported protocol versions",
         ReadyMessage ready when ready.Backends.Count == 0 =>
             "ready declares no backends",
+        ReadyMessage ready when ready.ProcessId.HasValue != (ready.ProcessStartToken is not null) =>
+            "ready carries an incomplete process identity",
+        ReadyMessage ready when ready.ProcessId is <= 0 =>
+            "ready carries an invalid process id",
+        ReadyMessage ready when ready.ProcessStartToken is { } token &&
+                                (token.Length == 0 || !token.All(char.IsAsciiDigit)) =>
+            "ready carries an invalid process start token",
 
         // Exactly one request, matching the job kind. A start_job carrying neither, or both,
         // describes no job the worker could run.

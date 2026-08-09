@@ -42,6 +42,10 @@ numpy==2.5.1
     # via
     #   ctranslate2
     #   onnxruntime
+nvidia-cublas-cu12==12.9.2.10
+    # via -r worker/requirements-production.in
+nvidia-cuda-nvrtc-cu12==12.9.86
+    # via nvidia-cublas-cu12
 onnxruntime==1.28.0
     # via faster-whisper
 packaging==26.3

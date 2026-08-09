@@ -33,7 +33,7 @@ public sealed class MiniRibbon : FrameworkElement
 
     private static Pen LinePen => Theme.Pen("Line", 1);
 
-    private static Pen PlayheadPen => Theme.Pen("Ink", 1);
+    private static Pen PlayheadPen => Theme.Pen("Ink", 1.5);
 
     private static Brush InkBrush => Theme.Brush("Ink");
 
@@ -88,7 +88,18 @@ public sealed class MiniRibbon : FrameworkElement
     public static Func<string, Task<ConversationShape>>? GetProvider(DependencyObject element) =>
         (Func<string, Task<ConversationShape>>?)element.GetValue(ProviderProperty);
 
-    public MiniRibbon() => ClipToBounds = true;
+    public MiniRibbon()
+    {
+        ClipToBounds = true;
+        Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
+    }
+
+    private void OnLoaded(object sender, RoutedEventArgs e) => Theme.Changed += OnThemeChanged;
+
+    private void OnUnloaded(object sender, RoutedEventArgs e) => Theme.Changed -= OnThemeChanged;
+
+    private void OnThemeChanged(object? sender, EventArgs e) => InvalidateVisual();
 
     public ConversationShape? Shape
     {
@@ -159,6 +170,14 @@ public sealed class MiniRibbon : FrameworkElement
         set => SetValue(DurationSecondsProperty, value);
     }
 
+    /// <summary>
+    /// The timeline is a scrub surface, not just a collection of painted bars. FrameworkElement's
+    /// default drawing hit test can fall through transparent gaps (and an entirely silent ribbon),
+    /// so every point inside the arranged ribbon deliberately belongs to this control.
+    /// </summary>
+    protected override HitTestResult HitTestCore(PointHitTestParameters hitTestParameters) =>
+        new PointHitTestResult(this, hitTestParameters.HitPoint);
+
     protected override void OnRender(DrawingContext drawingContext)
     {
         DrawingContext dc = drawingContext;
@@ -185,19 +204,31 @@ public sealed class MiniRibbon : FrameworkElement
 
         ConversationShape shape = Shape ?? ConversationShape.Empty;
 
+        // Treat each speaker as a real lane instead of drawing bars directly onto the page. The
+        // rounded graphite tracks make the timeline read as one modern transport component, and the
+        // centered energy bars look like audio rather than a spreadsheet histogram.
+        const double laneRadius = 4;
+        Brush laneBackground = Theme.Brush("Raised");
+        Pen laneBorder = Theme.Pen("Line", 1);
+        Rect youLane = new(0.5, top + 0.5, Math.Max(0, w - 1), Math.Max(0, laneHeight - 1));
+        Rect remoteLane = new(0.5, top + laneHeight + laneGap + 0.5, Math.Max(0, w - 1), Math.Max(0, laneHeight - 1));
+        dc.DrawRoundedRectangle(laneBackground, laneBorder, youLane, laneRadius, laneRadius);
+        dc.DrawRoundedRectangle(laneBackground, laneBorder, remoteLane, laneRadius, laneRadius);
+
         if (!shape.HasData)
         {
-            // Nothing to draw is not the same as nothing to show. A recording with no transcript
-            // yet gets two quiet baselines, so the well reads as empty rather than as a hole where
-            // a control failed to render.
-            Pen quiet = Theme.Pen("Line", 1);
-            dc.DrawLine(quiet, new Point(0, top + laneHeight), new Point(w, top + laneHeight));
-            dc.DrawLine(quiet, new Point(0, top + (laneHeight * 2) + laneGap), new Point(w, top + (laneHeight * 2) + laneGap));
-            return;
+            // Silent/unprepared audio still has a visible, clickable timeline. A short center line is
+            // quieter than the old full-width baseline while still showing both tracks exist.
+            Pen quiet = Theme.Pen("LineStrong", 1);
+            double inset = Math.Min(12, w * 0.05);
+            dc.DrawLine(quiet, new Point(inset, top + (laneHeight / 2)), new Point(Math.Max(inset, w - inset), top + (laneHeight / 2)));
+            dc.DrawLine(quiet, new Point(inset, top + laneHeight + laneGap + (laneHeight / 2)), new Point(Math.Max(inset, w - inset), top + laneHeight + laneGap + (laneHeight / 2)));
         }
-
-        DrawLane(dc, shape.You, top, laneHeight, YouBrush, w);
-        DrawLane(dc, shape.Remote, top + laneHeight + laneGap, laneHeight, RemoteBrush, w);
+        else
+        {
+            DrawLane(dc, shape.You, top, laneHeight, YouBrush, w);
+            DrawLane(dc, shape.Remote, top + laneHeight + laneGap, laneHeight, RemoteBrush, w);
+        }
 
         // The evidence marker sits under the playhead, so a claim being followed while the audio
         // plays past it stays legible as two separate facts.
@@ -205,7 +236,7 @@ public sealed class MiniRibbon : FrameworkElement
         {
             double x = Math.Clamp(EvidenceFraction, 0, 1) * w;
             Brush focus = Theme.Brush("Focus");
-            dc.DrawRectangle(focus, null, new Rect(x - 1, top, 2, h - top));
+            dc.DrawRoundedRectangle(focus, null, new Rect(x - 1, top, 2, h - top), 1, 1);
 
             StreamGeometry flag = new();
             using (StreamGeometryContext leg = flag.Open())
@@ -236,9 +267,10 @@ public sealed class MiniRibbon : FrameworkElement
         }
 
         double barWidth = w / n;
-        double gap = Math.Min(1.0, barWidth * 0.12);
-        double fill = Math.Max(0.5, barWidth - gap);
-        double baseline = laneTop + laneHeight;
+        double gap = Math.Min(1.4, barWidth * 0.22);
+        double fill = Math.Max(0.7, barWidth - gap);
+        double centerY = laneTop + (laneHeight / 2);
+        double usableHeight = Math.Max(2, laneHeight - 6);
 
         for (int i = 0; i < n; i++)
         {
@@ -248,8 +280,11 @@ public sealed class MiniRibbon : FrameworkElement
                 continue;
             }
 
-            double barHeight = Math.Max(1, level * laneHeight);
-            dc.DrawRectangle(brush, null, new Rect(i * barWidth, baseline - barHeight, fill, barHeight));
+            double barHeight = Math.Max(2, level * usableHeight);
+            double x = (i * barWidth) + (gap / 2);
+            Rect bar = new(x, centerY - (barHeight / 2), fill, barHeight);
+            double radius = Math.Min(2.2, fill / 2);
+            dc.DrawRoundedRectangle(brush, null, bar, radius, radius);
         }
     }
 

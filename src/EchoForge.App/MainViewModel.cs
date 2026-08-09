@@ -132,7 +132,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         SetupAudio = audio;
 
         OnChanged(nameof(HasSetup));
-        OpenSetupCommand.RaiseCanExecuteChanged();
     });
 
     public EchoForge.Infrastructure.Setup.SetupServices? SetupServices { get; private set; }
@@ -141,33 +140,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public bool HasSetup => SetupServices is not null;
 
-    private System.Windows.Window? _setupWindow;
+    /// <summary>
+    /// The runtime and model surface, once it can be built.
+    ///
+    /// <para>
+    /// It is a page rather than a window now. Setup used to be a second application with its own
+    /// title bar, which is how model downloads, GPU facts and a machine report ended up feeling
+    /// like a product of their own rather than a preference somebody adjusts twice a year.
+    /// </para>
+    /// </summary>
+    public EchoForge.App.Setup.SetupViewModel? Setup { get; private set; }
 
-    /// <summary>Where the window is built, so this view model stays free of WPF windows.</summary>
-    public Func<System.Windows.Window>? OpenSetupWindow { get; set; }
+    public void AttachSetupPage(EchoForge.App.Setup.SetupViewModel setup) => Dispatch(() =>
+    {
+        ArgumentNullException.ThrowIfNull(setup);
 
-    /// <summary>Opens setup, or brings the one that is already open back to the front.</summary>
-    public RelayCommand OpenSetupCommand => _openSetupCommand ??= new RelayCommand(
-        () =>
-        {
-            if (_setupWindow is { } existing)
-            {
-                existing.Activate();
-                return;
-            }
-
-            if (OpenSetupWindow is not { } factory)
-            {
-                return;
-            }
-
-            _setupWindow = factory();
-            _setupWindow.Closed += (_, _) => _setupWindow = null;
-            _setupWindow.Show();
-        },
-        () => HasSetup && OpenSetupWindow is not null);
-
-    private RelayCommand? _openSetupCommand;
+        Setup = setup;
+        OnChanged(nameof(Setup));
+        OnChanged(nameof(HasSetup));
+    });
 
     /// <summary>
     /// Makes the meeting library reachable.
@@ -178,49 +169,173 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// on that, so it arrives when it is ready and the button appears then.
     /// </para>
     /// </summary>
-    public void AttachLibrary(EchoForge.App.Library.LibraryViewModel library, Func<System.Windows.Window> open) => Dispatch(() =>
+    public void AttachLibrary(EchoForge.App.Library.LibraryViewModel library) => Dispatch(() =>
     {
         ArgumentNullException.ThrowIfNull(library);
-        ArgumentNullException.ThrowIfNull(open);
 
         Library = library;
-        _openLibrary = open;
 
+        // Both, and the first one matters most. The recordings page takes the library as its data
+        // context, and the library arrives long after the window is built — so a window that is
+        // never told the property changed binds to the null that was there at startup and stays
+        // bound to it. Every symptom of that is downstream and confusing: an empty meeting list,
+        // buttons whose labels are bindings and therefore blank, a menu that opens onto nothing.
+        OnChanged(nameof(Library));
         OnChanged(nameof(HasLibrary));
-        OpenLibraryCommand.RaiseCanExecuteChanged();
+        ShowRecordingsCommand.RaiseCanExecuteChanged();
     });
 
     public EchoForge.App.Library.LibraryViewModel? Library { get; private set; }
 
     public bool HasLibrary => Library is not null;
 
-    private Func<System.Windows.Window>? _openLibrary;
-    private System.Windows.Window? _libraryWindow;
+    // -- navigation ---------------------------------------------------------------------------
 
-    /// <summary>Opens the library, or brings the one that is already open back to the front.</summary>
-    public RelayCommand OpenLibraryCommand => _openLibraryCommand ??= new RelayCommand(
+    private AppPage _page = AppPage.Record;
+
+    /// <summary>
+    /// Which page is showing.
+    ///
+    /// <para>
+    /// EchoForge is one window. Recording, the meetings, and the settings that decide how meetings
+    /// are processed used to be three separate top-level windows, which meant the same transcribe
+    /// and summarise controls existed in two places and could disagree with each other. There is
+    /// now one owner for each of those things, and moving between them is navigation rather than
+    /// window management.
+    /// </para>
+    /// </summary>
+    public AppPage Page
+    {
+        get => _page;
+        private set
+        {
+            if (_page == value)
+            {
+                return;
+            }
+
+            _page = value;
+            OnChanged(nameof(Page));
+            OnChanged(nameof(IsRecordPage));
+            OnChanged(nameof(IsRecordingsPage));
+            OnChanged(nameof(IsSettingsPage));
+        }
+    }
+
+    public bool IsRecordPage => Page == AppPage.Record;
+
+    public bool IsRecordingsPage => Page == AppPage.Recordings;
+
+    public bool IsSettingsPage => Page == AppPage.Settings;
+
+    public RelayCommand ShowRecordCommand => _showRecord ??= new RelayCommand(() => Page = AppPage.Record);
+
+    /// <summary>
+    /// Opens the meetings page, and loads the index the first time.
+    ///
+    /// <para>
+    /// Loading is deferred rather than done at startup because building the index reads every
+    /// session on disk, and the recorder must never wait on that.
+    /// </para>
+    /// </summary>
+    public RelayCommand ShowRecordingsCommand => _showRecordings ??= new RelayCommand(
         () =>
         {
-            if (_libraryWindow is { } existing)
-            {
-                existing.Activate();
-                return;
-            }
-
-            if (_openLibrary is not { } factory)
-            {
-                return;
-            }
-
-            _libraryWindow = factory();
-            _libraryWindow.Closed += (_, _) => _libraryWindow = null;
-            _libraryWindow.Show();
-
+            Page = AppPage.Recordings;
             _ = Library?.InitializeAsync();
         },
         () => HasLibrary);
 
-    private RelayCommand? _openLibraryCommand;
+    public RelayCommand ShowSettingsCommand => _showSettings ??= new RelayCommand(() => Page = AppPage.Settings);
+
+    private RelayCommand? _showRecord;
+    private RelayCommand? _showRecordings;
+    private RelayCommand? _showSettings;
+
+    // -- settings sections --------------------------------------------------------------------
+
+    private SettingsSection _settingsSection = SettingsSection.Transcription;
+
+    /// <summary>
+    /// Which Settings section is showing. The rail's expanded Settings entry and the page read the
+    /// same value, so the tick in the rail and the content on screen cannot disagree.
+    /// </summary>
+    public SettingsSection SettingsSection
+    {
+        get => _settingsSection;
+        private set
+        {
+            if (_settingsSection == value)
+            {
+                return;
+            }
+
+            _settingsSection = value;
+            OnChanged(nameof(SettingsSection));
+            OnChanged(nameof(IsTranscriptionSection));
+            OnChanged(nameof(IsBriefsSection));
+            OnChanged(nameof(IsModelsSection));
+            OnChanged(nameof(IsMachineSection));
+            OnChanged(nameof(IsCompareSection));
+        }
+    }
+
+    public bool IsTranscriptionSection => SettingsSection == SettingsSection.Transcription;
+
+    public bool IsBriefsSection => SettingsSection == SettingsSection.Briefs;
+
+    public bool IsModelsSection => SettingsSection == SettingsSection.Models;
+
+    public bool IsMachineSection => SettingsSection == SettingsSection.Machine;
+
+    public bool IsCompareSection => SettingsSection == SettingsSection.Compare;
+
+    public RelayCommand ShowTranscriptionSettingsCommand =>
+        _showTranscriptionSettings ??= new RelayCommand(() => ShowSection(SettingsSection.Transcription));
+
+    public RelayCommand ShowBriefsSettingsCommand =>
+        _showBriefsSettings ??= new RelayCommand(() => ShowSection(SettingsSection.Briefs));
+
+    public RelayCommand ShowModelsSettingsCommand =>
+        _showModelsSettings ??= new RelayCommand(() => ShowSection(SettingsSection.Models));
+
+    public RelayCommand ShowMachineSettingsCommand =>
+        _showMachineSettings ??= new RelayCommand(() => ShowSection(SettingsSection.Machine));
+
+    public RelayCommand ShowCompareSettingsCommand =>
+        _showCompareSettings ??= new RelayCommand(() => ShowSection(SettingsSection.Compare));
+
+    private void ShowSection(SettingsSection section)
+    {
+        Page = AppPage.Settings;
+        SettingsSection = section;
+    }
+
+    private RelayCommand? _showTranscriptionSettings;
+    private RelayCommand? _showBriefsSettings;
+    private RelayCommand? _showModelsSettings;
+    private RelayCommand? _showMachineSettings;
+    private RelayCommand? _showCompareSettings;
+
+    /// <summary>
+    /// What happens to a recording once it stops, said on the page that produces one.
+    ///
+    /// <para>
+    /// The Record page has no processing controls, so it owes the reader one sentence about where
+    /// they went. It also has to be honest when nothing can process yet: a machine with no models
+    /// installed should be told that here, not discover it after a meeting.
+    /// </para>
+    /// </summary>
+    public string ProcessingHandoff => Transcription is null
+        ? "Recording works with nothing installed. To turn a recording into a meeting brief, install a speech and a summary model in Settings."
+        : "When you stop, the recording appears in Library. Process it there to get a transcript and a meeting brief, using the models chosen in Settings.";
+
+    /// <summary>Opens a meeting on the recordings page, from anywhere.</summary>
+    public void OpenMeeting(string sessionId)
+    {
+        ShowRecordingsCommand.Execute(null);
+        _ = Library?.OpenAsync(sessionId);
+    }
 
     public void AttachSummary(SummaryViewModel summary) => Dispatch(() =>
     {
@@ -252,6 +367,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         OnChanged(nameof(Transcription));
         OnChanged(nameof(HasTranscription));
+        OnChanged(nameof(ProcessingHandoff));
         Refresh();
     });
 
@@ -418,7 +534,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public string ContinuationMessage => PendingContinuation is null
         ? string.Empty
-        : $"A recording from {PendingContinuation.CreatedUtc.ToLocalTime():d MMM, HH:mm} was " +
+        : $"A recording from {PendingContinuation.CreatedUtc.ToLocalTime():MMM d, h:mm tt} was " +
           $"{PendingContinuation.Describe()}. It holds {PendingContinuation.ChunkCount} saved segments.";
 
     /// <summary>Offers a recovered recording. Shown, never acted on automatically.</summary>

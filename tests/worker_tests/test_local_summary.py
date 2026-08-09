@@ -28,12 +28,15 @@ from echoforge_worker.local_summary import (
 from echoforge_worker.llama_server import (
     CPU_ONLY_LADDER,
     DEFAULT_LADDER,
+    GPT_OSS_LADDER,
     LlamaProfile,
     LlamaServerError,
     _free_port,
     _looks_like_oom,
     failure_from,
 )
+from echoforge_worker.measurements import RunMeasurements
+from echoforge_worker.protocol import Cancelled
 from echoforge_worker.summarize import EXPLICIT, INFERRED, UNKNOWN, Candidate, TranscriptSegment
 
 
@@ -104,8 +107,8 @@ def backend_with(replies=None, profile=None, **kwargs) -> tuple[LocalSummaryBack
 # -- prompts -----------------------------------------------------------------------------------
 
 
-def test_all_three_production_prompts_exist_and_are_versioned() -> None:
-    for name in ("extract-v1", "synthesize-v1", "repair-v1"):
+def test_all_production_prompts_exist_and_are_versioned() -> None:
+    for name in ("analyze-v2", "synthesize-v2", "repair-v1", "brief-v2"):
         assert len(load_prompt(name)) > 400, name
 
 
@@ -117,7 +120,7 @@ def test_a_missing_prompt_is_a_broken_install_not_a_default() -> None:
 
 
 def test_the_prompts_carry_the_rules_the_validator_enforces() -> None:
-    extract = load_prompt("extract-v1").casefold()
+    extract = load_prompt("analyze-v2").casefold()
 
     # The prompt is not the enforcement, but a prompt that contradicted the validator would
     # produce a model that fails constantly for reasons nobody told it about.
@@ -126,13 +129,26 @@ def test_the_prompts_carry_the_rules_the_validator_enforces() -> None:
     assert "both" in extract  # contradictions survive
     assert "never compute a calendar date" in extract or "you never compute" in extract
 
-    synthesize = load_plain("synthesize-v1")
+    synthesize = load_plain("synthesize-v2")
     assert "never invent a fact" in synthesize
     assert "never raise a certainty" in synthesize
 
     repair = load_plain("repair-v1")
     assert "do not add facts" in repair
     assert "has not been relaxed" in repair
+
+    # The analysis prompt has to teach the distinction the action plan depends on: work that
+    # survives the meeting, and an instruction about the meeting that does not.
+    assert "post_meeting_commitment" in extract
+    assert "ephemeral_instruction" in extract
+    assert "stop the recording" in extract
+
+    brief = load_plain("brief-v2")
+    assert "fact" in brief and "cannot be supported" in brief
+    assert "fact_ids" in brief
+    # The brief is allowed to reason about order, and required to be honest about when it did.
+    assert "grounded_inference" in brief and "recommendation" in brief
+    assert "backlog" in brief
 
 
 def load_plain(name: str) -> str:
@@ -142,7 +158,7 @@ def load_plain(name: str) -> str:
 def test_no_prompt_asks_the_model_to_think() -> None:
     # Gemma 4 enters reasoning mode when the system prompt opens with this token. Thinking is
     # excluded by the plan, and a reasoning block would break the JSON grammar as well.
-    for name in ("extract-v1", "synthesize-v1", "repair-v1"):
+    for name in ("analyze-v2", "synthesize-v2", "repair-v1", "brief-v2"):
         assert "<|think|>" not in load_prompt(name), name
 
 
@@ -214,6 +230,234 @@ def test_a_malformed_reply_costs_one_chunk_not_the_meeting() -> None:
     backend, _ = backend_with(["this is not JSON at all"])
 
     assert backend.extract(Chunk(), [segment(1, "hello")], Request()) == []
+
+
+# -- the meeting brief -------------------------------------------------------------------------
+
+
+def test_the_brief_keeps_only_blocks_grounded_in_validated_fact_ids() -> None:
+    reply = {
+        "summary": [{"text": "The team committed to shipping Friday.", "fact_ids": ["decision-001"]}],
+        "decisions": [{"text": "Friday it is.", "fact_ids": ["decision-001"]}],
+        "action_plan": [],
+    }
+    backend, _ = backend_with([reply])
+    fact = Candidate(
+        kind="decision",
+        text="We will ship on Friday",
+        certainty=EXPLICIT,
+        segment_ids=["segment-000001"],
+    )
+
+    brief = backend.brief([fact], [segment(1, "We will ship on Friday")], Request())
+
+    assert brief is not None
+    assert brief["summary"] == [{
+        "text": "The team committed to shipping Friday.",
+        "supporting_item_ids": ["decision-001"],
+        "segment_ids": ["segment-000001"],
+    }]
+    assert brief["decisions"][0]["supporting_item_ids"] == ["decision-001"]
+
+
+def test_the_brief_hides_parenthetical_internal_fact_ids() -> None:
+    reply = {
+        "summary": [{
+            "text": "The team chose Friday (decision-001) before changing course.",
+            "fact_ids": ["decision-001"],
+        }],
+        "action_plan": [],
+    }
+    backend, _ = backend_with([reply])
+    fact = Candidate(
+        kind="decision",
+        text="We will ship on Friday",
+        certainty=EXPLICIT,
+        segment_ids=["segment-000001"],
+    )
+
+    brief = backend.brief([fact], [segment(1, fact.text)], Request())
+
+    assert brief is not None
+    assert brief["summary"][0]["text"] == "The team chose Friday before changing course."
+    assert brief["summary"][0]["supporting_item_ids"] == ["decision-001"]
+
+
+def test_an_unsupported_brief_is_replaced_by_validated_fact_text() -> None:
+    reply = {
+        "summary": [{"text": "The budget was approved.", "fact_ids": ["invented-fact"]}],
+        "action_plan": [],
+    }
+    backend, _ = backend_with([reply])
+    fact = Candidate(
+        kind="decision",
+        text="We will ship on Friday",
+        certainty=EXPLICIT,
+        segment_ids=["segment-000001"],
+    )
+
+    brief = backend.brief([fact], [segment(1, "We will ship on Friday")], Request())
+
+    assert brief is not None
+    assert brief["summary"][0]["text"] == fact.text
+    assert "budget" not in json.dumps(brief).casefold()
+    assert brief["summary"][0]["supporting_item_ids"] == ["decision-001"]
+
+
+def test_the_plan_never_carries_an_owner_the_facts_do_not_support() -> None:
+    """The final pass chooses what to do and in what order. It does not choose who does it.
+
+    Owner and date are lifted from the action facts a step names, where they already passed the
+    owner and date invariants, so a plan cannot introduce a commitment nobody made.
+    """
+    reply = {
+        "summary": [{"text": "Work was assigned.", "fact_ids": ["action-001"]}],
+        "action_plan": [{
+            "title": "Prepare the deck",
+            "detail": "",
+            "audience": "others",
+            "timing": "immediate",
+            "basis": "explicit",
+            "fact_ids": ["action-001"],
+        }],
+    }
+    backend, _ = backend_with([reply])
+    fact = Candidate(
+        kind="action",
+        text="Prepare the deck",
+        certainty=EXPLICIT,
+        segment_ids=["segment-000001"],
+        owner=None,
+        owner_status=UNKNOWN,
+    )
+
+    brief = backend.brief([fact], [segment(1, "Prepare the deck")], Request())
+
+    assert brief is not None
+    step = brief["action_plan"][0]
+    assert step["owner"] is None
+    assert step["owner_status"] == UNKNOWN
+    # Somebody else's work with nobody named tells the reader it is not theirs and gives them
+    # no one to ask, so it becomes unassigned rather than staying a dead end.
+    assert step["audience"] == "unassigned"
+
+
+def test_the_plan_carries_an_owner_the_facts_do_support() -> None:
+    reply = {
+        "summary": [{"text": "Work was assigned.", "fact_ids": ["action-001"]}],
+        "action_plan": [{
+            "title": "Prepare the deck",
+            "detail": "It blocks the review.",
+            "audience": "others",
+            "timing": "immediate",
+            "basis": "grounded_inference",
+            "depends_on": "the access request",
+            "fact_ids": ["action-001"],
+        }],
+    }
+    backend, _ = backend_with([reply])
+    fact = Candidate(
+        kind="action",
+        text="Alex will prepare the deck",
+        certainty=EXPLICIT,
+        segment_ids=["segment-000001"],
+        owner="Alex",
+        owner_status=EXPLICIT,
+    )
+
+    brief = backend.brief([fact], [segment(1, fact.text)], Request())
+
+    assert brief is not None
+    step = brief["action_plan"][0]
+    assert step["owner"] == "Alex"
+    assert step["owner_status"] == EXPLICIT
+    assert step["audience"] == "others"
+    assert step["basis"] == "grounded_inference"
+    assert step["depends_on"] == "the access request"
+
+
+def test_a_short_meeting_reaches_the_final_pass_with_its_whole_transcript() -> None:
+    """The change the whole pass exists for: reasoning over the meeting, not over a fact list."""
+    backend, server = backend_with([{
+        "summary": [{"text": "A short test.", "fact_ids": ["key_point-001"]}],
+        "action_plan": [],
+    }])
+    fact = Candidate(
+        kind="key_point",
+        text="They tested the recorder",
+        certainty=EXPLICIT,
+        segment_ids=["segment-000001"],
+    )
+
+    backend.brief([fact], [segment(1, "They tested the recorder")], Request())
+
+    sent = json.loads(server.prompts[-1])
+    assert "transcript" in sent
+    assert "They tested the recorder" in sent["transcript"]
+    assert "threads" not in sent
+
+
+def test_a_long_meeting_reaches_the_final_pass_as_an_ordered_digest_of_all_of_it() -> None:
+    """Coverage of the meeting's whole span survives; only the detail degrades, and it says so."""
+    backend, server = backend_with(
+        [{"summary": [{"text": "A long meeting.", "fact_ids": ["decision-001"]}], "action_plan": []}],
+        context_tokens=4096,
+        tokens_per_char=1.0,
+    )
+    backend.measurements = RunMeasurements()
+
+    facts = [
+        Candidate(
+            kind="decision",
+            text=f"Decision {index}",
+            certainty=EXPLICIT,
+            segment_ids=[f"segment-{index:06d}"],
+            first_time=float(index * 600),
+        )
+        for index in range(1, 13)
+    ]
+    segments = [
+        segment(index, f"a long stretch of talking {index} " + ("x" * 400), float(index * 600))
+        for index in range(1, 13)
+    ]
+
+    backend.brief(facts, segments, Request())
+
+    sent = json.loads(server.prompts[-1])
+    assert "transcript" not in sent
+    assert "threads" in sent
+
+    # The first and the last part of the meeting both still reach the final pass. A two-hour
+    # meeting whose last twenty minutes fell off the end would be worse than a shorter brief.
+    covered = {fact_id for part in sent["threads"] for fact_id in part["fact_ids"]}
+    assert "decision-001" in covered
+    assert "decision-012" in covered
+
+    # And the reader is told what it cost, on the run rather than in a log nobody opens.
+    assert backend.measurements.fell_back is True
+    assert any("digest" in step for step in backend.measurements.fallback_steps)
+
+
+def test_brief_fallback_is_recorded_and_cancellation_is_not_swallowed() -> None:
+    backend, _ = backend_with([LlamaServerError("failed")])
+    backend.measurements = RunMeasurements()
+    fact = Candidate(
+        kind="decision",
+        text="We will ship on Friday",
+        certainty=EXPLICIT,
+        segment_ids=["segment-000001"],
+    )
+
+    brief = backend.brief([fact], [segment(1, fact.text)], Request())
+
+    assert brief is not None
+    assert brief["summary"][0]["text"] == fact.text
+    assert backend.measurements.fell_back is True
+    assert any(step.startswith("brief:") for step in backend.measurements.fallback_steps)
+
+    cancelled, _ = backend_with([Cancelled()])
+    with pytest.raises(Cancelled):
+        cancelled.brief([fact], [segment(1, fact.text)], Request())
 
 
 # -- owner and date ----------------------------------------------------------------------------
@@ -485,6 +729,12 @@ def test_every_rung_of_the_ladder_can_explain_itself() -> None:
 
 def test_the_cpu_profile_does_not_start_by_trying_the_gpu() -> None:
     assert all(not profile.uses_gpu for profile in CPU_ONLY_LADDER)
+
+
+def test_gpt_oss_never_spills_layers_into_windows_shared_gpu_memory() -> None:
+    assert [profile.context_tokens for profile in GPT_OSS_LADDER] == [16384, 8192]
+    assert all(profile.uses_gpu and profile.gpu_layers == 99 for profile in GPT_OSS_LADDER)
+    assert all("partial" not in profile.name for profile in GPT_OSS_LADDER)
 
 
 def test_running_out_of_memory_is_recognised_however_it_is_worded() -> None:

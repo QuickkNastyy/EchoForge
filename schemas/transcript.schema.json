@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://echoforge.local/schemas/transcript.schema.json",
-  "title": "EchoForge canonical transcript, version 1",
+  "title": "EchoForge canonical transcript, versions 1 and 2",
   "description": "One immutable transcript revision for one session. This file is the authority for transcript content; anything derived from it (search index, exports, summary evidence) is rebuildable. Every time is session-relative seconds on the single merged timeline, so a transcript can be checked against the session's epochs without consulting the audio. Segment IDs are stable only inside this revision: a durable reference is the pair transcript_revision + segment id.",
 
   "type": "object",
@@ -20,7 +20,7 @@
   ],
 
   "properties": {
-    "schema_version": { "type": "integer", "const": 1 },
+    "schema_version": { "type": "integer", "enum": [1, 2] },
     "session_id": { "type": "string", "minLength": 1 },
     "transcript_revision": { "type": "integer", "minimum": 1 },
     "created_at_utc": { "type": "string", "format": "date-time" },
@@ -34,6 +34,57 @@
     "duration_seconds": { "type": "number", "minimum": 0 },
 
     "model": { "$ref": "#/$defs/model" },
+
+    "run": {
+      "description": "Schema-v2 bounded, content-free settings and measurements. Null or absent for historical schema-v1 revisions.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "requested_compute_profile", "actual_compute_profile", "language", "vad_mode",
+        "vad_settings", "window_strategy", "window_seconds", "overlap_seconds",
+        "timestamp_capability", "timestamp_precision", "model_load_seconds",
+        "processing_seconds", "total_processing_seconds", "peak_vram_bytes",
+        "source_duration_seconds", "audio_duration_seconds", "real_time_factor",
+        "vad_retained_seconds", "vad_excluded_seconds", "speech_region_count",
+        "asr_segment_count", "window_count", "signal_windows_without_text",
+        "warning_count", "fallback_count", "warnings"
+      ],
+      "properties": {
+        "requested_compute_profile": { "type": "string" },
+        "actual_compute_profile": { "type": "string" },
+        "language": { "type": "string" },
+        "vad_mode": { "enum": ["accuracy", "balanced", "fast", "off"] },
+        "vad_settings": {
+          "type": "object",
+          "additionalProperties": { "type": "number" }
+        },
+        "window_strategy": { "type": "string" },
+        "window_seconds": { "type": "number", "minimum": 0 },
+        "overlap_seconds": { "type": "number", "minimum": 0 },
+        "timestamp_capability": { "type": "string" },
+        "timestamp_precision": { "type": "string" },
+        "model_load_seconds": { "type": ["number", "null"], "minimum": 0 },
+        "processing_seconds": { "type": ["number", "null"], "minimum": 0 },
+        "total_processing_seconds": { "type": ["number", "null"], "minimum": 0 },
+        "peak_vram_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "source_duration_seconds": { "type": "number", "minimum": 0 },
+        "audio_duration_seconds": { "type": "number", "minimum": 0 },
+        "real_time_factor": { "type": ["number", "null"], "minimum": 0 },
+        "vad_retained_seconds": { "type": "number", "minimum": 0 },
+        "vad_excluded_seconds": { "type": "number", "minimum": 0 },
+        "speech_region_count": { "type": "integer", "minimum": 0 },
+        "asr_segment_count": { "type": "integer", "minimum": 0 },
+        "window_count": { "type": "integer", "minimum": 0 },
+        "signal_windows_without_text": { "type": "integer", "minimum": 0 },
+        "warning_count": { "type": "integer", "minimum": 0 },
+        "fallback_count": { "type": "integer", "minimum": 0 },
+        "warnings": {
+          "type": "array",
+          "maxItems": 50,
+          "items": { "type": "string", "maxLength": 512 }
+        }
+      }
+    },
 
     "epochs": {
       "description": "The session's capture epochs, copied in so segment bounds are independently checkable. Ordered and non-overlapping.",
@@ -59,6 +110,19 @@
     }
   },
 
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schema_version": { "const": 2 } },
+        "required": ["schema_version"]
+      },
+      "then": {
+        "required": ["run"],
+        "properties": { "run": { "type": "object" } }
+      }
+    }
+  ],
+
   "$defs": {
     "source_track": { "enum": ["microphone", "system"] },
 
@@ -75,6 +139,9 @@
         "compute_type": { "type": "string", "minLength": 1 },
         "recognizes_speech": { "type": "boolean" },
         "worker_version": { "type": "string", "minLength": 1 }
+        ,"requested_compute_type": { "type": ["string", "null"] }
+        ,"backend_runtime_version": { "type": ["string", "null"] }
+        ,"artifact_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
       }
     },
 

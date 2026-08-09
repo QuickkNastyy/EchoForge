@@ -150,6 +150,9 @@ public sealed class SummaryCoordinator : IDisposable
     /// <summary>True when a local model could actually run. False is a normal, expected state.</summary>
     public bool ProductionAvailable => ResolveRuntime(new SummaryOptions { Backend = SummaryOptions.ProductionBackend }) is not null;
 
+    public bool ModelAvailable(string backend) => !SummaryOptions.LocalModelBackends.Contains(backend, StringComparer.Ordinal)
+        || ResolveRuntime(new SummaryOptions { Backend = backend }) is not null;
+
     /// <summary>What the production backend still needs, for the UI to show.</summary>
     public SummaryRuntimeStatus? RuntimeStatus(string? profileId = null)
     {
@@ -223,6 +226,16 @@ public sealed class SummaryCoordinator : IDisposable
             return _runtime.TryResolve(options.SummaryProfile);
         }
 
+        if (string.Equals(options.Backend, SummaryOptions.GptOssBackend, StringComparison.Ordinal))
+        {
+            return _runtime.TryResolve(ProcessingProfile.SummaryGptOss20B);
+        }
+
+        if (string.Equals(options.Backend, SummaryOptions.ComparisonBackend, StringComparison.Ordinal))
+        {
+            return _runtime.TryResolve(ProcessingProfile.SummaryBakeoff);
+        }
+
         foreach (string candidate in ProcessingProfile.SummaryProfiles)
         {
             if (_runtime.TryResolve(candidate) is { } resolved)
@@ -262,7 +275,9 @@ public sealed class SummaryCoordinator : IDisposable
         // A transcript that is selected, present, and passes its own validator. Anything less
         // and there is nothing to summarise rather than something to summarise badly.
         TranscriptionState transcription = _transcripts.Read(sessionId);
-        if (transcription.SelectedRevision is not { } transcriptRevision)
+        int? requestedTranscript = options.TranscriptRevision ?? transcription.SelectedRevision;
+        if (requestedTranscript is not { } transcriptRevision
+            || !transcription.Revisions.Any(revision => revision.Revision == transcriptRevision && revision.FileExists))
         {
             return Refuse("no_transcript", "That recording has not been transcribed yet.");
         }
@@ -549,6 +564,11 @@ public sealed class SummaryCoordinator : IDisposable
         if (repairAttempt > 0)
         {
             ready += " The first attempt was not supported by the transcript and was refused, so it was generated again.";
+        }
+
+        if (summary.Run?.FellBack == true)
+        {
+            ready += " A runtime or evidence-preserving fallback was used and is recorded on this revision.";
         }
 
         // A reduced context is never silent. The user is told the model would not start at the

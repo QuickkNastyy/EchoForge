@@ -31,7 +31,19 @@
     <PublishSingleFile>false</PublishSingleFile>
     <PublishReadyToRun>false</PublishReadyToRun>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <!-- The mark, at every size Windows asks for it: taskbar, Alt-Tab, the shortcut, the shell. -->
+    <ApplicationIcon>Assets\echoforge.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <!--
+    The brand mark travels inside the assembly rather than beside it, so a window can paint it
+    before anything has been unpacked and a published copy cannot be missing its own logo.
+  -->
+  <ItemGroup>
+    <Resource Include="Assets\echoforge-mark.png" />
+    <Resource Include="Assets\echoforge-mark-64.png" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\EchoForge.Contracts\EchoForge.Contracts.csproj" />
@@ -59,6 +71,15 @@
     <Content Include="..\..\worker\prompts\**\*.txt" LinkBase="worker\prompts" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\worker\requirements-production.txt" LinkBase="worker" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\artifacts\manifest.json" LinkBase="artifacts" CopyToOutputDirectory="PreserveNewest" />
+    <!--
+      The provisioning and qualification scripts ship too. Installing an NVIDIA model means
+      building an isolated Linux runtime and then running the model on this GPU, and an installed
+      EchoForge has to be able to do that without a source tree beside it. Only these travel: the
+      rest of scripts\ is release tooling that has no business on a user's machine.
+    -->
+    <Content Include="..\..\scripts\provision-nemo-runtime.ps1" LinkBase="scripts" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\scripts\qualify-summary-model.py" LinkBase="scripts" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\worker-nemo\requirements-production.txt" LinkBase="worker-nemo" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\third_party\licenses\**\*" LinkBase="third_party\licenses" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\third_party\NOTICE.md" LinkBase="third_party" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\third_party\NOTICE.md')" />
   </ItemGroup>

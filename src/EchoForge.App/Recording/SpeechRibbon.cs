@@ -29,11 +29,23 @@ namespace EchoForge.App.Recording;
 /// </summary>
 public sealed class SpeechRibbon : FrameworkElement
 {
+    public SpeechRibbon()
+    {
+        ClipToBounds = true;
+        Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
+    }
+
+    private void OnLoaded(object sender, RoutedEventArgs e) => Theme.Changed += OnThemeChanged;
+
+    private void OnUnloaded(object sender, RoutedEventArgs e) => Theme.Changed -= OnThemeChanged;
+
+    private void OnThemeChanged(object? sender, EventArgs e) => InvalidateVisual();
+
     // The palette is fixed by the design: amber is always You, teal always Remote, red only capture.
     //
-    // Taken from the application's shared brushes rather than frozen here, so the ribbon follows a
-    // theme switch. A private frozen copy would hold the colour it was born with and leave the one
-    // signature element on the screen painted for the wrong palette.
+    // Read from the current application palette on each render. Theme changes invalidate this
+    // element, so it picks up the newly replaced frozen resource objects immediately.
     private static Brush Background => Theme.Brush("Sunken");
 
     private static Brush YouBrush => Theme.Brush("You");
@@ -65,8 +77,6 @@ public sealed class SpeechRibbon : FrameworkElement
     public static readonly DependencyProperty PlayheadFractionProperty = DependencyProperty.Register(
         nameof(PlayheadFraction), typeof(double), typeof(SpeechRibbon),
         new FrameworkPropertyMetadata(1.0, FrameworkPropertyMetadataOptions.AffectsRender));
-
-    public SpeechRibbon() => ClipToBounds = true;
 
     public SpeechActivityHistory? History
     {
