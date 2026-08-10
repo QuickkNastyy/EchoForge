@@ -379,6 +379,31 @@ class LlamaServer:
             # Say so rather than letting a half-object reach the parser as if it were an answer.
             raise LlamaServerError("the summary runtime ran out of room before finishing its answer")
 
+        # A brief thrown away for being unsupported leaves no record of what the model actually
+        # said, which is the one thing worth reading when a model fails on real input. This is how
+        # gpt-oss-20b was caught answering "<|channel|>analysis<|message|><|end|>" followed by an
+        # object with every array empty.
+        #
+        # Off unless a path is given, and never on by default: this is meeting content.
+        if dump := os.environ.get("ECHOFORGE_DUMP_REPLIES"):
+            try:
+                directory = Path(dump)
+                directory.mkdir(parents=True, exist_ok=True)
+                (directory / f"reply-{time.time():.3f}.json").write_text(
+                    json.dumps(
+                        {
+                            "finish_reason": choice.get("finish_reason"),
+                            "usage": result.get("usage"),
+                            "content": content,
+                            "reasoning_content": choice.get("message", {}).get("reasoning_content"),
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+
         return content if isinstance(content, str) else ""
 
     def _get(self, path: str, timeout: float = 30) -> dict[str, Any]:

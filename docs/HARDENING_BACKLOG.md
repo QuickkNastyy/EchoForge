@@ -129,3 +129,43 @@ These are implemented and covered by automated tests, and are not a substitute f
 - Drift-rate estimation from packet timestamps (**an estimate, never a gate**).
 - Alignment gate evaluation logic, which correctly reports `NOT QUALIFIED` with no measurements.
 - Recovery logic exercised with synthetic abandoned files and injected failures.
+
+## gpt-oss-20b cannot summarise while generation is grammar-constrained
+
+**Status:** diagnosed, not fixed. Gemma 4 12B remains the default and is unaffected.
+
+Selecting gpt-oss-20b and reprocessing leaves the brief unchanged. The model is reached and does
+run — the session journal records `summary_failed / summary_invalid_after_repair`, and the staged
+telemetry names `backend: gpt-oss-20b` — but it returns nothing usable, twice, so the previous
+revision stays activated.
+
+What it actually returns, captured with `ECHOFORGE_DUMP_REPLIES` against a real 163-segment
+transcript:
+
+```
+<|channel|>analysis<|message|><|end|>{"key_points": [], "decisions": [], "action_items": [], ...}
+```
+
+Sixty-six to eighty-six completion tokens, `finish_reason: stop`, every array empty. The model is
+not failing to format an answer; it is declining to look for one.
+
+The cause is a collision between Harmony and schema-constrained decoding. gpt-oss opens every
+answer on its `analysis` channel, and `response_format: json_schema` constrains generation to the
+schema from the first token — so the channel it wants to open is not a legal continuation. It
+closes the channel immediately and emits the cheapest object the grammar accepts. Gemma has no
+such channel, which is why the same pipeline, prompt and schema work for it.
+
+Ruled out by experiment:
+
+- reasoning off (`--reasoning off --reasoning-format none --reasoning-budget 0`) — still empty;
+- context, VRAM and the fallback ladder — the 16K rung starts and generates;
+- prompt length — 4188 prompt tokens against a 16384 context.
+
+The obvious repair is to stop constraining generation for models with a reasoning channel and let
+the existing lenient parser and repair pass handle shape, since the host validator — not the
+grammar — is what actually decides whether a claim may be shown. That was attempted and is **not**
+committed: with the grammar removed the run failed earlier still, at `backend_unavailable` during
+PREPARING, and the reason was not established. It needs a worker-side stderr path before it is
+worth another attempt; the supervisor currently surfaces nothing when the server refuses to start.
+
+Reproduce with `dotnet run scripts/diagnose-summary.cs -- <session-folder> gpt-oss-20b`.
