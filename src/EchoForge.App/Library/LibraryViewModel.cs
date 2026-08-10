@@ -337,6 +337,44 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>True when this build can point at a recording's folder on disk.</summary>
     public bool CanShowInExplorer => _services.FolderFor is not null;
 
+    // -- how the last run ended ----------------------------------------------------------------
+
+    private string? _processingMessage;
+    private bool _processingFailed;
+
+    /// <summary>
+    /// What happened the last time this meeting was processed, said beside the meeting.
+    ///
+    /// <para>
+    /// The outcome was already being written to <see cref="Status"/>, which is rendered as a quiet
+    /// line in the recordings column — the opposite side of the window from the button that starts
+    /// a run and from the brief a reader is watching for a change. A summary that could not be
+    /// written therefore looked exactly like one that had not changed, which is the worst possible
+    /// reading: EchoForge keeps the last good brief when a run fails, so nothing appears to happen
+    /// at all.
+    /// </para>
+    /// </summary>
+    public string? ProcessingMessage
+    {
+        get => _processingMessage;
+        private set { _processingMessage = value; Changed(); Changed(nameof(HasProcessingMessage)); }
+    }
+
+    public bool HasProcessingMessage => !string.IsNullOrWhiteSpace(ProcessingMessage);
+
+    /// <summary>True when the last run failed, so the notice can look like a failure.</summary>
+    public bool ProcessingFailed
+    {
+        get => _processingFailed;
+        private set { _processingFailed = value; Changed(); }
+    }
+
+    private void ReportProcessing(string? message, bool failed)
+    {
+        ProcessingFailed = failed;
+        ProcessingMessage = message;
+    }
+
     /// <summary>
     /// The folder holding one recording's files, or null when it cannot be resolved.
     ///
@@ -497,6 +535,9 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
 
             _selected = value;
             OpenMeeting = value is null ? null : Open(value.Entry);
+
+            // The last run's outcome belongs to the meeting it ran on, not to the next one opened.
+            ReportProcessing(null, failed: false);
 
             Changed();
             RaiseCommands();
@@ -956,6 +997,7 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
         Changed(nameof(ProcessingStage));
         Changed(nameof(IsProcessing));
         Status = null;
+        ReportProcessing(null, failed: false);
         CancelProcessingCommand.RaiseCanExecuteChanged();
 
         Progress<string> stage = new(text => Dispatch(() =>
@@ -971,10 +1013,12 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
                 .ConfigureAwait(true);
 
             Status = outcome.Message;
+            ReportProcessing(outcome.Message, failed: !outcome.Succeeded);
         }
         catch (OperationCanceledException)
         {
             Status = "Processing was cancelled. Nothing was changed.";
+            ReportProcessing(Status, failed: false);
         }
         finally
         {

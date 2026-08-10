@@ -331,6 +331,42 @@
           </Border>
 
           <!--
+            How the last run ended, beside the meeting it ran on. A failed run keeps the previous
+            brief, so without this the window looks identical whether the model wrote a new brief
+            or could not write one at all.
+          -->
+          <Border DockPanel.Dock="Top" Margin="0,0,0,12" Padding="13,11"
+                  Visibility="{Binding DataContext.HasProcessingMessage, ElementName=Page,
+                               Converter={StaticResource BoolToVis}}">
+            <Border.Style>
+              <!-- A failure is amber-edged; a normal outcome keeps the ordinary card. -->
+              <Style TargetType="Border" BasedOn="{StaticResource Card}">
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding DataContext.ProcessingFailed, ElementName=Page}" Value="True">
+                    <Setter Property="BorderBrush" Value="{DynamicResource Warn}" />
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </Border.Style>
+            <DockPanel>
+              <Ellipse DockPanel.Dock="Left" Width="8" Height="8" Margin="0,6,11,0" VerticalAlignment="Top">
+                <Ellipse.Style>
+                  <Style TargetType="Ellipse">
+                    <Setter Property="Fill" Value="{DynamicResource Focus}" />
+                    <Style.Triggers>
+                      <DataTrigger Binding="{Binding DataContext.ProcessingFailed, ElementName=Page}" Value="True">
+                        <Setter Property="Fill" Value="{DynamicResource Warn}" />
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </Ellipse.Style>
+              </Ellipse>
+              <TextBlock Text="{Binding DataContext.ProcessingMessage, ElementName=Page}"
+                         TextWrapping="Wrap" FontSize="12.5" Foreground="{DynamicResource Ink}" />
+            </DockPanel>
+          </Border>
+
+          <!--
             Playback: one media bar, as the mockup draws it. Round play key, the scrubbable
             waveform with its playhead, the time, and a lit chip per audible track. The same
             MiniRibbon still carries seek-on-click and the evidence marker; only its ruler and

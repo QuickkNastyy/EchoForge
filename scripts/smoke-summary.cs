@@ -183,9 +183,16 @@ using SummaryCoordinator coordinator = new(sessions, summaries, transcripts, sup
 coordinator.ProgressChanged += (_, e) => Console.WriteLine($"  .. {e.Stage} {e.CompletedUnits}/{e.TotalUnits}");
 
 Stopwatch clock = Stopwatch.StartNew();
+// Which summariser to prove. Defaults to the production one; pass a backend id to run another,
+// which is how a model that only fails on real input gets exercised without a meeting.
+string backend = Environment.GetEnvironmentVariable("ECHOFORGE_SMOKE_BACKEND") is { Length: > 0 } chosen
+    ? chosen
+    : SummaryOptions.ProductionBackend;
+Console.WriteLine($"  backend: {backend}");
+
 SummaryRunResult result = await coordinator.SummarizeAsync(SessionId, new SummaryOptions
 {
-    Backend = SummaryOptions.ProductionBackend,
+    Backend = backend,
     MeetingDate = new DateOnly(2026, 8, 7),
 });
 clock.Stop();
@@ -243,7 +250,7 @@ Console.WriteLine();
 
 // -- what must be true ------------------------------------------------------------------------
 
-Check(summary.Model.Backend == "gemma-4-12b", "the revision records the production backend");
+Check(summary.Model.Backend == backend, $"the revision records the backend it was asked for ({backend})");
 Check(summary.Model.ProducesSummaries, "the revision is not labelled a placeholder");
 Check(!summary.Model.Thinking, "reasoning mode is off");
 Check(summary.Model.ContextTokens > 0, $"the context it actually ran at is recorded ({summary.Model.ContextTokens})");
