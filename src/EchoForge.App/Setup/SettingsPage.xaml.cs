@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using EchoForge.Infrastructure.Diagnostics;
 using EchoForge.Infrastructure.Setup;
@@ -49,5 +50,79 @@ public partial class SettingsPage : System.Windows.Controls.UserControl
             "EchoForge",
             MessageBoxButton.OK,
             result.Succeeded ? MessageBoxImage.Information : MessageBoxImage.Warning);
+    }
+
+    // -- where recordings are kept ----------------------------------------------------------------
+
+    /// <summary>
+    /// Picks a new folder for recordings.
+    ///
+    /// <para>
+    /// The dialog lives here rather than in the view model for the usual reason: a view model that
+    /// opens windows cannot be tested without a desktop. It hands back a path; deciding whether
+    /// that path can be used, and remembering it, is the view model's job.
+    /// </para>
+    /// </summary>
+    private void OnChooseRecordingsFolder(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainViewModel host)
+        {
+            return;
+        }
+
+        Microsoft.Win32.OpenFolderDialog dialog = new()
+        {
+            Title = "Choose where EchoForge keeps recordings",
+            Multiselect = false,
+            InitialDirectory = Directory.Exists(host.RecordingsFolderInUse) ? host.RecordingsFolderInUse : string.Empty,
+        };
+
+        if (dialog.ShowDialog(Window.GetWindow(this)) != true)
+        {
+            return;
+        }
+
+        if (host.ChooseRecordingsFolder(dialog.FolderName) is { } problem)
+        {
+            System.Windows.MessageBox.Show(
+                Window.GetWindow(this), problem, "EchoForge",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>Puts recordings back under the standard location beside the rest of the data.</summary>
+    private void OnResetRecordingsFolder(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is MainViewModel host)
+        {
+            host.ChooseRecordingsFolder(null);
+        }
+    }
+
+    /// <summary>Opens the folder recordings are actually being written to.</summary>
+    private void OnOpenRecordingsFolder(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainViewModel { RecordingsFolderInUse: { Length: > 0 } folder })
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(folder);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = folder,
+                UseShellExecute = true,
+            })?.Dispose();
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException
+                                      or UnauthorizedAccessException or InvalidOperationException)
+        {
+            System.Windows.MessageBox.Show(
+                Window.GetWindow(this),
+                "That folder could not be opened:" + Environment.NewLine + Environment.NewLine + folder,
+                "EchoForge", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
     }
 }

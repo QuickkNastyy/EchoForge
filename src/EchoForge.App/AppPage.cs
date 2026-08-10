@@ -29,6 +29,7 @@ public enum SettingsSection
 {
     Transcription,
     Briefs,
+    Recordings,
     Models,
     Machine,
     Compare,

@@ -1859,3 +1859,73 @@ public sealed class ChoosingAModelTests
         Assert.False(host.UseSelectedModelCommand.CanExecute(null));
     });
 }
+
+// ==================================================================== where recordings are kept
+
+/// <summary>
+/// Choosing a folder writes a setting and touches nothing else.
+///
+/// <para>
+/// The guarantee worth testing is the one a user cannot check for themselves: that changing where
+/// recordings will be kept does not move, rename or delete the recordings they already have.
+/// </para>
+/// </summary>
+public sealed class RecordingsFolderTests
+{
+    [Fact]
+    public void ChoosingAFolderRemembersItAndLeavesWhatIsAlreadyRecordedAlone() => UiThread.Run(() =>
+    {
+        using RecorderHarness harness = new();
+        using TempDirectory destination = new();
+        MainViewModel host = harness.Ready();
+        host.DescribeStorage(inUse: destination.Path, standard: destination.Path);
+
+        string existing = Path.Combine(destination.Path, "a-meeting-that-was-already-here.txt");
+        File.WriteAllText(existing, "kept");
+
+        string? problem = host.ChooseRecordingsFolder(destination.Path);
+
+        Assert.Null(problem);
+        Assert.False(host.RecordingsFolderIsDefault);
+        Assert.Equal(destination.Path, host.RecordingsFolderChosen);
+        // The point of the test: nothing was relocated on the way.
+        Assert.True(File.Exists(existing));
+    });
+
+    [Fact]
+    public void ClearingTheChoiceGoesBackToTheDefault() => UiThread.Run(() =>
+    {
+        using RecorderHarness harness = new();
+        using TempDirectory destination = new();
+        MainViewModel host = harness.Ready();
+        host.DescribeStorage(inUse: destination.Path, standard: destination.Path);
+
+        host.ChooseRecordingsFolder(destination.Path);
+        host.ChooseRecordingsFolder(null);
+
+        Assert.True(host.RecordingsFolderIsDefault);
+        Assert.False(host.CanResetRecordingsFolder);
+    });
+
+    /// <summary>
+    /// A folder that cannot be written to is refused while the person is still looking at the
+    /// dialog, rather than at the end of the meeting they were about to record.
+    /// </summary>
+    [Fact]
+    public void AFolderThatCannotBeWrittenToIsRefusedWithAReason() => UiThread.Run(() =>
+    {
+        using RecorderHarness harness = new();
+        MainViewModel host = harness.Ready();
+        host.DescribeStorage(inUse: "C:\nowhere", standard: "C:\nowhere");
+
+        // A path under a file rather than a directory: creating it cannot succeed.
+        using TempDirectory temp = new();
+        string file = Path.Combine(temp.Path, "not-a-directory.txt");
+        File.WriteAllText(file, string.Empty);
+
+        string? problem = host.ChooseRecordingsFolder(Path.Combine(file, "sessions"));
+
+        Assert.NotNull(problem);
+        Assert.True(host.RecordingsFolderIsDefault);
+    });
+}

@@ -244,6 +244,69 @@
           </Border>
         </StackPanel>
 
+        <!-- ==================== Recordings ==================== -->
+        <StackPanel Visibility="{Binding DataContext.IsRecordingsSection, ElementName=Page,
+                                 Converter={StaticResource BoolToVis}}"
+                    MaxWidth="720" HorizontalAlignment="Left">
+          <Border Style="{StaticResource Card}">
+            <StackPanel>
+              <TextBlock Text="WHERE RECORDINGS ARE KEPT" Style="{StaticResource Label}" FontWeight="Bold"
+                         Margin="0,0,0,10" />
+
+              <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="{DynamicResource InkDim}" Margin="0,0,0,10"
+                         Text="Each meeting is a folder holding its audio tracks, every transcript revision, and every summary written from them. The library index lives beside them." />
+
+              <Border CornerRadius="8" Padding="12,10" Background="{DynamicResource Sunken}"
+                      BorderBrush="{DynamicResource Line}" BorderThickness="1">
+                <TextBlock Text="{Binding DataContext.RecordingsFolderInUse, ElementName=Page}"
+                           FontFamily="{StaticResource DataFont}" FontSize="12" TextWrapping="Wrap"
+                           Foreground="{DynamicResource Ink}" />
+              </Border>
+
+              <WrapPanel Margin="0,12,-8,0">
+                <Button Content="Change folder…" Style="{StaticResource PrimaryButton}" Margin="0,0,8,8"
+                        Click="OnChooseRecordingsFolder" />
+                <Button Content="Open in File Explorer" Margin="0,0,8,8" Click="OnOpenRecordingsFolder" />
+                <Button Content="Use the default folder" Margin="0,0,8,8" Click="OnResetRecordingsFolder"
+                        IsEnabled="{Binding DataContext.CanResetRecordingsFolder, ElementName=Page}" />
+              </WrapPanel>
+
+              <!-- Said before the change is made, not discovered afterwards. -->
+              <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" FontSize="11.5" Foreground="{DynamicResource InkFaint}"
+                         Text="Changing this affects recordings made from then on. Nothing already recorded is moved: EchoForge will not relocate meetings on its own. To bring older ones across, close EchoForge, move the folders yourself, then use Rebuild index on the Library page." />
+            </StackPanel>
+          </Border>
+
+          <!-- A change is only real after a restart, because the store is built once at startup. -->
+          <Border Style="{StaticResource Card}" Margin="0,12,0,0" BorderBrush="{DynamicResource Warn}"
+                  Visibility="{Binding DataContext.RecordingsFolderNeedsRestart, ElementName=Page,
+                               Converter={StaticResource BoolToVis}}">
+            <StackPanel>
+              <TextBlock Text="Restart EchoForge to start using the new folder" FontWeight="SemiBold" FontSize="13" />
+              <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource InkDim}">
+                <Run Text="Recordings are still being written to " /><Run
+                     Text="{Binding DataContext.RecordingsFolderInUse, ElementName=Page, Mode=OneWay}"
+                     FontFamily="{StaticResource DataFont}" FontSize="11.5" /><Run Text=" until then." />
+              </TextBlock>
+            </StackPanel>
+          </Border>
+
+          <!-- The chosen folder could not be opened at startup, so this run fell back. -->
+          <Border Style="{StaticResource Card}" Margin="0,12,0,0" BorderBrush="{DynamicResource Warn}"
+                  Visibility="{Binding DataContext.RecordingsFolderUnavailable, ElementName=Page,
+                               Converter={StaticResource BoolToVis}}">
+            <StackPanel>
+              <TextBlock Text="The chosen folder could not be opened" FontWeight="SemiBold" FontSize="13" />
+              <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource InkDim}">
+                <Run Text="EchoForge is recording to the folder above instead. The setting still points at " /><Run
+                     Text="{Binding DataContext.RecordingsFolderChosen, ElementName=Page, Mode=OneWay}"
+                     FontFamily="{StaticResource DataFont}" FontSize="11.5" /><Run
+                     Text=", and it will be used again once that location is reachable — a drive that is not plugged in is the usual reason." />
+              </TextBlock>
+            </StackPanel>
+          </Border>
+        </StackPanel>
+
         <!-- ==================== Models ==================== -->
         <StackPanel Visibility="{Binding DataContext.IsModelsSection, ElementName=Page,
                                  Converter={StaticResource BoolToVis}}"

@@ -51,6 +51,39 @@ public partial class App : System.Windows.Application, IDisposable
     private SummaryCoordinator? _summaryCoordinator;
     private FileSpeakerAliasStore? _aliases;
     private SqliteLibraryIndex? _libraryIndex;
+
+    /// <summary>Where this run keeps recordings: the chosen folder, or the default.</summary>
+    private string? _sessionsRoot;
+
+    /// <summary>
+    /// The chosen recordings folder if it can be used, and the default if it cannot.
+    ///
+    /// <para>
+    /// Creating the directory is the test, because being able to name a folder is not the same as
+    /// being able to write in it — an external drive that is not plugged in today is the ordinary
+    /// case. Falling back keeps the application usable; it does not rewrite the setting, so the
+    /// folder starts being used again the moment it is reachable.
+    /// </para>
+    /// </summary>
+    private static string ResolveSessionsRoot(string? chosen, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(chosen))
+        {
+            return fallback;
+        }
+
+        try
+        {
+            string full = Path.GetFullPath(chosen);
+            Directory.CreateDirectory(full);
+            return full;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                      or ArgumentException or NotSupportedException)
+        {
+            return fallback;
+        }
+    }
     private LibraryIndexMaintainer? _indexMaintenance;
     private LibraryViewModel? _library;
     private FileSessionLeaseProvider? _leases;
@@ -85,12 +118,19 @@ public partial class App : System.Windows.Application, IDisposable
         _layout = AppLayout.Current;
         _layout.EnsureDataDirectories();
 
-        FileSessionStore store = new(_layout.SessionsRoot);
+        JsonSettingsStore settings = new();
+        _settings = settings;
+
+        // Where recordings live is read before the store exists, because the store is the thing
+        // it decides. A folder that cannot be created falls back to the default rather than
+        // failing to start: an unreachable drive in a settings file must not cost the user their
+        // recorder, and the Recordings section says which one is actually in use.
+        _sessionsRoot = ResolveSessionsRoot(settings.Load().RecordingsRoot, _layout.SessionsRoot);
+
+        FileSessionStore store = new(_sessionsRoot);
         _store = store;
         FileSessionLeaseProvider leases = new(store);
         _leases = leases;
-        JsonSettingsStore settings = new();
-        _settings = settings;
 
         // Paint in the remembered palette before the first window exists, so nothing is ever seen
         // in the wrong one, and remember any later change. A settings file written before this
@@ -116,6 +156,9 @@ public partial class App : System.Windows.Application, IDisposable
         _viewModel = new MainViewModel(
             _controller, _catalog, settings,
             levelMonitor: () => new DeviceLevelMonitor(_catalog));
+
+        // The folder actually in use, which is the chosen one unless it could not be opened.
+        _viewModel.DescribeStorage(_sessionsRoot ?? _layout.SessionsRoot, _layout.SessionsRoot);
         window.DataContext = _viewModel;
         MainWindow = window;
 
@@ -278,7 +321,10 @@ public partial class App : System.Windows.Application, IDisposable
         FileMeetingTitleStore titles = new(store);
 
         LibraryProjection projection = new(store, _transcripts, _summaries, _aliases, titles);
-        _libraryIndex = new SqliteLibraryIndex(_layout.IndexPath, projection);
+        // The index travels with the recordings it indexes. Leaving it at the default while the
+        // sessions moved would have one folder's library describing another folder's meetings.
+        _libraryIndex = new SqliteLibraryIndex(
+            Path.Combine(_sessionsRoot ?? _layout.SessionsRoot, "library.db"), projection);
 
         // Keeps the index in step with the folders. Deliberately fire-and-forget: an index update
         // that fails must never be able to undo the transcript activation that triggered it.
@@ -294,6 +340,7 @@ public partial class App : System.Windows.Application, IDisposable
             {
                 Playback = new PlaybackPreparer(store),
                 Devices = () => new NAudioPlaybackDevice(),
+                FolderFor = sessionId => store.Resolve(sessionId).Root,
                 // Reads whatever reprocessor currently exists. Null until a worker attaches and
                 // non-null afterwards, so reprocessing follows the runtime rather than the state
                 // the application happened to start in.

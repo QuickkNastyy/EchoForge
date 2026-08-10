@@ -148,6 +148,10 @@
                   AutomationProperties.Name="Meeting brief settings"
                   Command="{Binding ShowBriefsSettingsCommand}"
                   Tag="{Binding IsBriefsSection, Converter={StaticResource ActiveTag}}" />
+          <Button Style="{StaticResource SubNavButton}" Content="Recordings"
+                  AutomationProperties.Name="Recording storage settings"
+                  Command="{Binding ShowRecordingsSettingsCommand}"
+                  Tag="{Binding IsRecordingsSection, Converter={StaticResource ActiveTag}}" />
           <Button Style="{StaticResource SubNavButton}" Content="Models"
                   AutomationProperties.Name="Model settings"
                   Command="{Binding ShowModelsSettingsCommand}"

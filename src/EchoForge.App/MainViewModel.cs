@@ -286,6 +286,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             OnChanged(nameof(SettingsSection));
             OnChanged(nameof(IsTranscriptionSection));
             OnChanged(nameof(IsBriefsSection));
+            OnChanged(nameof(IsRecordingsSection));
             OnChanged(nameof(IsModelsSection));
             OnChanged(nameof(IsMachineSection));
             OnChanged(nameof(IsCompareSection));
@@ -295,6 +296,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public bool IsTranscriptionSection => SettingsSection == SettingsSection.Transcription;
 
     public bool IsBriefsSection => SettingsSection == SettingsSection.Briefs;
+
+    public bool IsRecordingsSection => SettingsSection == SettingsSection.Recordings;
 
     public bool IsModelsSection => SettingsSection == SettingsSection.Models;
 
@@ -307,6 +310,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public RelayCommand ShowBriefsSettingsCommand =>
         _showBriefsSettings ??= new RelayCommand(() => ShowSection(SettingsSection.Briefs));
+
+    public RelayCommand ShowRecordingsSettingsCommand =>
+        _showRecordingsSettings ??= new RelayCommand(() => ShowSection(SettingsSection.Recordings));
 
     public RelayCommand ShowModelsSettingsCommand =>
         _showModelsSettings ??= new RelayCommand(() => ShowSection(SettingsSection.Models));
@@ -325,9 +331,109 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private RelayCommand? _showTranscriptionSettings;
     private RelayCommand? _showBriefsSettings;
+    private RelayCommand? _showRecordingsSettings;
     private RelayCommand? _showModelsSettings;
     private RelayCommand? _showMachineSettings;
     private RelayCommand? _showCompareSettings;
+
+    // -- where recordings are kept -------------------------------------------------------------
+
+    /// <summary>
+    /// The folder this run is actually writing recordings to. Supplied by the composition root,
+    /// which is the only thing that knows whether the chosen folder could be opened.
+    /// </summary>
+    public string RecordingsFolderInUse { get; private set; } = string.Empty;
+
+    /// <summary>The default, so the section can name it and offer to go back to it.</summary>
+    public string DefaultRecordingsFolder { get; private set; } = string.Empty;
+
+    public void DescribeStorage(string inUse, string standard) => Dispatch(() =>
+    {
+        RecordingsFolderInUse = inUse;
+        DefaultRecordingsFolder = standard;
+        RaiseStorage();
+    });
+
+    /// <summary>What settings say, which is not always what this run is using.</summary>
+    public string RecordingsFolderChosen =>
+        _settings.Load().RecordingsRoot is { Length: > 0 } chosen ? chosen : DefaultRecordingsFolder;
+
+    public bool RecordingsFolderIsDefault => string.IsNullOrWhiteSpace(_settings.Load().RecordingsRoot);
+
+    /// <summary>Nothing to go back to when the default is already what is set.</summary>
+    public bool CanResetRecordingsFolder => !RecordingsFolderIsDefault;
+
+    /// <summary>
+    /// True when the chosen folder is not the one in use — an unplugged drive, or a folder that
+    /// has since become unwritable. Said out loud rather than left for someone to notice.
+    /// </summary>
+    public bool RecordingsFolderUnavailable =>
+        !string.IsNullOrWhiteSpace(RecordingsFolderInUse)
+        && !string.Equals(
+            Path.TrimEndingDirectorySeparator(RecordingsFolderChosen),
+            Path.TrimEndingDirectorySeparator(RecordingsFolderInUse),
+            StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Set after a change, because the store is built once and cannot be rebuilt live.</summary>
+    public bool RecordingsFolderNeedsRestart { get; private set; }
+
+    /// <summary>
+    /// Remembers a new folder for recordings.
+    ///
+    /// <para>
+    /// It only writes the setting. Nothing on disk is moved: the meetings already recorded stay
+    /// where they are, and the library keeps describing the folder it was built against until the
+    /// application is started again. Moving somebody's recordings is not something a settings
+    /// change should do quietly, and a half-completed move of several gigabytes is worse than none.
+    /// </para>
+    /// </summary>
+    /// <returns>Null on success, or why the folder cannot be used.</returns>
+    public string? ChooseRecordingsFolder(string? folder)
+    {
+        string? normalised = null;
+
+        if (!string.IsNullOrWhiteSpace(folder))
+        {
+            try
+            {
+                normalised = Path.GetFullPath(folder);
+                Directory.CreateDirectory(normalised);
+
+                // Proves the folder is writable now, rather than at the next recording.
+                string probe = Path.Combine(normalised, ".echoforge-write-test");
+                File.WriteAllText(probe, string.Empty);
+                File.Delete(probe);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                          or ArgumentException or NotSupportedException)
+            {
+                return "That folder cannot be written to: " + ex.Message;
+            }
+        }
+
+        _settings.Save(_settings.Load() with { RecordingsRoot = normalised });
+
+        RecordingsFolderNeedsRestart = !string.Equals(
+            Path.TrimEndingDirectorySeparator(normalised ?? DefaultRecordingsFolder),
+            Path.TrimEndingDirectorySeparator(RecordingsFolderInUse),
+            StringComparison.OrdinalIgnoreCase);
+
+        RaiseStorage();
+        return null;
+    }
+
+    private void RaiseStorage()
+    {
+        foreach (string name in (string[])
+        [
+            nameof(RecordingsFolderInUse), nameof(DefaultRecordingsFolder), nameof(RecordingsFolderChosen),
+            nameof(RecordingsFolderIsDefault), nameof(CanResetRecordingsFolder),
+            nameof(RecordingsFolderUnavailable), nameof(RecordingsFolderNeedsRestart),
+        ])
+        {
+            OnChanged(name);
+        }
+    }
 
     // -- choosing a model from the Models list -------------------------------------------------
 

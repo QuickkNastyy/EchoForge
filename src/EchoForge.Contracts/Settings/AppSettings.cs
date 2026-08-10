@@ -35,6 +35,18 @@ public sealed record AppSettings
 
     public string? SummaryModelId { get; init; }
 
+    /// <summary>
+    /// Where recordings are kept. Null means the default beside the rest of EchoForge's data.
+    ///
+    /// <para>
+    /// Read once, when the session store is built, because every recording, transcript, summary
+    /// and the library index live under it and a process cannot be holding two of those at the
+    /// same time. Changing it therefore takes effect on the next start, and never moves what is
+    /// already on disk: a setting is not permission to relocate someone's meetings.
+    /// </para>
+    /// </summary>
+    public string? RecordingsRoot { get; init; }
+
     public int SchemaVersion { get; init; } = 2;
 }
 

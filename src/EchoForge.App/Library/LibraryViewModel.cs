@@ -53,6 +53,16 @@ public sealed record LibraryServices
     public LibraryIndexMaintainer? Index { get; init; }
 
     public FileMeetingTitleStore? Titles { get; init; }
+
+    /// <summary>
+    /// Where a session's files are, by session ID.
+    ///
+    /// <para>
+    /// A function rather than the store itself, because the library has no other reason to hold
+    /// one, and "show me the folder" should not hand the reading surface something that can write.
+    /// </para>
+    /// </summary>
+    public Func<string, string?>? FolderFor { get; init; }
 }
 
 /// <summary>One row in the meeting list.</summary>
@@ -323,6 +333,36 @@ public sealed class LibraryViewModel : INotifyPropertyChanged, IDisposable
     public bool CanReprocessHere => _services.Reprocessor is not null;
 
     public bool CanDeleteHere => _services.Deletion is not null;
+
+    /// <summary>True when this build can point at a recording's folder on disk.</summary>
+    public bool CanShowInExplorer => _services.FolderFor is not null;
+
+    /// <summary>
+    /// The folder holding one recording's files, or null when it cannot be resolved.
+    ///
+    /// <para>
+    /// Null rather than a guessed path: a session that has been deleted or moved underneath the
+    /// index would otherwise open a window on a folder that is not there, or worse, on the wrong
+    /// one.
+    /// </para>
+    /// </summary>
+    public string? FolderFor(MeetingRow? row)
+    {
+        if (row is null || _services.FolderFor is not { } locate)
+        {
+            return null;
+        }
+
+        try
+        {
+            string? folder = locate(row.SessionId);
+            return Directory.Exists(folder) ? folder : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>
     /// What the transcription action should read for the open meeting: the first run is

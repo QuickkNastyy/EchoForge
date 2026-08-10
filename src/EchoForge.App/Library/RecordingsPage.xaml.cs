@@ -294,6 +294,17 @@ public partial class RecordingsPage : System.Windows.Controls.UserControl
         copy.Click += OnCopyRecordingTranscript;
         menu.Items.Add(copy);
 
+        // Disabled rather than hidden when the folder cannot be found: an entry that is there and
+        // unavailable says the recording's files are missing, which is worth knowing.
+        System.Windows.Controls.MenuItem reveal = new()
+        {
+            Header = "Open in File Explorer",
+            DataContext = row,
+            IsEnabled = _library.FolderFor(row) is not null,
+        };
+        reveal.Click += OnShowRecordingInExplorer;
+        menu.Items.Add(reveal);
+
         menu.Items.Add(new Separator());
 
         System.Windows.Controls.MenuItem delete = new() { Header = "Delete recording…", DataContext = row };
@@ -349,6 +360,49 @@ public partial class RecordingsPage : System.Windows.Controls.UserControl
         }
 
         await _library.RenameMeetingAsync(row, name).ConfigureAwait(true);
+    }
+
+    /// <summary>
+    /// Opens the recording's own folder in File Explorer.
+    ///
+    /// <para>
+    /// Explorer is asked to open the folder rather than to select it from its parent, because a
+    /// session folder is the unit a person came looking for: the audio tracks, the transcript
+    /// revisions and the summaries are all inside it.
+    /// </para>
+    /// </summary>
+    private void OnShowRecordingInExplorer(object sender, RoutedEventArgs e)
+    {
+        if (_library is null || sender is not FrameworkElement { DataContext: MeetingRow row })
+        {
+            return;
+        }
+
+        if (_library.FolderFor(row) is not { } folder)
+        {
+            return;
+        }
+
+        try
+        {
+            // UseShellExecute so this is the shell opening a folder, not an attempt to run it.
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = folder,
+                UseShellExecute = true,
+            })?.Dispose();
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception
+                                      or System.IO.FileNotFoundException
+                                      or InvalidOperationException)
+        {
+            System.Windows.MessageBox.Show(
+                Window.GetWindow(this),
+                "That folder could not be opened:\n\n" + folder,
+                "EchoForge",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
     }
 
     private void OnCopyRecordingTranscript(object sender, RoutedEventArgs e)
